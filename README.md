@@ -18,7 +18,7 @@ The live FCM connection, credential persistence, payload parsing, and the MCP-ov
 
 ## Requirements
 
-- OpenClaw `>= 2026.7.2` (the gateway provides the `openclaw` peer dependency)
+- OpenClaw `>= 2026.7.0` (the gateway provides the `openclaw` peer dependency)
 - Node `>= 22.22.3`
 
 ## Install (from this private git repository)
