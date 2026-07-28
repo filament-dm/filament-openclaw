@@ -90,6 +90,39 @@ Rebuild and re-commit `dist/` whenever you change the source.
 
 In the future, we'll either publish packages to npm or ClawHub, once our plugin stabilizes. At that point, we'll likely add `dist/` to `.gitignore`.
 
+## Releases
+
+Releases are cut by the manually-triggered [`release` workflow](.github/workflows/release.yml). It builds a chosen commit hermetically (pinned Node via `.nvmrc`, `npm ci`, `npm run build`), packs a private tarball, and — when given a tag — creates a GitHub Release with that tarball attached. It does **not** publish to npm or ClawHub yet (those steps are stubbed).
+
+Trigger it from the command line with [`gh`](https://cli.github.com) (the workflow must already be on the default branch):
+
+```bash
+# Build the tip of main and cut a tagged, private pre-release:
+gh workflow run release.yml --ref main -f tag=v0.1.0
+
+# Artifact only, no Release (builds whatever --ref points at):
+gh workflow run release.yml --ref main
+
+# Reproduce a release from a specific commit or tag:
+gh workflow run release.yml -f ref=<sha-or-tag> -f tag=v0.1.0 -f prerelease=false
+```
+
+`--ref` (`gh` CLI) chooses which commit the workflow file is read from (and the default build ref); `-f ref=` (`release.yml` variable) overrides just the commit that gets built. Watch the run and fetch the artifact:
+
+```bash
+gh run list --workflow=release.yml   # find the run id
+gh run watch <run-id>                # follow it to completion
+gh run download <run-id>             # download the .tgz artifact
+# ...or, if you created a tag, grab the Release asset instead:
+gh release download v0.1.0 --pattern '*.tgz'
+```
+
+To test the tarball locally without publishing to NPM or ClawHub:
+
+```bash
+openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --force
+```
+
 ## Configuration
 
 The Firebase project values are public and baked in as defaults (matching `filament-hermes`). Override any of them via environment variables if needed:
