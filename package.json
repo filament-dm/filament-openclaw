@@ -1,0 +1,50 @@
+{
+  "name": "@filament/openclaw-filament-fcm",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin that connects an agent to Filament via Firebase Cloud Messaging (FCM) pushes and the Filament MCP-over-HTTP agents API.",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/filament-dm/filament-openclaw"
+  },
+  "engines": {
+    "node": ">=22.22.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@eneris/push-receiver": "4.3.1",
+    "typebox": "1.3.6"
+  },
+  "devDependencies": {
+    "openclaw": "2026.7.2",
+    "typescript": "5.9.2"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.2"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.7.2",
+      "minGatewayVersion": "2026.7.2"
+    },
+    "build": {
+      "openclawVersion": "2026.7.2",
+      "pluginSdkVersion": "2026.7.2"
+    },
+    "release": {
+      "publishToClawHub": false,
+      "publishToNpm": false
+    }
+  }
+}

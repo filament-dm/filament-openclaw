@@ -1,0 +1,20 @@
+{
+  "id": "filament-fcm",
+  "name": "Filament (FCM)",
+  "description": "Connects an OpenClaw agent to Filament: receives messages as Firebase Cloud Messaging (FCM) pushes and replies through Filament's MCP-over-HTTP agents API. Hello-world scaffold.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "filament_hello",
+      "filament_fcm_status"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
