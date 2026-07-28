@@ -1,0 +1,115 @@
+---
+name: Release
+
+# Manually-triggered release build. Produces a private, self-contained plugin
+# tarball (`npm pack`, which bundles the compiled dist/) as a workflow artifact,
+# and — when a tag is provided — a GitHub Release with that tarball attached.
+# Publishing to npm / ClawHub is intentionally stubbed for now.
+#
+# Hermeticity: builds one specific commit with a pinned Node (.nvmrc) and a
+# locked dependency tree (`npm ci` from package-lock.json), using the same
+# `npm run build` command as everyday CI. Re-running against the same ref
+# reproduces the same package contents (the run summary prints the commit and
+# the artifact's sha256 for auditing).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref or commit SHA to build (default: the branch/tag this run was started from)."
+        required: false
+        default: ""
+      tag:
+        description: "Release tag to create, e.g. v0.1.0 (leave blank to only upload the build artifact)."
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark the GitHub Release as a pre-release."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write # create the Release (and its tag)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: echo "ref=${{ inputs.ref || github.ref }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the exact ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0 # full history so any tag/SHA can be checked out
+
+      - name: Record the exact commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty='building commit %H%nauthored %aI'
+
+      - name: Set up Node (pinned via .nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Record tool versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build # same command everyday CI uses (package.json → scripts.build)
+
+      - name: Pack the private, self-contained tarball
+        id: pack
+        run: |
+          # --ignore-scripts: do not re-run the build during pack; ship exactly
+          # what `npm run build` just produced.
+          mkdir -p dist-pack
+          file="$(npm pack --ignore-scripts --pack-destination dist-pack | tail -n1)"
+          echo "tarball=dist-pack/${file}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release artifact"
+            echo "- commit: \`${{ steps.commit.outputs.sha }}\`"
+            echo "- tarball: \`${file}\`"
+            echo "- sha256: \`$(sha256sum "dist-pack/${file}" | cut -d' ' -f1)\`"
+            echo ""
+            echo "Contents:"
+            echo '```'
+            tar -tzf "dist-pack/${file}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish to npm (TODO)
+        run: 'echo "TODO: npm publish — intentionally skipped for now."'
+
+      - name: Publish to clawhub (TODO)
+        run: 'echo "TODO: clawhub publish — intentionally skipped for now."'
+
+      - name: Upload the private build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filament-openclaw-${{ steps.commit.outputs.sha }}
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create the GitHub Release
+        if: ${{ inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ steps.commit.outputs.sha }}
+          prerelease: ${{ inputs.prerelease }}
+          files: ${{ steps.pack.outputs.tarball }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true

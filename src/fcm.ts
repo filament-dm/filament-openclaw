@@ -42,15 +42,12 @@ export interface FilamentFcmConfig {
 }
 
 /** Resolve the FCM registration config from the environment, with defaults. */
-export function resolveFcmConfig(
-  env: NodeJS.ProcessEnv = process.env,
-): FilamentFcmConfig {
+export function resolveFcmConfig(env: NodeJS.ProcessEnv = process.env): FilamentFcmConfig {
   return {
     projectId: env.FILAMENT_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID,
     apiKey: env.FILAMENT_FIREBASE_API_KEY || DEFAULT_FIREBASE_API_KEY,
     appId: env.FILAMENT_FIREBASE_APP_ID || DEFAULT_FIREBASE_APP_ID,
-    messagingSenderId:
-      env.FILAMENT_FIREBASE_SENDER_ID || DEFAULT_FIREBASE_SENDER_ID,
+    messagingSenderId: env.FILAMENT_FIREBASE_SENDER_ID || DEFAULT_FIREBASE_SENDER_ID,
   };
 }
 
@@ -61,9 +58,7 @@ export function resolveFcmConfig(
  * persistence, and payload parsing arrive in a later iteration, mirroring
  * `FilamentFCMClient` in the Python plugin.
  */
-export function createReceiver(
-  config: FilamentFcmConfig = resolveFcmConfig(),
-): PushReceiver {
+export function createReceiver(config: FilamentFcmConfig = resolveFcmConfig()): PushReceiver {
   return new PushReceiver({
     firebase: {
       projectId: config.projectId,

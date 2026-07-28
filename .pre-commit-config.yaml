@@ -1,0 +1,25 @@
+---
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: oxfmt
+        name: oxfmt
+        entry: npx --no-install oxfmt
+        language: system
+        types_or: [ts, tsx, javascript, jsx]
+        exclude: ^dist/
+      - id: oxlint
+        name: oxlint
+        entry: npx --no-install oxlint
+        language: system
+        types_or: [ts, tsx, javascript, jsx]
+        exclude: ^dist/

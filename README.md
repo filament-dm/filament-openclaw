@@ -47,19 +47,48 @@ Verify it works from an agent session by calling the `filament_hello` or `filame
 
 ## Local development
 
-Clone the repo and link it into OpenClaw so edits are picked up without a reinstall:
+If you want to immediately evaluate your changes while editing the package, link the checkout into OpenClaw:
 
 ```bash
-npm install
-openclaw plugins install --link ./filament-openclaw
+npm install # installs deps and builds dist/ (via the prepare script)
+openclaw plugins install --link ./filament-openclaw --force
 openclaw plugins enable filament-fcm
 ```
 
-Type-check with:
+Scripts:
 
 ```bash
-npm run typecheck
+npm run build        # compile index.ts + src/fcm.ts -> dist/ (esbuild)
+npm run typecheck    # tsc --noEmit
+npm run format       # oxfmt (write in place)
+npm run lint         # oxlint
 ```
+
+Formatting and linting also run as pre-commit hooks via [prek](https://github.com/j178/prek) (`prek install` to enable); CI runs the same hooks — see `.github/workflows/pre-commit.yml`.
+
+## Build
+
+The plugin is TypeScript, compiled to ESM JavaScript with esbuild. `npm run build` transpiles `index.ts` and `src/fcm.ts` into `dist/` (runtime deps left external); the `prepare` script runs it automatically on `npm install` / `npm ci`, so `dist/` points at `./dist/index.js` (see `package.json`'s `openclaw.extensions`).
+
+`dist/` **is committed** to this repo. OpenClaw's `git:` / npm plugin installer expects compiled output at `./dist/index.js` and neither installs `devDependencies` nor runs a build step — so the compiled JS must already be in the repo for `git:` installs to work:
+
+``` bash
+jstrickland@lima-openclaw-sandbox:~$ openclaw plugins install git:git@github.com:filament-dm/filament-openclaw.git --force && openclaw plugins enable filament-fcm && openclaw plugins list --enabled
+│
+◇
+
+OpenClaw 2026.7.1-2 (0790d9f)
+It's not "failing," it's "discovering new ways to configure the same thing wrong."
+
+Cloning git@github.com:filament-dm/filament-openclaw...
+Installing plugin dependencies with npm…
+Plugin manifest id "filament-fcm" differs from npm package name "@filament/openclaw-filament-fcm"; using manifest id as the config key.
+package install requires compiled runtime output for TypeScript entry ./index.ts: expected ./dist/index.js, ./dist/index.mjs, ./dist/index.cjs, ./index.js, ./index.mjs, ./index.cjs. This is a plugin packaging issue, not a local config problem; update or reinstall the plugin after the publisher ships compiled JavaScript, or disable/uninstall the plugin until then. TypeScript source fallback is only supported for source checkouts and local development paths.
+```
+
+Rebuild and re-commit `dist/` whenever you change the source.
+
+In the future, we'll either publish packages to npm or ClawHub, once our plugin stabilizes. At that point, we'll likely add `dist/` to `.gitignore`.
 
 ## Configuration
 

@@ -24,14 +24,9 @@ export default definePluginEntry({
       name: "filament_hello",
       description: "Say hello from the Filament (FCM) plugin.",
       parameters: Type.Object({
-        name: Type.Optional(
-          Type.String({ description: 'Who to greet. Defaults to "world".' }),
-        ),
+        name: Type.Optional(Type.String({ description: 'Who to greet. Defaults to "world".' })),
       }),
-      outputSchema: Type.Object(
-        { greeting: Type.String() },
-        { additionalProperties: false },
-      ),
+      outputSchema: Type.Object({ greeting: Type.String() }, { additionalProperties: false }),
       async execute(_id, params) {
         const who = params.name?.trim() || "world";
         const greeting = `Hello, ${who}! — from the Filament (FCM) OpenClaw plugin.`;
