@@ -24,6 +24,14 @@
  */
 import { PushReceiver } from "@eneris/push-receiver";
 
+import {
+  cachedToken,
+  loadCredentials,
+  saveCredentials,
+  type FcmCredentials,
+} from "./token-store.js";
+import type { TokenSnapshot } from "./conformance-core.js";
+
 // Filament Firebase project defaults — shared across all environments. These
 // are public configuration values (identical to what ships in the Filament
 // Electron app's fcm-push-receiver.ts and the mobile google-services.json).
@@ -70,4 +78,114 @@ export function createReceiver(config: FilamentFcmConfig = resolveFcmConfig()): 
     // Python plugin saves these across restarts so pushes are not redelivered).
     persistentIds: [],
   });
+}
+
+// ── Live FCM registration ────────────────────────────────────────────
+//
+// Mirrors Hermes' FilamentFCMClient.checkin_or_register: load saved
+// credentials, register/connect via @eneris/push-receiver, and persist the
+// credentials so restarts reuse the registration. Fresh registrations hit
+// Google's flaky PHONE_REGISTRATION_ERROR, so connect is retried with a gentle
+// backoff (same rationale as the Python plugin). Message parsing/dispatch is a
+// later iteration; for now we just register, hold the socket, and cache the
+// token.
+
+const DEFAULT_CONNECT_ATTEMPTS = 12;
+const RETRY_BASE_MS = 1_500;
+const RETRY_CAP_MS = 5_000;
+
+function connectAttempts(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.FILAMENT_FCM_REGISTER_ATTEMPTS;
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) return n;
+  }
+  return DEFAULT_CONNECT_ATTEMPTS;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Build a TokenSnapshot from the cached credentials, or null when none exist.
+ * `connected` reflects whether a live receiver currently holds the socket.
+ */
+export function buildSnapshot(
+  connected: boolean,
+  config: FilamentFcmConfig = resolveFcmConfig(),
+): TokenSnapshot | null {
+  const token = cachedToken();
+  if (!token) return null;
+  return {
+    token,
+    projectId: config.projectId,
+    senderId: config.messagingSenderId,
+    connected,
+    source: connected ? "live" : "cache",
+  };
+}
+
+/** A live FCM registration + receiver connection with credential persistence. */
+export class FcmConnection {
+  private receiver: PushReceiver | null = null;
+  private connected = false;
+
+  constructor(
+    private readonly config: FilamentFcmConfig = resolveFcmConfig(),
+    private readonly log: (message: string) => void = () => {},
+  ) {}
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  snapshot(): TokenSnapshot | null {
+    return buildSnapshot(this.connected, this.config);
+  }
+
+  /** Register (reusing saved credentials if any) and connect, with retry. */
+  async start(): Promise<void> {
+    const saved = loadCredentials();
+    const receiver = new PushReceiver({
+      firebase: {
+        projectId: this.config.projectId,
+        apiKey: this.config.apiKey,
+        appId: this.config.appId,
+        messagingSenderId: this.config.messagingSenderId,
+      },
+      // eneris Credentials is a superset; we persist/reload it opaquely.
+      credentials: (saved ?? null) as never,
+      persistentIds: [],
+    });
+    // Persist credentials whenever eneris (re)generates them, so a restart
+    // reuses the registration and the cached token stays current.
+    receiver.onCredentialsChanged(({ newCredentials }) => {
+      saveCredentials(newCredentials as FcmCredentials);
+    });
+    this.receiver = receiver;
+
+    const attempts = connectAttempts();
+    let lastError: unknown;
+    for (let i = 1; i <= attempts; i++) {
+      try {
+        await receiver.connect();
+        this.connected = true;
+        this.log(
+          `filament-fcm: FCM receiver connected (attempt ${i}/${attempts}); token ${cachedToken() ? "cached" : "missing"}`,
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        this.log(`filament-fcm: connect attempt ${i}/${attempts} failed: ${String(error)}`);
+        if (i < attempts) await sleep(Math.min(RETRY_BASE_MS * i, RETRY_CAP_MS));
+      }
+    }
+    throw new Error(`FCM connect failed after ${attempts} attempts: ${String(lastError)}`);
+  }
+
+  /** Tear down the receiver socket. */
+  stop(): void {
+    this.connected = false;
+    this.receiver?.destroy?.();
+    this.receiver = null;
+  }
 }

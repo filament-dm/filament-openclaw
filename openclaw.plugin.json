@@ -15,6 +15,37 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "$defs": {
+      "secretRef": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "id"],
+        "properties": {
+          "source": { "enum": ["env", "file", "exec"] },
+          "provider": { "type": "string" },
+          "id": { "type": "string" }
+        }
+      }
+    },
+    "properties": {
+      "connectToken": {
+        "description": "Filament connect/MCP token (fmcp_…). A raw string, a ${ENV_VAR} shorthand, or a SecretRef pointing at a secret provider.",
+        "anyOf": [
+          { "type": "string", "minLength": 1 },
+          { "$ref": "#/$defs/secretRef" }
+        ]
+      },
+      "mcpUrl": {
+        "type": "string",
+        "description": "Filament MCP agents endpoint (defaults to production; set for staging/local)."
+      }
+    }
+  },
+  "uiHints": {
+    "connectToken": {
+      "label": "Connect token",
+      "placeholder": "fmcp_…",
+      "sensitive": true
+    }
   }
 }
