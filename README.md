@@ -11,10 +11,12 @@ Same shape as the Hermes plugin — **no Matrix client or Matrix token is involv
 
 ## Current Progress
 
-- `filament_hello` — a trivial tool that returns a greeting, proving the plugin loads and can register MCP tools.
-- `filament_fcm_status` — resolves the FCM registration config and constructs the push receiver **without connecting**, proving `@eneris/push-receiver` is wired and the Firebase config matches the project `filament-hermes` uses.
+- `filament_hello` / `filament_fcm_status` — hello-world tools proving the plugin loads and that `@eneris/push-receiver` + the Firebase config are wired.
+- **Onboarding** — completes the Filament connect flow: given a `connectToken`, polls `get_self` over MCP-over-HTTP until the app finalizes the agent, then persists the identity (principal + backchannel). See `src/onboarding.ts`.
+- **FCM registration** (opt-in, `FILAMENT_FCM_ENABLED`) — connects via `@eneris/push-receiver` and caches the registration token in the plugin-state store (`src/fcm.ts`).
+- **Conformance control surface** (opt-in, `FILAMENT_CONFORMANCE_ENABLED`) — `GET /conformance/manifest` + `POST /conformance/op`.
 
-The live FCM connection, credential persistence, payload parsing, and the MCP-over-HTTP reply path are intentionally **not** here yet.
+Still to do: `register_push_token` (hand Filament our FCM token so it actually pushes to us), inbound DirectPusher payload parsing/dispatch, and the outbound reply path.
 
 ## Requirements
 

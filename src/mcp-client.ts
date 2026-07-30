@@ -71,6 +71,8 @@ export class FilamentMcpClient {
   private sessionId: string | null = null;
   private nextId = 1;
   private initialized = false;
+  /** Server `instructions` from the initialize response (the first-contact directive lives here). */
+  instructions: string | null = null;
 
   constructor(
     private readonly mcpUrl: string,
@@ -135,6 +137,12 @@ export class FilamentMcpClient {
         : undefined;
     if (typeof bodySid === "string" && bodySid) this.sessionId = bodySid;
 
+    const instr =
+      json?.result && typeof json.result === "object"
+        ? (json.result as { instructions?: unknown }).instructions
+        : undefined;
+    this.instructions = typeof instr === "string" ? instr : null;
+
     // Notification: no id, no response body expected.
     await this.post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, false);
     this.initialized = true;
@@ -164,5 +172,63 @@ export class FilamentMcpClient {
   /** Fetch the agent's own identity (principal, backchannel, mxid). */
   getSelf(): Promise<ToolCallResult> {
     return this.callTool("get_self", {});
+  }
+
+  /** Hand Filament our FCM push token so DirectPusher can push to us. */
+  registerPushToken(token: string, platform = "android"): Promise<ToolCallResult> {
+    return this.callTool("register_push_token", { token, platform });
+  }
+
+  listPendingInvites(): Promise<ToolCallResult> {
+    return this.callTool("list_pending_invites", {});
+  }
+
+  acceptInvite(loopId: string): Promise<ToolCallResult> {
+    return this.callTool("accept_invite", { loop_id: loopId });
+  }
+
+  listVouches(): Promise<ToolCallResult> {
+    return this.callTool("list_vouches", {});
+  }
+
+  acceptVouch(loopId: string): Promise<ToolCallResult> {
+    return this.callTool("accept_vouch", { loop_id: loopId });
+  }
+
+  /** Post a message to a channel. */
+  postMessage(channel: string, markdownBody: string): Promise<ToolCallResult> {
+    return this.callTool("post_message", { channel, markdown_body: markdownBody });
+  }
+
+  /** DM the principal (the server's first-contact directive points here). */
+  messagePrincipal(markdownBody: string): Promise<ToolCallResult> {
+    return this.callTool("message_principal", { markdown_body: markdownBody });
+  }
+
+  /**
+   * Side-channel POST to `${mcpUrl}${path}` (not JSON-RPC), bearer-authed.
+   * Used by the presence/liveness endpoints. Returns the HTTP status.
+   */
+  private async sideChannelPost(path: string, body?: unknown): Promise<number> {
+    const response = await this.fetchImpl(`${this.mcpUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${this.token}`,
+        ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return response.status;
+  }
+
+  /** Presence keep-alive: POST /heartbeat (keeps the agent online). */
+  heartbeat(): Promise<number> {
+    return this.sideChannelPost("/heartbeat");
+  }
+
+  /** Acknowledge a liveness ping: POST /pong. (Wired once inbound dispatch exists.) */
+  pong(nonce: string): Promise<number> {
+    return this.sideChannelPost("/pong", { nonce });
   }
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseToolResult, type ToolCallResult } from "./mcp-client.js";
-import { classifyGetSelf } from "./onboarding-core.js";
+import { classifyGetSelf, isFirstContact } from "./onboarding-core.js";
 
 function ok(data: unknown): ToolCallResult {
   return { ok: true, httpStatus: 200, data };
@@ -56,4 +56,11 @@ test("classifyGetSelf: -32001 and HTTP 401/403 are auth failures", () => {
 
 test("classifyGetSelf: other errors are transient", () => {
   assert.equal(classifyGetSelf(err(-32603)).status, "transient");
+});
+
+test("isFirstContact detects the first-contact directive", () => {
+  assert.equal(isFirstContact("First contact: greet your principal"), true);
+  assert.equal(isFirstContact("some other instructions"), false);
+  assert.equal(isFirstContact(null), false);
+  assert.equal(isFirstContact(undefined), false);
 });

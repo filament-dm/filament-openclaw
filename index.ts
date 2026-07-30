@@ -9,11 +9,11 @@
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-import { buildSnapshot, createReceiver, FcmConnection, resolveFcmConfig } from "./src/fcm.js";
+import { buildSnapshot, createReceiver, resolveFcmConfig } from "./src/fcm.js";
 import { registerConformanceRoutes } from "./src/conformance-http.js";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
-import { resolveMcpSettings, runOnboarding } from "./src/onboarding.js";
+import { type ConnectHandle, resolveMcpSettings, runConnect } from "./src/connect.js";
 
 export default definePluginEntry({
   id: "filament-fcm",
@@ -93,44 +93,18 @@ export default definePluginEntry({
       },
     });
 
-    // ── Opt-in: live FCM registration (env FILAMENT_FCM_ENABLED) ────────
-    // Off by default. When enabled, register with FCM on startup and cache the
-    // token in the plugin-state store so it survives restarts.
-    let connection: FcmConnection | null = null;
-    if (process.env.FILAMENT_FCM_ENABLED) {
-      api.registerService({
-        id: "filament-fcm",
-        start: async (ctx) => {
-          connection = new FcmConnection(undefined, (message) => ctx.logger.info?.(message));
-          await connection.start();
-        },
-        stop: () => {
-          connection?.stop();
-          connection = null;
-        },
-      });
-    }
-
-    // ── Opt-in: conformance control surface (env FILAMENT_CONFORMANCE_ENABLED) ─
-    // Off by default. Exposes GET /conformance/manifest and POST /conformance/op
-    // on the gateway's HTTP server (gateway bearer auth). Reads the cached token,
-    // reporting no_cached_token until FCM registration above has completed.
-    if (process.env.FILAMENT_CONFORMANCE_ENABLED) {
-      registerConformanceRoutes(api, {
-        getTokenSnapshot: () => (connection ? connection.snapshot() : buildSnapshot(false)),
-      });
-    }
-
-    // ── Onboarding: complete the Filament connect flow ─────────────────
-    // Off until configured. When a connect token is present (config
-    // `connectToken`, or env FILAMENT_MCP_TOKEN), poll get_self over MCP until
-    // the app finalizes the agent, then persist the identity (principal +
-    // backchannel). Mirrors Hermes' setup_cli finalization poll.
+    // ── Connect: mirror the Hermes client's connect sequence ───────────
+    // Runs when a connect token is configured (config `connectToken`, or env
+    // FILAMENT_MCP_TOKEN). One service does the whole sequence: get_self →
+    // accept invites/vouches → FCM register → register_push_token → heartbeat →
+    // first-contact greeting. Off until configured.
+    let connection: ConnectHandle | null = null;
     const mcp = resolveMcpSettings(api.pluginConfig);
     if (mcp.tokenInput !== undefined) {
       api.registerService({
-        id: "filament-onboarding",
+        id: "filament-connect",
         start: async (ctx) => {
+          const log = (message: string) => ctx.logger.info?.(message);
           // Resolve the connect token: a raw string, a `${ENV}` shorthand, or a
           // SecretRef pointing at an env/file/exec provider (resolved from the
           // gateway config + snapshot).
@@ -142,19 +116,30 @@ export default definePluginEntry({
           });
           const token = resolved.value;
           if (!token) {
-            ctx.logger.info?.(
-              `filament-onboarding: connect token did not resolve${
+            log(
+              `filament-connect: connect token did not resolve${
                 resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""
-              }; skipping onboarding`,
+              }; skipping`,
             );
             return;
           }
-          await runOnboarding({
-            mcpUrl: mcp.mcpUrl,
-            token,
-            log: (message) => ctx.logger.info?.(message),
-          });
+          connection = await runConnect({ mcpUrl: mcp.mcpUrl, token, log });
         },
+        stop: () => {
+          connection?.stop();
+          connection = null;
+        },
+      });
+    }
+
+    // ── Opt-in: conformance control surface (env FILAMENT_CONFORMANCE_ENABLED) ─
+    // Off by default. Exposes GET /conformance/manifest and POST /conformance/op
+    // on the gateway's HTTP server (gateway bearer auth). Reads the live token
+    // snapshot from the connect sequence (or the cached token when connect isn't
+    // running), reporting no_cached_token until registration completes.
+    if (process.env.FILAMENT_CONFORMANCE_ENABLED) {
+      registerConformanceRoutes(api, {
+        getTokenSnapshot: () => (connection ? connection.snapshot() : buildSnapshot(false)),
       });
     }
   },

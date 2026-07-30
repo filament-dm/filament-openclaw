@@ -1,9 +1,9 @@
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { buildSnapshot, createReceiver, FcmConnection, resolveFcmConfig } from "./src/fcm.js";
+import { buildSnapshot, createReceiver, resolveFcmConfig } from "./src/fcm.js";
 import { registerConformanceRoutes } from "./src/conformance-http.js";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { resolveMcpSettings, runOnboarding } from "./src/onboarding.js";
+import { resolveMcpSettings, runConnect } from "./src/connect.js";
 var index_default = definePluginEntry({
   id: "filament-fcm",
   name: "Filament (FCM)",
@@ -65,12 +65,26 @@ var index_default = definePluginEntry({
       }
     });
     let connection = null;
-    if (process.env.FILAMENT_FCM_ENABLED) {
+    const mcp = resolveMcpSettings(api.pluginConfig);
+    if (mcp.tokenInput !== void 0) {
       api.registerService({
-        id: "filament-fcm",
+        id: "filament-connect",
         start: async (ctx) => {
-          connection = new FcmConnection(void 0, (message) => ctx.logger.info?.(message));
-          await connection.start();
+          const log = (message) => ctx.logger.info?.(message);
+          const resolved = await resolveConfiguredSecretInputString({
+            config: api.config,
+            env: process.env,
+            value: mcp.tokenInput,
+            path: "plugins.entries.filament-fcm.config.connectToken"
+          });
+          const token = resolved.value;
+          if (!token) {
+            log(
+              `filament-connect: connect token did not resolve${resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""}; skipping`
+            );
+            return;
+          }
+          connection = await runConnect({ mcpUrl: mcp.mcpUrl, token, log });
         },
         stop: () => {
           connection?.stop();
@@ -81,32 +95,6 @@ var index_default = definePluginEntry({
     if (process.env.FILAMENT_CONFORMANCE_ENABLED) {
       registerConformanceRoutes(api, {
         getTokenSnapshot: () => connection ? connection.snapshot() : buildSnapshot(false)
-      });
-    }
-    const mcp = resolveMcpSettings(api.pluginConfig);
-    if (mcp.tokenInput !== void 0) {
-      api.registerService({
-        id: "filament-onboarding",
-        start: async (ctx) => {
-          const resolved = await resolveConfiguredSecretInputString({
-            config: api.config,
-            env: process.env,
-            value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken"
-          });
-          const token = resolved.value;
-          if (!token) {
-            ctx.logger.info?.(
-              `filament-onboarding: connect token did not resolve${resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""}; skipping onboarding`
-            );
-            return;
-          }
-          await runOnboarding({
-            mcpUrl: mcp.mcpUrl,
-            token,
-            log: (message) => ctx.logger.info?.(message)
-          });
-        }
       });
     }
   }
