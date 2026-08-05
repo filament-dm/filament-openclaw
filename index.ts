@@ -14,6 +14,7 @@ import { registerConformanceRoutes } from "./src/conformance-http.js";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./src/connect.js";
+import { registerInjectionSpike } from "./src/spike-injection.js";
 
 export default definePluginEntry({
   id: "filament-fcm",
@@ -141,6 +142,14 @@ export default definePluginEntry({
       registerConformanceRoutes(api, {
         getTokenSnapshot: () => (connection ? connection.snapshot() : buildSnapshot(false)),
       });
+    }
+
+    // ── Phase 0 spike (env FILAMENT_SPIKE_ENABLED) ─────────────────────
+    // Throwaway: proves whether a background service can wake an agent turn
+    // (scheduleSessionTurn) and which hook seam carries the reply. See
+    // ROADMAP.md. Delete once the inbound→agent→outbound contract is decided.
+    if (process.env.FILAMENT_SPIKE_ENABLED) {
+      registerInjectionSpike(api);
     }
   },
 });
