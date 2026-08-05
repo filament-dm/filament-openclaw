@@ -44,6 +44,17 @@ hence the Phase 0 spike):
 ⚠️ **The entire reply-generation design hinges on which of these actually works.** Phase 0
 resolves it before any downstream phase is built on it.
 
+**RESOLVED (Phase 0, against gateway `2026.7.1-2` / commit `0790d9f`):** turn injection is a
+dead end for us and the channel path is the answer. OpenClaw gates `scheduleSessionTurn`
+(the "wake a turn" call) to `origin === "bundled"` plugins — plugins shipped inside the
+OpenClaw package. A git/npm-installed plugin is `origin: global`/`config` and can **never**
+be `bundled`, and user trust (`plugins.allow` / `entries.<id>.enabled`) does not change
+origin. So a background service cannot wake a turn. `enqueueNextTurnInjection` is *not*
+origin-gated but only decorates the next turn (doesn't start one). **`registerChannel` is
+not origin-gated** (it only rejects a *disabled workspace* plugin), so the supported path
+is to register Filament as a native **channel plugin** and let the gateway drive
+inbound→turn→outbound. See the README's "Plugin trust and the OpenClaw origin gate".
+
 ## FCM payload reference (DirectPusher)
 
 `env.message.data` (from `@eneris/push-receiver`'s `MessageEnvelope`) carries the
@@ -72,11 +83,18 @@ PushPayload = {
 
 ## Phases
 
-### Phase 0 — Spike the agent-injection path ← **starting here**
-Prove that one inbound string can trigger an agent turn whose reply we can capture and
-send back out. Confirm `enqueueNextTurnInjection` vs `registerChannel` against a real lima
-gateway. Decide the inbound→agent→outbound contract. De-risks Phases 4–5.
-**Exit:** a hard-coded string round-trips through the agent and we observe its reply.
+### Phase 0 — Spike the agent-injection path
+**Injection-vs-channel question: DONE.** `scheduleSessionTurn` is bundled-only (closed to a
+git-installed plugin); `registerChannel` is the supported path (see the resolved note
+above and the README). The throwaway `src/spike-injection.ts` (env `FILAMENT_SPIKE_ENABLED`)
+surfaced this and can be deleted.
+
+**Remaining Phase 0 work — minimal `ChannelPlugin` spike:** the `ChannelPlugin` contract is
+large (dozens of optional adapters). Find the *smallest* subset that (a) accepts an inbound
+message that wakes an agent turn and (b) delivers the agent's reply to our adapter so we can
+post it to Filament over MCP.
+**Exit:** a hard-coded inbound channel message wakes a turn and its reply reaches our
+channel's outbound/send path.
 
 ### Phase 1 — Receive, decode, dedup ← *the "are messages received?" milestone*
 - Subscribe `receiver.onNotification` in `FcmConnection`; parse the DirectPusher envelope
