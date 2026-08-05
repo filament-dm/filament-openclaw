@@ -9,6 +9,36 @@ Same shape as the Hermes plugin — **no Matrix client or Matrix token is involv
 - **Inbound (receive):** messages arrive as **Firebase Cloud Messaging (FCM)** data-message pushes from Filament's DirectPusher.
 - **Outbound (send/act):** replies go through Filament's **MCP-over-HTTP agents API**, authenticated with an **MCP token** (not a Matrix access token).
 
+## Plugin trust and the OpenClaw origin gate
+
+Waking the agent on an inbound message runs into an OpenClaw trust boundary, and it dictates the shape of this plugin. Findings verified against the gateway we target (`2026.7.1-2`, commit `0790d9f`).
+
+OpenClaw classifies every plugin by a **`PluginOrigin`**: `bundled | global | workspace | config`. `bundled` is reserved for plugins shipped *inside* the OpenClaw package itself. **A plugin installed from git or npm is never `bundled`** — it is `global`/`config` — and **no amount of user trust changes that.** "Trusting" a plugin is a *separate* axis (`explicitlyEnabled`), granted by either:
+
+- `plugins.entries.<id>.enabled = true` (what `openclaw plugins enable <id>` writes), or
+- listing the id in `plugins.allow`.
+
+Trust gates *whether a plugin may load and register*; **origin** gates *which runtime capabilities it may use*. The distinction is what forces our design:
+
+| Capability | Gate | Available to us (git-installed, trusted)? |
+| --- | --- | --- |
+| `session.workflow.scheduleSessionTurn` — **wake a new agent turn** | `origin === "bundled"` only | ❌ **No.** Bundled-only; returns `undefined` for us. |
+| `session.workflow.enqueueNextTurnInjection` — add context to the *next* turn | none | ✅ Yes — but it only decorates a turn that something else starts; it can't wake one. |
+| `registerChannel` — a full inbound→turn→outbound message transport | not origin-gated (only rejects a *disabled workspace* plugin) | ✅ **Yes**, when the plugin is enabled/trusted. |
+| `registerTool` / `registerService` / `registerHttpRoute` / `registerHook` / `registerGatewayMethod` | none (hooks need `opts.name`) | ✅ Yes. |
+
+**Conclusion — the implementation must be an OpenClaw channel plugin.** The lightweight "background service wakes a turn with `scheduleSessionTurn`" path is a dead end for a third-party plugin (bundled-only). The only turn-waking path open to us is `api.registerChannel(...)`: we register Filament as a native messaging channel, and the gateway drives the loop — an inbound FCM push becomes a channel message that wakes an agent turn, and the agent's reply comes back to our channel adapter, which posts it to Filament over MCP. This is also the closest analog to how the Python `filament-hermes` plugin subclasses a gateway platform adapter. (The minimal `ChannelPlugin` surface required to wake turns is the next spike; see `ROADMAP.md`.)
+
+### Required trust step after install
+
+Because channel registration requires the plugin to be **enabled/trusted**, installation is not complete until you enable it (this is also what silences the gateway's `plugins.allow is empty … non-bundled plugins may auto-load` warning):
+
+```bash
+openclaw plugins enable filament-fcm          # sets plugins.entries.filament-fcm.enabled = true
+# equivalently / additionally, add it to the trust allow-list:
+openclaw config set plugins.allow '["filament-fcm"]'
+```
+
 ## Current Progress
 
 - `filament_hello` / `filament_fcm_status` — hello-world tools proving the plugin loads and that `@eneris/push-receiver` + the Firebase config are wired.
