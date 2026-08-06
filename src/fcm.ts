@@ -27,10 +27,22 @@ import { PushReceiver } from "@eneris/push-receiver";
 import {
   cachedToken,
   loadCredentials,
+  loadReceivedIds,
+  recordReceivedId,
   saveCredentials,
   type FcmCredentials,
 } from "./token-store.js";
 import type { TokenSnapshot } from "./conformance-core.js";
+
+/**
+ * The bits of an eneris `MessageEnvelope` we consume. Kept structural so this
+ * module doesn't depend on the library's exported type names; `message.data` is
+ * the FCM data dict (the DirectPusher payload), `persistentId` the dedup key.
+ */
+export interface FcmMessageEnvelope {
+  message?: { data?: Record<string, unknown> };
+  persistentId: string;
+}
 
 // Filament Firebase project defaults — shared across all environments. These
 // are public configuration values (identical to what ships in the Filament
@@ -132,6 +144,12 @@ export class FcmConnection {
   constructor(
     private readonly config: FilamentFcmConfig = resolveFcmConfig(),
     private readonly log: (message: string) => void = () => {},
+    /**
+     * Called for each new inbound push (after cross-restart dedup). The raw
+     * envelope is decoded/dispatched by the caller; FcmConnection only owns the
+     * socket + credential/persistent-id persistence.
+     */
+    private readonly onMessage?: (env: FcmMessageEnvelope) => void,
   ) {}
 
   isConnected(): boolean {
@@ -154,12 +172,24 @@ export class FcmConnection {
       },
       // eneris Credentials is a superset; we persist/reload it opaquely.
       credentials: (saved ?? null) as never,
-      persistentIds: [],
+      // Seed already-processed IDs so Google doesn't redeliver them on reconnect.
+      persistentIds: loadReceivedIds(),
     });
     // Persist credentials whenever eneris (re)generates them, so a restart
     // reuses the registration and the cached token stays current.
     receiver.onCredentialsChanged(({ newCredentials }) => {
       saveCredentials(newCredentials as FcmCredentials);
+    });
+    // Deliver inbound pushes to the caller, deduped durably by persistent ID so
+    // a redelivery (or a restart mid-dispatch) doesn't double-process.
+    receiver.onNotification((envelope) => {
+      const env = envelope as unknown as FcmMessageEnvelope;
+      if (!recordReceivedId(env.persistentId)) return;
+      try {
+        this.onMessage?.(env);
+      } catch (error) {
+        this.log(`filament-fcm: inbound handler threw (continuing): ${String(error)}`);
+      }
     });
     this.receiver = receiver;
 

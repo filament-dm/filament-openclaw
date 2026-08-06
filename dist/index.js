@@ -2,9 +2,7 @@ import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { buildSnapshot, createReceiver, resolveFcmConfig } from "./src/fcm.js";
 import { registerConformanceRoutes } from "./src/conformance-http.js";
-import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { resolveMcpSettings, runConnect } from "./src/connect.js";
-import { registerChannelSpike } from "./src/spike-channel.js";
+import { registerFilamentChannel } from "./src/channel.js";
 var index_default = definePluginEntry({
   id: "filament-fcm",
   name: "Filament (FCM)",
@@ -66,40 +64,13 @@ var index_default = definePluginEntry({
       }
     });
     let connection = null;
-    const mcp = resolveMcpSettings(api.pluginConfig);
-    if (mcp.tokenInput !== void 0) {
-      api.registerService({
-        id: "filament-connect",
-        start: async (ctx) => {
-          const log = (message) => ctx.logger.info?.(message);
-          const resolved = await resolveConfiguredSecretInputString({
-            config: api.config,
-            env: process.env,
-            value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken"
-          });
-          const token = resolved.value;
-          if (!token) {
-            log(
-              `filament-connect: connect token did not resolve${resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""}; skipping`
-            );
-            return;
-          }
-          connection = await runConnect({ mcpUrl: mcp.mcpUrl, token, log });
-        },
-        stop: () => {
-          connection?.stop();
-          connection = null;
-        }
-      });
-    }
+    registerFilamentChannel(api, (next) => {
+      connection = next;
+    });
     if (process.env.FILAMENT_CONFORMANCE_ENABLED) {
       registerConformanceRoutes(api, {
         getTokenSnapshot: () => connection ? connection.snapshot() : buildSnapshot(false)
       });
-    }
-    if (process.env.FILAMENT_CHANNEL_SPIKE_ENABLED) {
-      registerChannelSpike(api);
     }
   }
 });

@@ -2,6 +2,8 @@ import { PushReceiver } from "@eneris/push-receiver";
 import {
   cachedToken,
   loadCredentials,
+  loadReceivedIds,
+  recordReceivedId,
   saveCredentials
 } from "./token-store.js";
 const DEFAULT_FIREBASE_PROJECT_ID = "filament-8ce44";
@@ -54,9 +56,10 @@ function buildSnapshot(connected, config = resolveFcmConfig()) {
 }
 class FcmConnection {
   constructor(config = resolveFcmConfig(), log = () => {
-  }) {
+  }, onMessage) {
     this.config = config;
     this.log = log;
+    this.onMessage = onMessage;
   }
   receiver = null;
   connected = false;
@@ -78,10 +81,20 @@ class FcmConnection {
       },
       // eneris Credentials is a superset; we persist/reload it opaquely.
       credentials: saved ?? null,
-      persistentIds: []
+      // Seed already-processed IDs so Google doesn't redeliver them on reconnect.
+      persistentIds: loadReceivedIds()
     });
     receiver.onCredentialsChanged(({ newCredentials }) => {
       saveCredentials(newCredentials);
+    });
+    receiver.onNotification((envelope) => {
+      const env = envelope;
+      if (!recordReceivedId(env.persistentId)) return;
+      try {
+        this.onMessage?.(env);
+      } catch (error) {
+        this.log(`filament-fcm: inbound handler threw (continuing): ${String(error)}`);
+      }
     });
     this.receiver = receiver;
     const attempts = connectAttempts();

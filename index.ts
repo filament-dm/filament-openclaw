@@ -11,10 +11,9 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { buildSnapshot, createReceiver, resolveFcmConfig } from "./src/fcm.js";
 import { registerConformanceRoutes } from "./src/conformance-http.js";
-import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
-import { type ConnectHandle, resolveMcpSettings, runConnect } from "./src/connect.js";
-import { registerChannelSpike } from "./src/spike-channel.js";
+import type { ConnectHandle } from "./src/connect.js";
+import { registerFilamentChannel } from "./src/channel.js";
 
 export default definePluginEntry({
   id: "filament-fcm",
@@ -94,44 +93,17 @@ export default definePluginEntry({
       },
     });
 
-    // ── Connect: mirror the Hermes client's connect sequence ───────────
-    // Runs when a connect token is configured (config `connectToken`, or env
-    // FILAMENT_MCP_TOKEN). One service does the whole sequence: get_self →
-    // accept invites/vouches → FCM register → register_push_token → heartbeat →
-    // first-contact greeting. Off until configured.
+    // ── Filament channel: the whole integration ───────────────────────
+    // A channel (not a service) so the gateway drives inbound → agent turn →
+    // outbound. Its startAccount runs the connect sequence (get_self → accept
+    // invites/vouches → FCM register → register_push_token → heartbeat →
+    // first-contact greeting), then holds open decoding inbound pushes. See
+    // src/channel.ts. `connection` tracks the live handle for the conformance
+    // token snapshot below.
     let connection: ConnectHandle | null = null;
-    const mcp = resolveMcpSettings(api.pluginConfig);
-    if (mcp.tokenInput !== undefined) {
-      api.registerService({
-        id: "filament-connect",
-        start: async (ctx) => {
-          const log = (message: string) => ctx.logger.info?.(message);
-          // Resolve the connect token: a raw string, a `${ENV}` shorthand, or a
-          // SecretRef pointing at an env/file/exec provider (resolved from the
-          // gateway config + snapshot).
-          const resolved = await resolveConfiguredSecretInputString({
-            config: api.config,
-            env: process.env,
-            value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken",
-          });
-          const token = resolved.value;
-          if (!token) {
-            log(
-              `filament-connect: connect token did not resolve${
-                resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""
-              }; skipping`,
-            );
-            return;
-          }
-          connection = await runConnect({ mcpUrl: mcp.mcpUrl, token, log });
-        },
-        stop: () => {
-          connection?.stop();
-          connection = null;
-        },
-      });
-    }
+    registerFilamentChannel(api, (next) => {
+      connection = next;
+    });
 
     // ── Opt-in: conformance control surface (env FILAMENT_CONFORMANCE_ENABLED) ─
     // Off by default. Exposes GET /conformance/manifest and POST /conformance/op
@@ -142,15 +114,6 @@ export default definePluginEntry({
       registerConformanceRoutes(api, {
         getTokenSnapshot: () => (connection ? connection.snapshot() : buildSnapshot(false)),
       });
-    }
-
-    // ── Phase 0 channel spike (env FILAMENT_CHANNEL_SPIKE_ENABLED) ─────
-    // Throwaway: registers a minimal "filament-echo" channel and, on start,
-    // synthesizes one inbound DM to prove the channel-driven inbound→turn→
-    // outbound loop works from a non-bundled plugin. See ROADMAP.md. Delete
-    // once the channel contract is proven.
-    if (process.env.FILAMENT_CHANNEL_SPIKE_ENABLED) {
-      registerChannelSpike(api);
     }
   },
 });

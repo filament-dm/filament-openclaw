@@ -30,6 +30,12 @@ const CREDENTIALS_NAMESPACE = "fcm";
 const CREDENTIALS_KEY = "credentials";
 const IDENTITY_NAMESPACE = "identity";
 const IDENTITY_KEY = "self";
+const RECEIVED_IDS_NAMESPACE = "received-ids";
+const RECEIVED_IDS_KEY = "ids";
+// Bounded window of processed FCM persistent IDs, kept small enough that the
+// persisted list and the MCS login payload don't grow unbounded (mirrors the
+// Python plugin's 1000-entry cap).
+const RECEIVED_IDS_MAX = 1_000;
 
 // Structural view of the sync keyed store — avoids depending on the store's
 // exported type name (the runtime module is only present inside the gateway).
@@ -40,6 +46,7 @@ type SyncStore<T> = {
 
 let credStore: SyncStore<FcmCredentials> | null = null;
 let idStore: SyncStore<AgentIdentity> | null = null;
+let receivedIdsStore: SyncStore<string[]> | null = null;
 
 function credentialStore(): SyncStore<FcmCredentials> {
   if (!credStore) {
@@ -86,4 +93,37 @@ export function loadIdentity(): AgentIdentity | undefined {
 /** Persist the agent identity learned during onboarding. */
 export function saveIdentity(identity: AgentIdentity): void {
   identityStore().register(IDENTITY_KEY, identity);
+}
+
+function receivedIds(): SyncStore<string[]> {
+  if (!receivedIdsStore) {
+    receivedIdsStore = createPluginStateSyncKeyedStore<string[]>(PLUGIN_ID, {
+      namespace: RECEIVED_IDS_NAMESPACE,
+      maxEntries: 4,
+      overflowPolicy: "reject-new",
+    }) as SyncStore<string[]>;
+  }
+  return receivedIdsStore;
+}
+
+/**
+ * The processed FCM persistent IDs, most-recent last. Seeded into the receiver
+ * on start so Google does not redeliver already-handled pushes across restarts.
+ */
+export function loadReceivedIds(): string[] {
+  return receivedIds().lookup(RECEIVED_IDS_KEY) ?? [];
+}
+
+/**
+ * Record a persistent ID as processed. Returns false if it was already present
+ * (a duplicate/redelivery), true if newly recorded. Keeps a bounded window.
+ */
+export function recordReceivedId(id: string): boolean {
+  if (!id) return false;
+  const current = loadReceivedIds();
+  if (current.includes(id)) return false;
+  const next = [...current, id];
+  if (next.length > RECEIVED_IDS_MAX) next.splice(0, next.length - RECEIVED_IDS_MAX);
+  receivedIds().register(RECEIVED_IDS_KEY, next);
+  return true;
 }

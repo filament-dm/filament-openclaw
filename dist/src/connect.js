@@ -49,7 +49,7 @@ async function acceptPending(client, log) {
 }
 async function runConnect(opts) {
   const { mcpUrl, token, log = () => {
-  } } = opts;
+  }, onInbound } = opts;
   const client = new FilamentMcpClient(mcpUrl, token);
   let fcm = null;
   let heartbeatTimer = null;
@@ -92,14 +92,14 @@ async function runConnect(opts) {
   }
   if (!identity) {
     log("filament-connect: agent not finalized within the window; will retry on next restart");
-    return { stop, snapshot };
+    return { stop, snapshot, client };
   }
   saveIdentity({ ...identity, onboardedAt: Date.now() });
   log(
     `filament-connect: identity principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
   );
   await acceptPending(client, log);
-  fcm = new FcmConnection(void 0, log);
+  fcm = new FcmConnection(void 0, log, onInbound);
   try {
     await fcm.start();
   } catch (error) {
@@ -131,7 +131,7 @@ async function runConnect(opts) {
       res.ok ? "filament-connect: sent first-contact hello" : `filament-connect: greeting failed (${res.error?.code ?? "?"})`
     );
   }
-  return { stop, snapshot };
+  return { stop, snapshot, client };
 }
 export {
   resolveMcpSettings,

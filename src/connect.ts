@@ -15,7 +15,7 @@
  * but received pushes are not yet handled.
  */
 import type { TokenSnapshot } from "./conformance-core.js";
-import { buildSnapshot, FcmConnection } from "./fcm.js";
+import { buildSnapshot, FcmConnection, type FcmMessageEnvelope } from "./fcm.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, isFirstContact, type ResolvedIdentity } from "./onboarding-core.js";
 import { cachedToken, saveIdentity } from "./token-store.js";
@@ -61,16 +61,20 @@ export function resolveMcpSettings(
   return { tokenInput, mcpUrl };
 }
 
-/** A running connection: stop it, or read the live FCM token snapshot. */
+/** A running connection: stop it, read the live FCM token snapshot, or use the
+ * MCP client for outbound calls (posting replies, pong, etc.). */
 export interface ConnectHandle {
   stop(): void;
   snapshot(): TokenSnapshot | null;
+  client: FilamentMcpClient;
 }
 
 export interface RunConnectOptions {
   mcpUrl: string;
   token: string;
   log?: (message: string) => void;
+  /** Handler for each new inbound FCM push (deduped). Enables inbound dispatch. */
+  onInbound?: (env: FcmMessageEnvelope) => void;
 }
 
 /** Extract the `loop_id`s from a list_pending_invites / list_vouches result. */
@@ -117,7 +121,7 @@ async function acceptPending(
  * and FCM listener. Throws only if the connect token is rejected.
  */
 export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle> {
-  const { mcpUrl, token, log = () => {} } = opts;
+  const { mcpUrl, token, log = () => {}, onInbound } = opts;
   const client = new FilamentMcpClient(mcpUrl, token);
   let fcm: FcmConnection | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -165,7 +169,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
   }
   if (!identity) {
     log("filament-connect: agent not finalized within the window; will retry on next restart");
-    return { stop, snapshot };
+    return { stop, snapshot, client };
   }
   saveIdentity({ ...identity, onboardedAt: Date.now() });
   log(
@@ -176,7 +180,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
   await acceptPending(client, log);
 
   // 4. Register with FCM (best-effort — a failure must not abort presence).
-  fcm = new FcmConnection(undefined, log);
+  fcm = new FcmConnection(undefined, log, onInbound);
   try {
     await fcm.start();
   } catch (error) {
@@ -222,5 +226,5 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     );
   }
 
-  return { stop, snapshot };
+  return { stop, snapshot, client };
 }

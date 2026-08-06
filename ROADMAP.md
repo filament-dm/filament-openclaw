@@ -83,48 +83,65 @@ PushPayload = {
 
 ## Phases
 
-### Phase 0 — Spike the agent-injection path
-**Injection-vs-channel question: DONE.** `scheduleSessionTurn` is bundled-only (closed to a
-git-installed plugin); `registerChannel` is the supported path (see the resolved note
-above and the README). The throwaway `src/spike-injection.ts` (env `FILAMENT_SPIKE_ENABLED`)
-surfaced this and can be deleted.
+### Phase 0 — Spike the channel path — ✅ DONE
+**Injection-vs-channel question: resolved.** `scheduleSessionTurn` is bundled-only (closed to
+a git-installed plugin); `registerChannel` is the supported path (see the resolved note above
+and the README).
 
-**Remaining Phase 0 work — minimal `ChannelPlugin` spike:** the `ChannelPlugin` contract is
-large (dozens of optional adapters). Find the *smallest* subset that (a) accepts an inbound
-message that wakes an agent turn and (b) delivers the agent's reply to our adapter so we can
-post it to Filament over MCP.
-**Exit:** a hard-coded inbound channel message wakes a turn and its reply reaches our
-channel's outbound/send path.
+**Minimal `ChannelPlugin` spike: proven end-to-end** against the lima gateway (`2026.7.1-2`).
+The throwaway `src/spike-channel.ts` (env `FILAMENT_CHANNEL_SPIKE_ENABLED`) registered a
+minimal `filament-echo` direct-message channel; the gateway started it (only `enabled` is
+required — no channel config), a synthetic inbound woke a real agent turn on `agent:main:main`,
+and the reply came back to our `deliver` callback as `{ text }`. (Reply text was an
+auth-error only because no model provider is configured — the pipeline itself works.)
 
-### Phase 1 — Receive, decode, dedup ← *the "are messages received?" milestone*
-- Subscribe `receiver.onNotification` in `FcmConnection`; parse the DirectPusher envelope
-  (`message.data.body` → `PushPayload`).
-- Durable received-ID store (extend `src/token-store.ts`); seed `persistentIds` on
-  `start()` to stop restart redelivery.
-- For now, **just log** decoded messages — this alone proves end-to-end receipt on real
-  infra.
-**Exit:** sending a Filament message logs a fully-decoded `PushPayload` in the gateway.
+Findings that feed the real implementation:
+- **Minimal working surface:** `id` + `meta` + `capabilities: { chatTypes: ["direct"] }` +
+  `config: { listAccountIds, resolveAccount }` + `gateway.startAccount`. Wake a turn from
+  `startAccount` via `dispatchInboundDirectDmWithRuntime(...)` (exported from
+  `openclaw/plugin-sdk/channel-inbound`), passing `runtime: { channel: ctx.channelRuntime }`.
+- **Outbound seam:** the `deliver(payload)` callback receives an `OutboundReplyPayload`
+  (`{ text }`) — this is where Phase 5 posts to Filament over MCP.
+- **`startAccount` must stay alive** (keep the FCM socket open + `await ctx.abortSignal`).
+  Returning immediately makes the gateway log `channel exited without an error` and
+  auto-restart the channel on a backoff (re-firing inbound each time).
+- **Routing:** the inbound resolved to the main agent session (`agent:main:main`); real
+  per-conversation routing is Phase 4.
 
-### Phase 2 — Ping → pong
-`branch_type === "io.filament.ping"` → `client.pong(nonce)` (already implemented).
-LLM-free, trivial, makes the principal's connectivity check pass.
-**Exit:** a liveness ping from Filament gets a pong; the round-trip check succeeds.
+Both throwaway spikes (`src/spike-channel.ts`, and the already-removed `spike-injection.ts`)
+can be deleted once the real channel lands.
 
-### Phase 3 — Invites / vouches on push
-`add_to_channel` / `add_to_space` → `acceptInvite`; `knock_invite_received` →
-`acceptVouch` (both already implemented for connect — just route pushes to them).
-**Exit:** inviting the agent to a channel while it's running auto-joins it.
+### Phase 1 — Receive, decode, dedup — ✅ DONE
+- `FcmConnection` now takes an `onMessage` callback and wires `receiver.onNotification`,
+  seeding `persistentIds` from a durable store and deduping by persistent ID before
+  forwarding (`src/fcm.ts`, `src/token-store.ts`).
+- Pure `decodeDirectPusher` (`message.data.body` → `PushPayload`) with unit tests
+  (`src/inbound-core.ts` / `.test.ts`).
+- The `filament` channel logs each decoded push and holds `startAccount` open.
+**Exit met:** a Filament message logs a fully-decoded push; restarts don't reprocess.
 
-### Phase 4 — Message → agent turn (the core)
-Uses Phase 0's chosen contract. Map `(room_id, sender)` → a stable `sessionKey`; fetch
-content via a new `get_thread` tool when the push lacks the body/media; inject the message
-into the agent.
-**Exit:** a message to the agent produces an LLM turn with the right context.
+### Phase 2 — Ping → pong — ✅ DONE
+`branchType === "io.filament.ping"` → `connection.client.pong(nonce)` in the channel's
+inbound handler. LLM-free.
 
-### Phase 5 — Reply → MCP
-Capture the agent's generated reply and post it via `post_message` / `reply_in_thread` /
-`message_principal`, choosing the target from the originating push.
-**Exit:** the agent's reply appears in the correct Filament channel/thread.
+### Phase 3 — Invites / vouches — partial
+Startup acceptance already runs inside `runConnect` (`acceptPending`). Runtime push-driven
+handling (`add_to_channel` / `add_to_space` → `acceptInvite`; `knock_invite_received` →
+`acceptVouch`) is **not yet wired** — those branch types currently log "not yet handled".
+**Remaining:** route those inbound branch types to the existing accept helpers.
+
+### Phase 4 — Message → agent turn — ✅ DONE
+Chat pushes (`direct_message` / `channel_message`) wake a turn via
+`dispatchInboundDirectDmWithRuntime(...)` with `runtime: { channel: ctx.channelRuntime }`,
+routed per-room (`peer.id = roomId`). Fetching full content via `get_thread` for media-only
+messages is deferred (text-only for now).
+**Exit met:** a chat message produces an agent turn (proven end-to-end in Phase 0).
+
+### Phase 5 — Reply → MCP — ✅ DONE
+The `deliver(payload)` callback posts the agent's reply: `message_principal` when the room
+is the backchannel (`ccRoomId`), else `post_message(roomId, text)`.
+**Exit met:** the reply is posted back to the originating conversation.
+**Remaining refinements:** thread-aware replies (`reply_in_thread`) and richer payloads.
 
 ### Phase 6 — Advanced parity (scope deliberately; probably don't port wholesale)
 Hermes' wake policy, control-vs-reactive planes, per-`(channel, sender)` capability
