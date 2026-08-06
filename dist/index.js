@@ -4,7 +4,7 @@ import { buildSnapshot, createReceiver, resolveFcmConfig } from "./src/fcm.js";
 import { registerConformanceRoutes } from "./src/conformance-http.js";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { resolveMcpSettings, runConnect } from "./src/connect.js";
-import { registerInjectionSpike } from "./src/spike-injection.js";
+import { registerChannelSpike } from "./src/spike-channel.js";
 var index_default = definePluginEntry({
   id: "filament-fcm",
   name: "Filament (FCM)",
@@ -98,8 +98,8 @@ var index_default = definePluginEntry({
         getTokenSnapshot: () => connection ? connection.snapshot() : buildSnapshot(false)
       });
     }
-    if (process.env.FILAMENT_SPIKE_ENABLED) {
-      registerInjectionSpike(api);
+    if (process.env.FILAMENT_CHANNEL_SPIKE_ENABLED) {
+      registerChannelSpike(api);
     }
   }
 });

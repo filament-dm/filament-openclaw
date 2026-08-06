@@ -16,7 +16,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts src/fcm.ts src/token-store.ts src/conformance-core.ts src/conformance-http.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/spike-injection.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
+    "build": "esbuild index.ts src/fcm.ts src/token-store.ts src/conformance-core.ts src/conformance-http.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/spike-channel.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
     "prepare": "npm run build",
     "test": "esbuild src/conformance-core.test.ts src/onboarding-core.test.ts --bundle --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/conformance-core.test.mjs dist-test/onboarding-core.test.mjs",
     "format": "oxfmt index.ts src",
