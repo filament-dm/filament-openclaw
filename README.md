@@ -9,6 +9,16 @@ Same shape as the Hermes plugin — **no Matrix client or Matrix token is involv
 - **Inbound (receive):** messages arrive as **Firebase Cloud Messaging (FCM)** data-message pushes from Filament's DirectPusher.
 - **Outbound (send/act):** replies go through Filament's **MCP-over-HTTP agents API**, authenticated with an **MCP token** (not a Matrix access token).
 
+## OpenClaw channels
+
+In OpenClaw, a **channel** is a messaging integration that connects a conversation surface to the agent. The bundled channels are things like `discord`, `slack`, `telegram`, `whatsapp`, `imessage`, `signal`, and `matrix`. A channel owns both directions of the loop: it delivers an **inbound** message to the gateway, which wakes an agent turn, and the gateway routes the agent's **outbound** reply *back to the channel it came from* (routing is deterministic and host-controlled — the model does not pick a channel).
+
+- Overview of the built-in channels: <https://docs.openclaw.ai/channels>
+- How inbound messages route to a turn and replies route back: <https://docs.openclaw.ai/channels/channel-routing>
+- Writing your own channel as a plugin (the SDK contract): <https://docs.openclaw.ai/plugins/sdk-channel-plugins>
+
+This is the mechanism this plugin uses — **but not by adopting a built-in channel.** We deliberately do **not** use OpenClaw's Matrix channel (no Matrix client or Matrix token is involved). Instead, Filament becomes its *own* custom channel: **inbound** messages arrive over FCM (not a Matrix sync), and **outbound** replies are sent over Filament's MCP-over-HTTP agents API. Registering as a channel is also the only way a third-party plugin can wake an agent turn on an inbound message — see the next section.
+
 ## Plugin trust and the OpenClaw origin gate
 
 Waking the agent on an inbound message runs into an OpenClaw trust boundary, and it dictates the shape of this plugin. Findings verified against the gateway we target (`2026.7.1-2`, commit `0790d9f`).
