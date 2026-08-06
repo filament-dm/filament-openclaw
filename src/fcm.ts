@@ -181,10 +181,20 @@ export class FcmConnection {
       saveCredentials(newCredentials as FcmCredentials);
     });
     // Deliver inbound pushes to the caller, deduped durably by persistent ID so
-    // a redelivery (or a restart mid-dispatch) doesn't double-process.
+    // a redelivery (or a restart mid-dispatch) doesn't double-process. Every
+    // raw arrival is logged first so we can tell "no push arrived" apart from
+    // "arrived but deduped/undecodable".
     receiver.onNotification((envelope) => {
       const env = envelope as unknown as FcmMessageEnvelope;
-      if (!recordReceivedId(env.persistentId)) return;
+      const pid = env.persistentId;
+      const keys = env.message?.data ? Object.keys(env.message.data) : [];
+      this.log(`filament-fcm: push received pid=${pid || "(none)"} data-keys=[${keys.join(",")}]`);
+      // Dedup only when we actually have a persistent ID; a missing ID must not
+      // silently drop the push.
+      if (pid && !recordReceivedId(pid)) {
+        this.log(`filament-fcm: duplicate push pid=${pid}; skipping`);
+        return;
+      }
       try {
         this.onMessage?.(env);
       } catch (error) {

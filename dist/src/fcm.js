@@ -89,7 +89,13 @@ class FcmConnection {
     });
     receiver.onNotification((envelope) => {
       const env = envelope;
-      if (!recordReceivedId(env.persistentId)) return;
+      const pid = env.persistentId;
+      const keys = env.message?.data ? Object.keys(env.message.data) : [];
+      this.log(`filament-fcm: push received pid=${pid || "(none)"} data-keys=[${keys.join(",")}]`);
+      if (pid && !recordReceivedId(pid)) {
+        this.log(`filament-fcm: duplicate push pid=${pid}; skipping`);
+        return;
+      }
       try {
         this.onMessage?.(env);
       } catch (error) {
