@@ -30,14 +30,20 @@ function identityStore() {
   }
   return idStore;
 }
-function loadCredentials() {
-  return credentialStore().lookup(CREDENTIALS_KEY);
+function loadCredentials(projectId) {
+  const stored = credentialStore().lookup(CREDENTIALS_KEY);
+  if (!stored?.credentials) return void 0;
+  if (projectId !== void 0 && stored.project !== projectId) return void 0;
+  return stored.credentials;
 }
-function saveCredentials(creds) {
-  credentialStore().register(CREDENTIALS_KEY, creds);
+function saveCredentials(creds, projectId) {
+  credentialStore().register(CREDENTIALS_KEY, {
+    credentials: creds,
+    ...projectId !== void 0 ? { project: projectId } : {}
+  });
 }
-function cachedToken() {
-  return loadCredentials()?.fcm?.token ?? null;
+function cachedToken(projectId) {
+  return loadCredentials(projectId)?.fcm?.token ?? null;
 }
 function loadIdentity() {
   return identityStore().lookup(IDENTITY_KEY);

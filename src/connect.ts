@@ -8,11 +8,11 @@
  *   4. FCM register (obtain a Google push token)
  *   5. register_push_token → hand Filament the token so it can push to us
  *   6. heartbeat presence loop (keeps the agent online)
- *   7. first-contact greeting (canned hello; agent-generated greeting is a
- *      later step that needs the inbound → agent → outbound message loop)
+ *   7. first-contact greeting (canned hello; an agent-generated greeting would
+ *      reuse the inbound → agent → outbound loop the channel now drives)
  *
- * Inbound push dispatch is intentionally not wired yet: the FCM listener runs,
- * but received pushes are not yet handled.
+ * Inbound pushes are forwarded to the caller's `onInbound` handler (the channel,
+ * src/channel.ts), which decodes and dispatches them to the agent.
  */
 import type { TokenSnapshot } from "./conformance-core.js";
 import { buildSnapshot, FcmConnection, type FcmMessageEnvelope } from "./fcm.js";

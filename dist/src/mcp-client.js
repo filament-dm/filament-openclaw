@@ -154,7 +154,7 @@ class FilamentMcpClient {
   heartbeat() {
     return this.sideChannelPost("/heartbeat");
   }
-  /** Acknowledge a liveness ping: POST /pong. (Wired once inbound dispatch exists.) */
+  /** Acknowledge a liveness ping: POST /pong (the channel calls this on an inbound ping). */
   pong(nonce) {
     return this.sideChannelPost("/pong", { nonce });
   }

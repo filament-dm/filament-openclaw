@@ -51,12 +51,23 @@ openclaw config set plugins.allow '["filament-fcm"]'
 
 ## Current Progress
 
-- `filament_hello` / `filament_fcm_status` — hello-world tools proving the plugin loads and that `@eneris/push-receiver` + the Firebase config are wired.
-- **Onboarding** — completes the Filament connect flow: given a `connectToken`, polls `get_self` over MCP-over-HTTP until the app finalizes the agent, then persists the identity (principal + backchannel). See `src/onboarding.ts`.
-- **FCM registration** (opt-in, `FILAMENT_FCM_ENABLED`) — connects via `@eneris/push-receiver` and caches the registration token in the plugin-state store (`src/fcm.ts`).
-- **Conformance control surface** (opt-in, `FILAMENT_CONFORMANCE_ENABLED`) — `GET /conformance/manifest` + `POST /conformance/op`.
+The full inbound→agent→outbound loop works end to end (verified on local dev). The plugin
+registers a Filament **channel** whose `startAccount` runs the whole integration:
 
-Still to do: `register_push_token` (hand Filament our FCM token so it actually pushes to us), inbound DirectPusher payload parsing/dispatch, and the outbound reply path.
+- **Connect sequence** (`src/connect.ts`) — given a `connectToken`, polls `get_self` over
+  MCP-over-HTTP until the app finalizes the agent, persists the identity (principal +
+  backchannel), accepts pending invites/vouches, registers with FCM, hands Filament the push
+  token (`register_push_token`), heartbeats to stay online, and sends a first-contact greeting.
+- **Inbound** (`src/fcm.ts` + `src/inbound-core.ts` + `src/channel.ts`) — holds the FCM socket
+  open, decodes DirectPusher pushes (deduped by persistent ID), and dispatches: liveness ping
+  → `pong`; a chat message → wakes an agent turn.
+- **Outbound** — the agent's reply is posted back over MCP (`message_principal` for the
+  backchannel, else `post_message`).
+- **Conformance control surface** (opt-in, `FILAMENT_CONFORMANCE_ENABLED`) —
+  `GET /conformance/manifest` + `POST /conformance/op`.
+
+See [`ROADMAP.md`](ROADMAP.md) for status and what's next (acting on invites/vouches/reactions
+at runtime, media via `get_thread`, per-channel wake policy).
 
 ## Requirements
 
@@ -82,7 +93,7 @@ openclaw plugins enable filament-fcm
 openclaw plugins list --enabled
 ```
 
-Verify it works from an agent session by calling the `filament_hello` or `filament_fcm_status` tool.
+Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (identity resolved, push token registered).
 
 > Replace the repository URL above if you host this somewhere other than
 > `github.com/filament-dm/filament-openclaw`.
@@ -100,7 +111,7 @@ openclaw plugins enable filament-fcm
 Scripts:
 
 ```bash
-npm run build        # compile index.ts + src/fcm.ts -> dist/ (esbuild)
+npm run build        # transpile index.ts + src/*.ts -> dist/ (esbuild)
 npm run typecheck    # tsc --noEmit
 npm run format       # oxfmt (write in place)
 npm run lint         # oxlint
@@ -110,7 +121,7 @@ Formatting and linting also run as pre-commit hooks via [prek](https://github.co
 
 ## Build
 
-The plugin is TypeScript, compiled to ESM JavaScript with esbuild. `npm run build` transpiles `index.ts` and `src/fcm.ts` into `dist/` (runtime deps left external); the `prepare` script runs it automatically on `npm install` / `npm ci`, so `dist/` points at `./dist/index.js` (see `package.json`'s `openclaw.extensions`).
+The plugin is TypeScript, compiled to ESM JavaScript with esbuild. `npm run build` transpiles `index.ts` and the `src/*.ts` modules (the full list is in the `build` script) into `dist/` (runtime deps left external); the `prepare` script runs it automatically on `npm install` / `npm ci`, so `dist/` points at `./dist/index.js` (see `package.json`'s `openclaw.extensions`).
 
 `dist/` **is committed** to this repo. OpenClaw's `git:` / npm plugin installer expects compiled output at `./dist/index.js` and neither installs `devDependencies` nor runs a build step — so the compiled JS must already be in the repo for `git:` installs to work:
 

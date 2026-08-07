@@ -11,11 +11,11 @@
  *   the FCM socket open, decoding inbound pushes → hold open until abort.
  *
  * Inbound dispatch:
- *   - liveness ping        → `pong` side-channel (LLM-free)                [Phase 2]
+ *   - liveness ping        → `pong` side-channel (LLM-free)
  *   - direct/channel msg   → wake an agent turn via
- *                            `dispatchInboundDirectDmWithRuntime`          [Phase 4]
- *                            and post the reply back over MCP              [Phase 5]
- *   - invites/vouches/reactions → logged; runtime handling is a later phase.
+ *                            `dispatchInboundDirectDmWithRuntime`, then post the
+ *                            reply back over MCP (message_principal / post_message)
+ *   - invites/vouches/reactions → logged only; acting on them is not wired yet.
  */
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";

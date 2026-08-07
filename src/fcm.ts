@@ -1,5 +1,5 @@
 /**
- * Filament FCM configuration and receiver factory.
+ * Filament FCM configuration and the live push receiver (`FcmConnection`).
  *
  * This mirrors the Firebase project configuration and environment-variable
  * overrides used by the Python `filament-hermes` plugin (see
@@ -71,36 +71,16 @@ export function resolveFcmConfig(env: NodeJS.ProcessEnv = process.env): Filament
   };
 }
 
-/**
- * Construct the FCM push receiver. This does NOT connect — it only builds the
- * client, which is enough to prove the dependency is wired and the Firebase
- * config is well-formed. Connecting (a persistent MCS socket), credential
- * persistence, and payload parsing arrive in a later iteration, mirroring
- * `FilamentFCMClient` in the Python plugin.
- */
-export function createReceiver(config: FilamentFcmConfig = resolveFcmConfig()): PushReceiver {
-  return new PushReceiver({
-    firebase: {
-      projectId: config.projectId,
-      apiKey: config.apiKey,
-      appId: config.appId,
-      messagingSenderId: config.messagingSenderId,
-    },
-    // Fresh registration on first run; persisted credentials come later (the
-    // Python plugin saves these across restarts so pushes are not redelivered).
-    persistentIds: [],
-  });
-}
-
 // ── Live FCM registration ────────────────────────────────────────────
 //
 // Mirrors Hermes' FilamentFCMClient.checkin_or_register: load saved
 // credentials, register/connect via @eneris/push-receiver, and persist the
-// credentials so restarts reuse the registration. Fresh registrations hit
-// Google's flaky PHONE_REGISTRATION_ERROR, so connect is retried with a gentle
-// backoff (same rationale as the Python plugin). Message parsing/dispatch is a
-// later iteration; for now we just register, hold the socket, and cache the
-// token.
+// (project-tagged) credentials so restarts reuse the registration. Fresh
+// registrations hit Google's flaky PHONE_REGISTRATION_ERROR, so connect is
+// retried with a gentle backoff (same rationale as the Python plugin). The
+// receiver holds the socket, dedups pushes by persistent ID, and forwards each
+// new push to the caller's `onMessage`; decoding/dispatch happens there (the
+// channel — see src/channel.ts + src/inbound-core.ts).
 
 const DEFAULT_CONNECT_ATTEMPTS = 12;
 const RETRY_BASE_MS = 1_500;
@@ -125,7 +105,7 @@ export function buildSnapshot(
   connected: boolean,
   config: FilamentFcmConfig = resolveFcmConfig(),
 ): TokenSnapshot | null {
-  const token = cachedToken();
+  const token = cachedToken(config.projectId);
   if (!token) return null;
   return {
     token,
@@ -162,7 +142,15 @@ export class FcmConnection {
 
   /** Register (reusing saved credentials if any) and connect, with retry. */
   async start(): Promise<void> {
-    const saved = loadCredentials();
+    // Only reuse saved credentials if they were registered against the project
+    // we're configured for; a project change (prod↔dev) invalidates them so we
+    // re-register and get a token the server's DirectPusher can actually reach.
+    const saved = loadCredentials(this.config.projectId);
+    if (!saved && loadCredentials() !== undefined) {
+      this.log(
+        `filament-fcm: cached credentials are for a different Firebase project; re-registering against ${this.config.projectId}`,
+      );
+    }
     const receiver = new PushReceiver({
       firebase: {
         projectId: this.config.projectId,
@@ -178,7 +166,7 @@ export class FcmConnection {
     // Persist credentials whenever eneris (re)generates them, so a restart
     // reuses the registration and the cached token stays current.
     receiver.onCredentialsChanged(({ newCredentials }) => {
-      saveCredentials(newCredentials as FcmCredentials);
+      saveCredentials(newCredentials as FcmCredentials, this.config.projectId);
     });
     // Deliver inbound pushes to the caller, deduped durably by persistent ID so
     // a redelivery (or a restart mid-dispatch) doesn't double-process. Every

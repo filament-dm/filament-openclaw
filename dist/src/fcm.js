@@ -18,19 +18,6 @@ function resolveFcmConfig(env = process.env) {
     messagingSenderId: env.FILAMENT_FIREBASE_SENDER_ID || DEFAULT_FIREBASE_SENDER_ID
   };
 }
-function createReceiver(config = resolveFcmConfig()) {
-  return new PushReceiver({
-    firebase: {
-      projectId: config.projectId,
-      apiKey: config.apiKey,
-      appId: config.appId,
-      messagingSenderId: config.messagingSenderId
-    },
-    // Fresh registration on first run; persisted credentials come later (the
-    // Python plugin saves these across restarts so pushes are not redelivered).
-    persistentIds: []
-  });
-}
 const DEFAULT_CONNECT_ATTEMPTS = 12;
 const RETRY_BASE_MS = 1500;
 const RETRY_CAP_MS = 5e3;
@@ -44,7 +31,7 @@ function connectAttempts(env = process.env) {
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function buildSnapshot(connected, config = resolveFcmConfig()) {
-  const token = cachedToken();
+  const token = cachedToken(config.projectId);
   if (!token) return null;
   return {
     token,
@@ -71,7 +58,12 @@ class FcmConnection {
   }
   /** Register (reusing saved credentials if any) and connect, with retry. */
   async start() {
-    const saved = loadCredentials();
+    const saved = loadCredentials(this.config.projectId);
+    if (!saved && loadCredentials() !== void 0) {
+      this.log(
+        `filament-fcm: cached credentials are for a different Firebase project; re-registering against ${this.config.projectId}`
+      );
+    }
     const receiver = new PushReceiver({
       firebase: {
         projectId: this.config.projectId,
@@ -85,7 +77,7 @@ class FcmConnection {
       persistentIds: loadReceivedIds()
     });
     receiver.onCredentialsChanged(({ newCredentials }) => {
-      saveCredentials(newCredentials);
+      saveCredentials(newCredentials, this.config.projectId);
     });
     receiver.onNotification((envelope) => {
       const env = envelope;
@@ -131,7 +123,6 @@ class FcmConnection {
 export {
   FcmConnection,
   buildSnapshot,
-  createReceiver,
   resolveFcmConfig
 };
 //# sourceMappingURL=fcm.js.map

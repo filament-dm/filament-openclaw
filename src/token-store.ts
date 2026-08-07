@@ -15,6 +15,18 @@ export interface FcmCredentials {
   [key: string]: unknown;
 }
 
+/**
+ * Credentials as persisted, tagged with the Firebase project they were
+ * registered against. The tag lets us invalidate a cached token when the
+ * configured project changes (e.g. prod `filament-8ce44` → dev
+ * `filament-dev-f2f90`) — otherwise we'd hand Filament a token the server's
+ * DirectPusher (bound to the new project) can never deliver to.
+ */
+interface StoredFcm {
+  project?: string;
+  credentials: FcmCredentials;
+}
+
 /** The agent identity learned from Filament during onboarding (get_self). */
 export interface AgentIdentity {
   mxid: string;
@@ -44,17 +56,17 @@ type SyncStore<T> = {
   register(key: string, value: T): void;
 };
 
-let credStore: SyncStore<FcmCredentials> | null = null;
+let credStore: SyncStore<StoredFcm> | null = null;
 let idStore: SyncStore<AgentIdentity> | null = null;
 let receivedIdsStore: SyncStore<string[]> | null = null;
 
-function credentialStore(): SyncStore<FcmCredentials> {
+function credentialStore(): SyncStore<StoredFcm> {
   if (!credStore) {
-    credStore = createPluginStateSyncKeyedStore<FcmCredentials>(PLUGIN_ID, {
+    credStore = createPluginStateSyncKeyedStore<StoredFcm>(PLUGIN_ID, {
       namespace: CREDENTIALS_NAMESPACE,
       maxEntries: 4,
       overflowPolicy: "reject-new",
-    }) as SyncStore<FcmCredentials>;
+    }) as SyncStore<StoredFcm>;
   }
   return credStore;
 }
@@ -70,19 +82,33 @@ function identityStore(): SyncStore<AgentIdentity> {
   return idStore;
 }
 
-/** Load saved FCM credentials, or undefined on first run. */
-export function loadCredentials(): FcmCredentials | undefined {
-  return credentialStore().lookup(CREDENTIALS_KEY);
+/**
+ * Load saved FCM credentials, or undefined on first run. When `projectId` is
+ * given, credentials tagged with a *different* project are treated as absent so
+ * the caller re-registers fresh against the configured project (old untagged
+ * records are also discarded, forcing a one-time re-register after upgrade).
+ */
+export function loadCredentials(projectId?: string): FcmCredentials | undefined {
+  const stored = credentialStore().lookup(CREDENTIALS_KEY);
+  if (!stored?.credentials) return undefined;
+  if (projectId !== undefined && stored.project !== projectId) return undefined;
+  return stored.credentials;
 }
 
-/** Persist FCM credentials (called whenever eneris regenerates them). */
-export function saveCredentials(creds: FcmCredentials): void {
-  credentialStore().register(CREDENTIALS_KEY, creds);
+/** Persist FCM credentials, tagged with the project they belong to. */
+export function saveCredentials(creds: FcmCredentials, projectId?: string): void {
+  credentialStore().register(CREDENTIALS_KEY, {
+    credentials: creds,
+    ...(projectId !== undefined ? { project: projectId } : {}),
+  });
 }
 
-/** The cached FCM registration token, or null when none is stored. */
-export function cachedToken(): string | null {
-  return loadCredentials()?.fcm?.token ?? null;
+/**
+ * The cached FCM registration token, or null when none is stored (or it belongs
+ * to a different project than `projectId`, when provided).
+ */
+export function cachedToken(projectId?: string): string | null {
+  return loadCredentials(projectId)?.fcm?.token ?? null;
 }
 
 /** Load the onboarded agent identity, or undefined if not onboarded yet. */
