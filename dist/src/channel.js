@@ -1,7 +1,12 @@
 import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { resolveMcpSettings, runConnect } from "./connect.js";
-import { decodeDirectPusher, isChatMessage } from "./inbound-core.js";
+import {
+  decodeDirectPusher,
+  isChatMessage,
+  isInvite,
+  isVouch
+} from "./inbound-core.js";
 import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
 import { loadIdentity } from "./token-store.js";
 const FILAMENT_CHANNEL_ID = "filament";
@@ -66,6 +71,22 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               } catch (error) {
                 log(`filament: pong failed: ${String(error)}`);
               }
+            }
+            return;
+          }
+          if (isInvite(decoded.branchType) || isVouch(decoded.branchType)) {
+            const targetId = isVouch(decoded.branchType) ? decoded.loopId ?? decoded.roomId : decoded.roomId;
+            if (!connection || !targetId) {
+              log(`filament: ${decoded.branchType} before connect / no id; skipping`);
+              return;
+            }
+            try {
+              const res = isVouch(decoded.branchType) ? await connection.client.acceptVouch(targetId) : await connection.client.acceptInvite(targetId);
+              log(
+                res.ok ? `filament: ${isVouch(decoded.branchType) ? "accepted vouch into" : "accepted invite to"} ${targetId}` : `filament: ${decoded.branchType} accept failed (${res.error?.code ?? "?"})`
+              );
+            } catch (error) {
+              log(`filament: ${decoded.branchType} accept threw: ${String(error)}`);
             }
             return;
           }

@@ -124,11 +124,13 @@ can be deleted once the real channel lands.
 `branchType === "io.filament.ping"` → `connection.client.pong(nonce)` in the channel's
 inbound handler. LLM-free.
 
-### Phase 3 — Invites / vouches — partial
-Startup acceptance already runs inside `runConnect` (`acceptPending`). Runtime push-driven
-handling (`add_to_channel` / `add_to_space` → `acceptInvite`; `knock_invite_received` →
-`acceptVouch`) is **not yet wired** — those branch types currently log "not yet handled".
-**Remaining:** route those inbound branch types to the existing accept helpers.
+### Phase 3 — Invites / vouches — ✅ DONE
+Startup acceptance runs inside `runConnect` (`acceptPending`). Runtime pushes are now handled
+in the channel's inbound handler, mirroring Hermes' `_on_invite` / `_on_vouch`:
+- `add_to_channel` / `add_to_space` → `acceptInvite(roomId)` (invite target = top-level `room_id`).
+- `knock_invite_received` → `acceptVouch(loopId)` (`branch.loop_id`, falling back to `room_id`).
+Best-effort (logged, never throws). **Possible refinement:** Hermes retries `accept_vouch`
+on transient/knock-timing failures; we do a single attempt for now.
 
 ### Phase 4 — Message → agent turn — ✅ DONE (routing hardened)
 Chat pushes wake a turn via `ctx.channelRuntime`. Routing distinguishes chat type so

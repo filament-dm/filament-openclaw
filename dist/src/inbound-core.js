@@ -47,6 +47,7 @@ function decodeDirectPusher(env) {
     isEveryoneMention: bool(branch?.is_everyone_mention),
     key: str(branch?.key),
     targetEventId: str(branch?.target_event_id),
+    loopId: str(branch?.loop_id),
     nonce: str(payload.nonce),
     raw: payload
   };
@@ -54,8 +55,16 @@ function decodeDirectPusher(env) {
 function isChatMessage(branchType) {
   return branchType === "direct_message" || branchType === "channel_message";
 }
+function isInvite(branchType) {
+  return branchType === "add_to_channel" || branchType === "add_to_space";
+}
+function isVouch(branchType) {
+  return branchType === "knock_invite_received";
+}
 export {
   decodeDirectPusher,
-  isChatMessage
+  isChatMessage,
+  isInvite,
+  isVouch
 };
 //# sourceMappingURL=inbound-core.js.map

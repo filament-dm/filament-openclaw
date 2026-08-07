@@ -22,7 +22,13 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
 import type { FcmMessageEnvelope } from "./fcm.js";
-import { type DecodedPush, decodeDirectPusher, isChatMessage } from "./inbound-core.js";
+import {
+  type DecodedPush,
+  decodeDirectPusher,
+  isChatMessage,
+  isInvite,
+  isVouch,
+} from "./inbound-core.js";
 import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
 import { loadIdentity } from "./token-store.js";
 
@@ -117,6 +123,32 @@ export function registerFilamentChannel(
               } catch (error) {
                 log(`filament: pong failed: ${String(error)}`);
               }
+            }
+            return;
+          }
+
+          // Auto-accept invites/vouches at runtime (mirrors Hermes' _on_invite /
+          // _on_vouch). Invites carry the room/space in the top-level room_id; a
+          // vouch's loop id lives on the branch (falling back to room_id).
+          if (isInvite(decoded.branchType) || isVouch(decoded.branchType)) {
+            const targetId = isVouch(decoded.branchType)
+              ? (decoded.loopId ?? decoded.roomId)
+              : decoded.roomId;
+            if (!connection || !targetId) {
+              log(`filament: ${decoded.branchType} before connect / no id; skipping`);
+              return;
+            }
+            try {
+              const res = isVouch(decoded.branchType)
+                ? await connection.client.acceptVouch(targetId)
+                : await connection.client.acceptInvite(targetId);
+              log(
+                res.ok
+                  ? `filament: ${isVouch(decoded.branchType) ? "accepted vouch into" : "accepted invite to"} ${targetId}`
+                  : `filament: ${decoded.branchType} accept failed (${res.error?.code ?? "?"})`,
+              );
+            } catch (error) {
+              log(`filament: ${decoded.branchType} accept threw: ${String(error)}`);
             }
             return;
           }

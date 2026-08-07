@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { decodeDirectPusher, isChatMessage } from "./inbound-core.js";
+import { decodeDirectPusher, isChatMessage, isInvite, isVouch } from "./inbound-core.js";
 
 const envelope = (data: Record<string, unknown>) => ({ message: { data } });
 
@@ -83,4 +83,36 @@ test("unwraps a nested data dict", () => {
   assert.ok(decoded);
   assert.equal(decoded.branchType, "io.filament.ping");
   assert.equal(decoded.nonce, "n");
+});
+
+test("decodes an invite (add_to_space) — room_id is the accept target", () => {
+  const decoded = decodeDirectPusher(
+    envelope({
+      body: JSON.stringify({
+        room_id: "!space:server",
+        branch: { type: "add_to_space", sender_id: "@ada:server" },
+      }),
+    }),
+  );
+  assert.ok(decoded);
+  assert.equal(decoded.branchType, "add_to_space");
+  assert.equal(decoded.roomId, "!space:server");
+  assert.equal(isInvite(decoded.branchType), true);
+  assert.equal(isVouch(decoded.branchType), false);
+});
+
+test("decodes a vouch (knock_invite_received) — loop_id is on the branch", () => {
+  const decoded = decodeDirectPusher(
+    envelope({
+      body: JSON.stringify({
+        room_id: "!fallback:server",
+        branch: { type: "knock_invite_received", loop_id: "!loop:server" },
+      }),
+    }),
+  );
+  assert.ok(decoded);
+  assert.equal(decoded.branchType, "knock_invite_received");
+  assert.equal(decoded.loopId, "!loop:server");
+  assert.equal(isVouch(decoded.branchType), true);
+  assert.equal(isChatMessage(decoded.branchType), false);
 });

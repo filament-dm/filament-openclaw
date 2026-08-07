@@ -46,6 +46,8 @@ export interface DecodedPush {
   key?: string;
   /** Event the reaction targets (reaction branches). */
   targetEventId?: string;
+  /** Loop (space) id on a vouch branch (knock_invite_received). */
+  loopId?: string;
   /** Liveness ping nonce (io.filament.ping). */
   nonce?: string;
   /** The parsed PushPayload (whatever shape it had). */
@@ -123,6 +125,7 @@ export function decodeDirectPusher(env: {
     isEveryoneMention: bool(branch?.is_everyone_mention),
     key: str(branch?.key),
     targetEventId: str(branch?.target_event_id),
+    loopId: str(branch?.loop_id),
     nonce: str(payload.nonce),
     raw: payload,
   };
@@ -131,4 +134,14 @@ export function decodeDirectPusher(env: {
 /** True for branch types that represent an inbound chat message worth waking on. */
 export function isChatMessage(branchType: string): boolean {
   return branchType === "direct_message" || branchType === "channel_message";
+}
+
+/** True for a push inviting the agent into a channel or space (loop). */
+export function isInvite(branchType: string): boolean {
+  return branchType === "add_to_channel" || branchType === "add_to_space";
+}
+
+/** True for a vouch push (a member knocked the agent into a loop). */
+export function isVouch(branchType: string): boolean {
+  return branchType === "knock_invite_received";
 }
