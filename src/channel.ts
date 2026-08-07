@@ -23,6 +23,7 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
 import type { FcmMessageEnvelope } from "./fcm.js";
 import { type DecodedPush, decodeDirectPusher, isChatMessage } from "./inbound-core.js";
+import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
 import { loadIdentity } from "./token-store.js";
 
 export const FILAMENT_CHANNEL_ID = "filament";
@@ -83,7 +84,7 @@ export function registerFilamentChannel(
       docsPath: "/channels/filament",
       blurb: "Connects the agent to Filament via FCM push + MCP-over-HTTP",
     },
-    capabilities: { chatTypes: ["direct"] },
+    capabilities: { chatTypes: ["direct", "group"] },
     config: {
       listAccountIds: () => ["default"],
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -136,47 +137,74 @@ export function registerFilamentChannel(
           const client = connection.client;
           const roomId = decoded.roomId;
           const identity = loadIdentity();
+          const isBackchannel = !!identity?.ccRoomId && roomId === identity.ccRoomId;
+
+          // Post the agent's reply back to the originating conversation: the
+          // backchannel replies to the principal (message_principal, matching
+          // Hermes' control plane); any other room gets a normal post_message.
+          const deliver = async (payload: unknown) => {
+            const text = replyText(payload);
+            if (!text.trim()) {
+              log("filament: agent produced no text reply; nothing to post");
+              return;
+            }
+            const res = isBackchannel
+              ? await client.messagePrincipal(text)
+              : await client.postMessage(roomId, text);
+            log(
+              res.ok
+                ? `filament: reply posted to ${roomId}`
+                : `filament: reply post failed (${res.error?.code ?? "?"})`,
+            );
+          };
+
           try {
-            await dispatchInboundDirectDmWithRuntime({
-              cfg: ctx.cfg,
-              runtime: { channel: ctx.channelRuntime },
-              channel: FILAMENT_CHANNEL_ID,
-              channelLabel: "Filament",
-              accountId: ctx.accountId ?? "default",
-              // Route per-room so replies map back to the originating conversation.
-              peer: { kind: "direct", id: roomId },
-              senderId: decoded.senderId ?? "unknown",
-              senderAddress: decoded.senderId ?? "unknown",
-              recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-              conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-              rawBody: decoded.text ?? "",
-              messageId: decoded.eventId ?? env.persistentId,
-              // The principal's own agent; Filament already gates who can reach it.
-              commandAuthorized: true,
-              deliver: async (payload: unknown) => {
-                const text = replyText(payload);
-                if (!text.trim()) {
-                  log("filament: agent produced no text reply; nothing to post");
-                  return;
-                }
-                // Backchannel replies go to the principal (message_principal),
-                // matching Hermes; other rooms get a normal post_message.
-                const res =
-                  identity?.ccRoomId && roomId === identity.ccRoomId
-                    ? await client.messagePrincipal(text)
-                    : await client.postMessage(roomId, text);
-                log(
-                  res.ok
-                    ? `filament: reply posted to ${roomId}`
-                    : `filament: reply post failed (${res.error?.code ?? "?"})`,
-                );
-              },
-              onRecordError: (error: unknown) =>
-                log(`filament: record error (continuing): ${String(error)}`),
-              // oxlint-disable-next-line typescript/no-explicit-any
-              onDispatchError: (error: unknown, info: any) =>
-                log(`filament: dispatch error (${info?.kind ?? "?"}): ${String(error)}`),
-            });
+            // The backchannel is a personal room that arrives as a channel_message
+            // but is the control plane — route it (and true DMs) through the
+            // direct path. Real group channels get a per-channel session via the
+            // group path, so contexts don't bleed across rooms (the direct path,
+            // under the default dmScope, collapses every room to one session).
+            if (isBackchannel || decoded.branchType === "direct_message") {
+              await dispatchInboundDirectDmWithRuntime({
+                cfg: ctx.cfg,
+                runtime: { channel: ctx.channelRuntime },
+                channel: FILAMENT_CHANNEL_ID,
+                channelLabel: "Filament",
+                accountId: ctx.accountId ?? "default",
+                peer: { kind: "direct", id: roomId },
+                senderId: decoded.senderId ?? "unknown",
+                senderAddress: decoded.senderId ?? "unknown",
+                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
+                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
+                rawBody: decoded.text ?? "",
+                messageId: decoded.eventId ?? env.persistentId,
+                // The principal's own agent; Filament already gates who can reach it.
+                commandAuthorized: true,
+                deliver,
+                onRecordError: (error: unknown) =>
+                  log(`filament: record error (continuing): ${String(error)}`),
+                // oxlint-disable-next-line typescript/no-explicit-any
+                onDispatchError: (error: unknown, info: any) =>
+                  log(`filament: dispatch error (${info?.kind ?? "?"}): ${String(error)}`),
+              });
+            } else {
+              const sessionKey = await dispatchInboundGroupTurn({
+                cfg: ctx.cfg,
+                channelRuntime: ctx.channelRuntime,
+                channel: FILAMENT_CHANNEL_ID,
+                channelLabel: "Filament",
+                accountId: ctx.accountId ?? "default",
+                roomId,
+                senderId: decoded.senderId ?? "unknown",
+                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
+                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
+                rawBody: decoded.text ?? "",
+                messageId: decoded.eventId ?? env.persistentId,
+                deliver,
+                log: (message: string) => log(`filament: ${message}`),
+              });
+              log(`filament: dispatched channel_message (session=${sessionKey ?? "?"})`);
+            }
           } catch (error) {
             log(`filament: inbound dispatch threw: ${String(error)}`);
           }

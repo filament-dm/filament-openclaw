@@ -130,12 +130,19 @@ handling (`add_to_channel` / `add_to_space` → `acceptInvite`; `knock_invite_re
 `acceptVouch`) is **not yet wired** — those branch types currently log "not yet handled".
 **Remaining:** route those inbound branch types to the existing accept helpers.
 
-### Phase 4 — Message → agent turn — ✅ DONE
-Chat pushes (`direct_message` / `channel_message`) wake a turn via
-`dispatchInboundDirectDmWithRuntime(...)` with `runtime: { channel: ctx.channelRuntime }`,
-routed per-room (`peer.id = roomId`). Fetching full content via `get_thread` for media-only
-messages is deferred (text-only for now).
-**Exit met:** a chat message produces an agent turn (proven end-to-end in Phase 0).
+### Phase 4 — Message → agent turn — ✅ DONE (routing hardened)
+Chat pushes wake a turn via `ctx.channelRuntime`. Routing distinguishes chat type so
+sessions don't bleed across rooms:
+- **Backchannel** (`roomId === ccRoomId`, arrives as `channel_message`) and true DMs →
+  `dispatchInboundDirectDmWithRuntime` (direct / control plane).
+- **Group channels** → `dispatchInboundGroupTurn` (`src/inbound-dispatch.ts`), which mirrors
+  the SDK's DM facade composition with `ChatType: "group"` / `peer.kind: "group"` so each
+  channel gets its own session (`agent:…:filament:group:<roomId>`) instead of collapsing to
+  the single `agent:main:main` session. `capabilities.chatTypes` is `["direct","group"]`.
+- Fetching full content via `get_thread` for media-only messages is still deferred (text-only).
+**Exit met:** a chat message produces an agent turn (proven end-to-end).
+**Caveat:** the group path composes exported SDK primitives (there's no group facade for
+third-party plugins) and is only build/lint-checked — verify the group case at runtime.
 
 ### Phase 5 — Reply → MCP — ✅ DONE
 The `deliver(payload)` callback posts the agent's reply: `message_principal` when the room
