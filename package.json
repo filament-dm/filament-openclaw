@@ -1,7 +1,7 @@
 {
   "name": "@filament/openclaw-filament-fcm",
   "version": "0.1.0",
-  "description": "OpenClaw plugin that connects an agent to Filament via Firebase Cloud Messaging (FCM) pushes and the Filament MCP-over-HTTP agents API.",
+  "description": "OpenClaw plugin that connects an agent to Filament via a poll_work long-poll and the Filament MCP-over-HTTP agents API.",
   "private": true,
   "type": "module",
   "repository": {
@@ -16,19 +16,18 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts src/fcm.ts src/token-store.ts src/conformance-core.ts src/conformance-http.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/channel.ts src/inbound-core.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
+    "build": "esbuild index.ts src/util.ts src/token-store.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/poll-work.ts src/channel.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
     "prepare": "npm run build",
-    "test": "esbuild src/conformance-core.test.ts src/onboarding-core.test.ts src/inbound-core.test.ts --bundle --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/conformance-core.test.mjs dist-test/onboarding-core.test.mjs dist-test/inbound-core.test.mjs",
+    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/connect.test.ts src/poll-work.test.ts --bundle --external:openclaw --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/connect.test.mjs dist-test/poll-work.test.mjs",
     "format": "oxfmt index.ts src",
     "format:check": "oxfmt --check index.ts src",
     "lint": "oxlint index.ts src",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@eneris/push-receiver": "4.3.1"
-  },
   "devDependencies": {
+    "@types/node": "22.20.4",
     "esbuild": "^0.25.0",
+    "openclaw": "2026.7.1-2",
     "oxfmt": "^0.61.0",
     "oxlint": "^1.76.0",
     "typescript": "5.9.2"
