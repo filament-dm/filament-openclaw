@@ -1,25 +1,33 @@
 /**
- * Group/channel inbound-turn dispatch for the Filament channel.
+ * Work-item → agent-turn dispatch for the Filament channel.
  *
- * OpenClaw's plugin SDK ships a one-call facade only for DIRECT messages
- * (`dispatchInboundDirectDmWithRuntime`, used for the backchannel). Group/channel
- * messages have no such facade, so this mirrors that facade's composition —
- * route → envelope → context → reply pipeline → prepared reply → buffered
- * dispatcher — but with `ChatType: "group"` and a `kind: "group"` peer, so a
- * Filament channel message routes to a *per-channel* session
- * (`agent:…:filament:group:<roomId>`) instead of being forced through the DM
- * path (which, under the default dmScope, collapses every room to the single
- * `agent:main:main` session and bleeds context across channels).
+ * `poll_work` delivers a work item, not a raw channel message: it is already
+ * grouped by `(channel_id, thread_id)`, carries every unread `messages[]` for
+ * that spot, and pre-resolves the reply destination in `reply_with`. There is
+ * no bundled per-kind facade for this shape, so this module composes the same
+ * SDK primitives OpenClaw's own group-channel path uses — route → envelope →
+ * context → buffered-block dispatch — for BOTH direct/backchannel and
+ * group/channel items, distinguished only by `peerKind`.
  *
- * All primitives below are exported from `openclaw/plugin-sdk/*`; this is kept
- * faithful to the SDK's own `src/channels/direct-dm.ts` at the pinned version.
+ * This intentionally does NOT use `dispatchInboundDirectDmWithRuntime`
+ * (the SDK's one-call direct-DM facade): its `deliver` callback forwards
+ * every dispatcher callback (tool/block/final) with no `kind` info, so a
+ * caller can't tell a "final" from an intermediate block — which is exactly
+ * what a single-publish-per-item design needs to get right. Composing the
+ * lower-level primitives ourselves (as done here) exposes `info.kind` on
+ * every `deliver` call, so only `"final"` text is collected.
+ *
+ * All primitives below are exported from `openclaw/plugin-sdk/*`.
  */
+import { createInboundEnvelopeBuilder } from "openclaw/plugin-sdk/inbound-envelope";
+import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
 import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
-import { createChannelReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { resolveInboundRouteEnvelopeBuilderWithRuntime } from "openclaw/plugin-sdk/inbound-envelope";
 import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 
-export interface DispatchInboundGroupParams {
+import type { PollWorkMessage } from "./poll-work.js";
+
+export interface DispatchWorkItemParams {
   // The channelRuntime surface + gateway config from the channel's startAccount ctx.
   // oxlint-disable-next-line typescript/no-explicit-any
   cfg: any;
@@ -28,94 +36,167 @@ export interface DispatchInboundGroupParams {
   channel: string;
   channelLabel: string;
   accountId: string;
-  /** The group/room id — becomes the per-channel session peer. */
-  roomId: string;
-  senderId: string;
+  /** `"direct"` collapses to the agent's main session (backchannel/true-DM);
+   * `"group"` gets a per-channel session. poll_work items carry no
+   * conversation-type flag beyond `is_backchannel`, so the caller decides. */
+  peerKind: "direct" | "group";
+  /** The room the item belongs to (`item.channel_id`). */
+  channelId: string;
+  /** `item.thread_id`; when present the session is further scoped per-thread. */
+  threadId: string | null;
+  messages: PollWorkMessage[];
   recipientAddress: string;
   conversationLabel: string;
-  rawBody: string;
-  messageId: string;
-  /** Receives the agent's normalized reply payload (`{ text, … }`). */
-  deliver: (payload: Record<string, unknown>) => Promise<void>;
+  /** Item-level authorization — true only for `is_backchannel` items. */
+  commandAuthorized: boolean;
   log: (message: string) => void;
 }
 
-/** Route + wake a turn for a group/channel message; returns the session key. */
-export async function dispatchInboundGroupTurn(
-  params: DispatchInboundGroupParams,
-): Promise<string | undefined> {
-  const runtime = params.channelRuntime;
+export interface DispatchTurnResult {
+  /** Finalized reply text (joined `final` callbacks, in order); "" if none. */
+  finalText: string;
+  sawFinal: boolean;
+  /** The dispatcher explicitly skipped a reply (evidence of deliberate silence). */
+  sawSkip: boolean;
+  /** The dispatcher reported a terminal error for this turn. */
+  sawError: boolean;
+  errorDetail?: string;
+}
 
-  const { route, buildEnvelope } = resolveInboundRouteEnvelopeBuilderWithRuntime({
+/** Render one item's messages, sender + event_id preserved, in order. */
+function renderMessages(messages: PollWorkMessage[]): string {
+  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+}
+
+/**
+ * Route, envelope, and run one work item's agent turn, collecting only
+ * `final` text callbacks (never publishing here — the caller publishes at
+ * most once via `reply_with` after this resolves; see src/channel.ts).
+ */
+export async function dispatchWorkItemTurn(
+  params: DispatchWorkItemParams,
+): Promise<DispatchTurnResult> {
+  const runtime = params.channelRuntime;
+  const peer = { kind: params.peerKind, id: params.channelId };
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const route = runtime.routing.resolveAgentRoute({
     cfg: params.cfg,
     channel: params.channel,
     accountId: params.accountId,
-    peer: { kind: "group", id: params.roomId },
-    runtime,
+    peer,
+  }) as { agentId: string; sessionKey: string; accountId?: string };
+
+  // Thread isolation: two threads in the same channel must not share a
+  // session. `normalizeThreadId` is the identity function so a Matrix thread
+  // (event) id keeps its case — the helper's default normalizer lowercases.
+  const sessionKey = params.threadId
+    ? resolveThreadSessionKeys({
+        baseSessionKey: route.sessionKey,
+        threadId: params.threadId,
+        normalizeThreadId: (id: string) => id,
+      }).sessionKey
+    : route.sessionKey;
+  const effectiveRoute = { ...route, sessionKey };
+  const accountId = effectiveRoute.accountId ?? params.accountId;
+
+  const buildEnvelope = createInboundEnvelopeBuilder({
+    cfg: params.cfg,
+    route: effectiveRoute,
     sessionStore: params.cfg.session?.store,
+    resolveStorePath: runtime.session.resolveStorePath,
+    readSessionUpdatedAt: runtime.session.readSessionUpdatedAt,
+    resolveEnvelopeFormatOptions: runtime.reply.resolveEnvelopeFormatOptions,
+    formatAgentEnvelope: runtime.reply.formatAgentEnvelope,
   });
 
+  const rawBody = renderMessages(params.messages);
+  const lastMessage = params.messages[params.messages.length - 1];
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
-    body: params.rawBody,
+    body: rawBody,
   });
 
   const ctxPayload = runtime.reply.finalizeInboundContext({
     Body: body,
-    BodyForAgent: params.rawBody,
-    RawBody: params.rawBody,
-    CommandBody: params.rawBody,
-    From: params.senderId,
+    BodyForAgent: rawBody,
+    RawBody: rawBody,
+    CommandBody: rawBody,
+    From: lastMessage?.sender ?? "unknown",
     To: params.recipientAddress,
-    SessionKey: route.sessionKey,
-    AccountId: route.accountId ?? params.accountId,
-    ChatType: "group",
+    SessionKey: effectiveRoute.sessionKey,
+    AccountId: accountId,
+    ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
-    SenderId: params.senderId,
+    SenderId: lastMessage?.sender ?? "unknown",
     Provider: params.channel,
     Surface: params.channel,
-    MessageSid: params.messageId,
-    MessageSidFull: params.messageId,
+    MessageSid: lastMessage?.event_id ?? params.channelId,
+    MessageSidFull: lastMessage?.event_id ?? params.channelId,
     OriginatingChannel: params.channel,
-    OriginatingTo: params.roomId,
+    OriginatingTo: params.channelId,
+    CommandAuthorized: params.commandAuthorized,
   });
 
-  const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
+  const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,
-    agentId: route.agentId,
+    agentId: effectiveRoute.agentId,
     channel: params.channel,
-    accountId: route.accountId ?? params.accountId,
+    accountId,
   });
+
+  const finals: string[] = [];
+  let sawSkip = false;
+  let sawError = false;
+  let errorDetail: string | undefined;
 
   await runPreparedInboundReply({
     channel: params.channel,
-    accountId: route.accountId ?? params.accountId,
-    routeSessionKey: route.sessionKey,
+    accountId,
+    routeSessionKey: effectiveRoute.sessionKey,
     storePath,
     ctxPayload,
     recordInboundSession: runtime.session.recordInboundSession,
-    record: { onRecordError: (error: unknown) => params.log(`record error (continuing): ${String(error)}`) },
+    record: {
+      onRecordError: (error: unknown) => params.log(`record error (continuing): ${String(error)}`),
+    },
     runDispatch: async () =>
       await runtime.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx: ctxPayload,
         cfg: params.cfg,
         dispatcherOptions: {
           ...replyPipeline,
-          deliver: async (payload: unknown) => {
+          // `info.kind` is "tool" | "block" | "final" — only "final" text is
+          // ever collected. Never publish here; just buffer.
+          deliver: async (payload: unknown, info: { kind: string }) => {
+            if (info?.kind !== "final") return;
             const normalized =
               payload && typeof payload === "object"
                 ? normalizeOutboundReplyPayload(payload as Record<string, unknown>)
                 : {};
-            return await params.deliver(normalized as Record<string, unknown>);
+            const text = (normalized as { text?: unknown }).text;
+            if (typeof text === "string" && text.trim()) finals.push(text);
+          },
+          onSkip: () => {
+            sawSkip = true;
           },
           // oxlint-disable-next-line typescript/no-explicit-any
-          onError: (error: unknown, info: any) =>
-            params.log(`dispatch error (${info?.kind ?? "?"}): ${String(error)}`),
+          onError: (error: unknown, info: any) => {
+            sawError = true;
+            errorDetail = `${info?.kind ?? "?"}: ${String(error)}`;
+            params.log(`dispatch error (${info?.kind ?? "?"}): ${String(error)}`);
+          },
         },
         replyOptions: { onModelSelected },
       }),
   });
 
-  return route.sessionKey;
+  return {
+    finalText: finals.join("\n\n"),
+    sawFinal: finals.length > 0,
+    sawSkip,
+    sawError,
+    errorDetail,
+  };
 }

@@ -1,75 +1,51 @@
 /**
- * The Filament OpenClaw **channel** — the single integration unit (approach A).
+ * The Filament OpenClaw **channel**.
  *
- * Unlike a background service, a channel is a first-class messaging transport
- * the gateway drives: it gets a per-account `startAccount`/`stopAccount`
- * lifecycle and a `channelRuntime` surface that can wake agent turns and route
- * replies. So the whole Filament integration lives inside the channel account:
+ * A channel is a first-class messaging transport the gateway drives: it gets
+ * a per-account `startAccount`/`stopAccount` lifecycle and a `channelRuntime`
+ * surface that can wake agent turns and route replies. The whole Filament
+ * integration lives inside the channel account:
  *
- *   startAccount → resolve token → runConnect (get_self, accept invites/vouches,
- *   FCM register, register_push_token, heartbeat, first-contact greeting) → keep
- *   the FCM socket open, decoding inbound pushes → hold open until abort.
+ *   startAccount → resolve token → runConnect (bearer resolve/exchange,
+ *   get_self verification, heartbeat) → runPollLoop (poll_work long-poll,
+ *   sequential, cancelable) → hold open until abort.
  *
- * Inbound dispatch:
- *   - liveness ping        → `pong` side-channel (LLM-free)
- *   - direct/channel msg   → wake an agent turn via
- *                            `dispatchInboundDirectDmWithRuntime`, then post the
- *                            reply back over MCP (message_principal / post_message)
- *   - invites/vouches/reactions → logged only; acting on them is not wired yet.
+ * Transport: `poll_work` (see src/poll-work.ts), not FCM. There is no push
+ * socket, no invite/vouch auto-accept sweep, and no first-contact greeting —
+ * see ROADMAP.md for what that trades away for the PoC.
  */
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
-import type { FcmMessageEnvelope } from "./fcm.js";
-import {
-  type DecodedPush,
-  decodeDirectPusher,
-  isChatMessage,
-  isInvite,
-  isVouch,
-} from "./inbound-core.js";
-import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
+import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
+import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
 
 export const FILAMENT_CHANNEL_ID = "filament";
 
 // Loose structural view of the plugin API surface the channel touches. The
-// concrete OpenClaw SDK types only resolve inside the gateway, so we keep these
-// minimal and let the runtime provide the real objects.
+// concrete OpenClaw SDK types only resolve inside the gateway, so we keep
+// this minimal and let the runtime provide the real objects.
 export interface FilamentChannelApi {
   config: unknown;
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
-  registerChannel: (registration: unknown) => void;
+  registerChannel: (registration: { plugin: ChannelPlugin }) => void;
 }
 
-/** One-line summary of a decoded push for observability. */
-function summarize(decoded: DecodedPush): string {
-  const parts = [`type=${decoded.branchType}`];
-  if (decoded.roomId) parts.push(`room=${decoded.roomId}`);
-  if (decoded.senderId) parts.push(`from=${decoded.senderId}`);
-  if (decoded.eventId) parts.push(`event=${decoded.eventId}`);
-  if (decoded.text != null) {
-    const preview = decoded.text.length > 60 ? `${decoded.text.slice(0, 60)}…` : decoded.text;
-    parts.push(`text=${JSON.stringify(preview)}`);
-  } else if (isChatMessage(decoded.branchType)) {
-    parts.push("text=<media-only>");
-  }
-  if (decoded.nonce) parts.push(`nonce=${decoded.nonce}`);
-  return parts.join(" ");
-}
-
-/** Extract the agent's reply text from the dispatcher's delivered payload. */
-function replyText(payload: unknown): string {
-  const text = payload && typeof payload === "object" ? (payload as { text?: unknown }).text : undefined;
-  return typeof text === "string" ? text : "";
+/** True when a publish result looks like a genuine success (has an event_id, no error). */
+function publishSucceeded(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === undefined;
 }
 
 /**
  * Register the Filament channel. `onConnectionChange` surfaces the live
- * ConnectHandle (for the conformance token snapshot); called with the handle
- * when an account connects and null when it stops.
+ * ConnectHandle (kept for parity with the previous conformance surface, and
+ * for tests); called with the handle when an account connects and null when
+ * it stops.
  */
 export function registerFilamentChannel(
   api: FilamentChannelApi,
@@ -81,14 +57,14 @@ export function registerFilamentChannel(
   };
   const mcp = resolveMcpSettings(api.pluginConfig);
 
-  const plugin = {
+  const plugin: ChannelPlugin = {
     id: FILAMENT_CHANNEL_ID,
     meta: {
       id: FILAMENT_CHANNEL_ID,
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via FCM push + MCP-over-HTTP",
+      blurb: "Connects the agent to Filament via the poll_work MCP transport",
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
@@ -101,145 +77,80 @@ export function registerFilamentChannel(
     gateway: {
       // oxlint-disable-next-line typescript/no-explicit-any
       startAccount: async (ctx: any) => {
-        // The live connection is assigned once runConnect resolves; inbound
-        // handlers guard on it (a push can only arrive after FCM connects,
-        // which is inside runConnect, so in practice it's set by first use).
         let connection: ConnectHandle | null = null;
+        const abortSignal: AbortSignal = ctx.abortSignal;
 
-        // Route one inbound push: ping → pong; chat → wake a turn + reply.
-        const handleInbound = async (env: FcmMessageEnvelope) => {
-          const decoded = decodeDirectPusher(env);
-          if (!decoded) {
-            log(`filament: inbound pid=${env.persistentId} (badge-only or unparseable; ignored)`);
-            return;
+        // Dispatch one work item: run the turn, publish at most once via
+        // reply_with, and classify the outcome for the poll loop.
+        const dispatchItem = async (item: PollWorkItem): Promise<DispatchOutcome> => {
+          const replyWith = item.reply_with;
+          if (!replyWith) {
+            // Defense in depth: the poll loop already filters these out.
+            return { kind: "ambiguous" };
           }
-          log(`filament: inbound ${summarize(decoded)}`);
-
-          if (decoded.branchType === "io.filament.ping") {
-            if (decoded.nonce && connection) {
-              try {
-                await connection.client.pong(decoded.nonce);
-                log(`filament: pong sent (nonce=${decoded.nonce})`);
-              } catch (error) {
-                log(`filament: pong failed: ${String(error)}`);
-              }
-            }
-            return;
-          }
-
-          // Auto-accept invites/vouches at runtime (mirrors Hermes' _on_invite /
-          // _on_vouch). Invites carry the room/space in the top-level room_id; a
-          // vouch's loop id lives on the branch (falling back to room_id).
-          if (isInvite(decoded.branchType) || isVouch(decoded.branchType)) {
-            const targetId = isVouch(decoded.branchType)
-              ? (decoded.loopId ?? decoded.roomId)
-              : decoded.roomId;
-            if (!connection || !targetId) {
-              log(`filament: ${decoded.branchType} before connect / no id; skipping`);
-              return;
-            }
-            try {
-              const res = isVouch(decoded.branchType)
-                ? await connection.client.acceptVouch(targetId)
-                : await connection.client.acceptInvite(targetId);
-              log(
-                res.ok
-                  ? `filament: ${isVouch(decoded.branchType) ? "accepted vouch into" : "accepted invite to"} ${targetId}`
-                  : `filament: ${decoded.branchType} accept failed (${res.error?.code ?? "?"})`,
-              );
-            } catch (error) {
-              log(`filament: ${decoded.branchType} accept threw: ${String(error)}`);
-            }
-            return;
-          }
-
-          if (!isChatMessage(decoded.branchType) || !decoded.roomId) {
-            log(`filament: inbound ${decoded.branchType} not yet handled`);
-            return;
-          }
-
           if (!connection) {
-            log("filament: inbound arrived before connect finished; dropping");
-            return;
+            return { kind: "error", diagnostic: "item arrived before connect finished" };
           }
-          if (!ctx?.channelRuntime) {
-            log("filament: ctx.channelRuntime unavailable; cannot wake a turn");
-            return;
+          if (!ctx.channelRuntime) {
+            return {
+              kind: "error",
+              diagnostic: "ctx.channelRuntime unavailable; cannot wake a turn",
+            };
           }
-          const client = connection.client;
-          const roomId = decoded.roomId;
           const identity = loadIdentity();
-          const isBackchannel = !!identity?.ccRoomId && roomId === identity.ccRoomId;
-
-          // Post the agent's reply back to the originating conversation: the
-          // backchannel replies to the principal (message_principal, matching
-          // Hermes' control plane); any other room gets a normal post_message.
-          const deliver = async (payload: unknown) => {
-            const text = replyText(payload);
-            if (!text.trim()) {
-              log("filament: agent produced no text reply; nothing to post");
-              return;
-            }
-            const res = isBackchannel
-              ? await client.messagePrincipal(text)
-              : await client.postMessage(roomId, text);
-            log(
-              res.ok
-                ? `filament: reply posted to ${roomId}`
-                : `filament: reply post failed (${res.error?.code ?? "?"})`,
-            );
-          };
-
+          let result;
           try {
-            // The backchannel is a personal room that arrives as a channel_message
-            // but is the control plane — route it (and true DMs) through the
-            // direct path. Real group channels get a per-channel session via the
-            // group path, so contexts don't bleed across rooms (the direct path,
-            // under the default dmScope, collapses every room to one session).
-            if (isBackchannel || decoded.branchType === "direct_message") {
-              await dispatchInboundDirectDmWithRuntime({
-                cfg: ctx.cfg,
-                runtime: { channel: ctx.channelRuntime },
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                peer: { kind: "direct", id: roomId },
-                senderId: decoded.senderId ?? "unknown",
-                senderAddress: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                // The principal's own agent; Filament already gates who can reach it.
-                commandAuthorized: true,
-                deliver,
-                onRecordError: (error: unknown) =>
-                  log(`filament: record error (continuing): ${String(error)}`),
-                // oxlint-disable-next-line typescript/no-explicit-any
-                onDispatchError: (error: unknown, info: any) =>
-                  log(`filament: dispatch error (${info?.kind ?? "?"}): ${String(error)}`),
-              });
-            } else {
-              const sessionKey = await dispatchInboundGroupTurn({
-                cfg: ctx.cfg,
-                channelRuntime: ctx.channelRuntime,
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                roomId,
-                senderId: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                deliver,
-                log: (message: string) => log(`filament: ${message}`),
-              });
-              log(`filament: dispatched channel_message (session=${sessionKey ?? "?"})`);
-            }
+            result = await dispatchWorkItemTurn({
+              cfg: ctx.cfg,
+              channelRuntime: ctx.channelRuntime,
+              channel: FILAMENT_CHANNEL_ID,
+              channelLabel: "Filament",
+              accountId: ctx.accountId ?? "default",
+              peerKind: item.is_backchannel ? "direct" : "group",
+              channelId: item.channel_id,
+              threadId: item.thread_id,
+              messages: item.messages,
+              recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
+              conversationLabel: item.channel_id,
+              // Filament (not OpenClaw) decides who can reach the agent; this
+              // only ever authorizes the backchannel/control-plane item, never
+              // an arbitrary conversation (see the plan's item 5).
+              commandAuthorized: item.is_backchannel === true,
+              log,
+            });
           } catch (error) {
-            log(`filament: inbound dispatch threw: ${String(error)}`);
+            return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
           }
+
+          if (result.sawError) {
+            return {
+              kind: "error",
+              diagnostic: result.errorDetail ?? "dispatch reported an error",
+            };
+          }
+          if (result.sawFinal) {
+            if (abortSignal.aborted) {
+              return { kind: "error", diagnostic: "aborted before publish" };
+            }
+            const publishRes = await connection.client.replyWith(replyWith, result.finalText, {
+              signal: abortSignal,
+            });
+            if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
+              return {
+                kind: "error",
+                diagnostic: `publish failed/ambiguous (${publishRes.kind ?? "?"}: ${publishRes.error?.message ?? "no event_id"})`,
+              };
+            }
+            log(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
+            return { kind: "published" };
+          }
+          if (result.sawSkip) {
+            return { kind: "silent" };
+          }
+          log(
+            `filament: turn produced no text and no explicit skip signal for ${item.channel_id}; leaving unacknowledged`,
+          );
+          return { kind: "ambiguous" };
         };
 
         // Resolve the connect token: a raw string, a `${ENV}` shorthand, or a
@@ -247,7 +158,8 @@ export function registerFilamentChannel(
         let token = "";
         if (mcp.tokenInput !== undefined) {
           const resolved = await resolveConfiguredSecretInputString({
-            config: api.config,
+            // oxlint-disable-next-line typescript/no-explicit-any
+            config: api.config as any,
             env: process.env,
             value: mcp.tokenInput,
             path: "plugins.entries.filament-fcm.config.connectToken",
@@ -268,25 +180,49 @@ export function registerFilamentChannel(
               mcpUrl: mcp.mcpUrl,
               token,
               log,
-              onInbound: (env) => void handleInbound(env),
+              abortSignal,
             });
             onConnectionChange(connection);
           } catch (error) {
             log(`filament: connect failed: ${String(error)}`);
+            connection = null;
           }
         } else {
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
 
-        // Hold the account open until the gateway aborts it, so the channel
-        // stays "running" (no exit/auto-restart loop) and the FCM socket +
-        // heartbeat keep going.
-        await new Promise<void>((resolve) => {
-          const signal: AbortSignal | undefined = ctx?.abortSignal;
-          if (!signal) return resolve();
-          if (signal.aborted) return resolve();
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
+        if (connection) {
+          const { fatal } = await runPollLoop({
+            client: connection.client,
+            abortSignal,
+            log,
+            dispatchItem,
+          });
+          if (fatal) {
+            // Surface a diagnostic and stop: returning normally here (rather
+            // than throwing) is a deliberate choice — see the module header
+            // in poll-work.ts and ROADMAP.md's "lifecycle on fatal" note on
+            // why we don't want the gateway's exit-triggers-restart behavior
+            // to silently re-run a poll loop that just told us to stop.
+            log(`filament: account entering a fatal/paused state: ${fatal}`);
+            ctx.setStatus?.({
+              accountId: ctx.accountId ?? "default",
+              connected: false,
+              statusState: "error",
+              restartPending: false,
+            });
+          }
+        }
+
+        // Hold the account open until the gateway aborts it (covers both the
+        // "no token configured" idle case and the post-poll-loop wind-down),
+        // so the channel stays "running" instead of exit-triggering a restart.
+        if (!abortSignal.aborted) {
+          await new Promise<void>((resolve) => {
+            if (abortSignal.aborted) return resolve();
+            abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
 
         connection?.stop();
         onConnectionChange(null);
