@@ -1,32 +1,13 @@
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { resolveMcpSettings, runConnect } from "./connect.js";
-import {
-  decodeDirectPusher,
-  isChatMessage,
-  isInvite,
-  isVouch
-} from "./inbound-core.js";
-import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
+import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
+import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
 const FILAMENT_CHANNEL_ID = "filament";
-function summarize(decoded) {
-  const parts = [`type=${decoded.branchType}`];
-  if (decoded.roomId) parts.push(`room=${decoded.roomId}`);
-  if (decoded.senderId) parts.push(`from=${decoded.senderId}`);
-  if (decoded.eventId) parts.push(`event=${decoded.eventId}`);
-  if (decoded.text != null) {
-    const preview = decoded.text.length > 60 ? `${decoded.text.slice(0, 60)}\u2026` : decoded.text;
-    parts.push(`text=${JSON.stringify(preview)}`);
-  } else if (isChatMessage(decoded.branchType)) {
-    parts.push("text=<media-only>");
-  }
-  if (decoded.nonce) parts.push(`nonce=${decoded.nonce}`);
-  return parts.join(" ");
-}
-function replyText(payload) {
-  const text = payload && typeof payload === "object" ? payload.text : void 0;
-  return typeof text === "string" ? text : "";
+function publishSucceeded(data) {
+  if (!data || typeof data !== "object") return false;
+  const d = data;
+  return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === void 0;
 }
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
@@ -42,7 +23,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via FCM push + MCP-over-HTTP"
+      blurb: "Connects the agent to Filament via the poll_work MCP transport"
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
@@ -56,114 +37,79 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       // oxlint-disable-next-line typescript/no-explicit-any
       startAccount: async (ctx) => {
         let connection = null;
-        const handleInbound = async (env) => {
-          const decoded = decodeDirectPusher(env);
-          if (!decoded) {
-            log(`filament: inbound pid=${env.persistentId} (badge-only or unparseable; ignored)`);
-            return;
-          }
-          log(`filament: inbound ${summarize(decoded)}`);
-          if (decoded.branchType === "io.filament.ping") {
-            if (decoded.nonce && connection) {
-              try {
-                await connection.client.pong(decoded.nonce);
-                log(`filament: pong sent (nonce=${decoded.nonce})`);
-              } catch (error) {
-                log(`filament: pong failed: ${String(error)}`);
-              }
-            }
-            return;
-          }
-          if (isInvite(decoded.branchType) || isVouch(decoded.branchType)) {
-            const targetId = isVouch(decoded.branchType) ? decoded.loopId ?? decoded.roomId : decoded.roomId;
-            if (!connection || !targetId) {
-              log(`filament: ${decoded.branchType} before connect / no id; skipping`);
-              return;
-            }
-            try {
-              const res = isVouch(decoded.branchType) ? await connection.client.acceptVouch(targetId) : await connection.client.acceptInvite(targetId);
-              log(
-                res.ok ? `filament: ${isVouch(decoded.branchType) ? "accepted vouch into" : "accepted invite to"} ${targetId}` : `filament: ${decoded.branchType} accept failed (${res.error?.code ?? "?"})`
-              );
-            } catch (error) {
-              log(`filament: ${decoded.branchType} accept threw: ${String(error)}`);
-            }
-            return;
-          }
-          if (!isChatMessage(decoded.branchType) || !decoded.roomId) {
-            log(`filament: inbound ${decoded.branchType} not yet handled`);
-            return;
+        const abortSignal = ctx.abortSignal;
+        const dispatchItem = async (item) => {
+          const replyWith = item.reply_with;
+          if (!replyWith) {
+            return { kind: "ambiguous" };
           }
           if (!connection) {
-            log("filament: inbound arrived before connect finished; dropping");
-            return;
+            return { kind: "error", diagnostic: "item arrived before connect finished" };
           }
-          if (!ctx?.channelRuntime) {
-            log("filament: ctx.channelRuntime unavailable; cannot wake a turn");
-            return;
+          if (!ctx.channelRuntime) {
+            return {
+              kind: "error",
+              diagnostic: "ctx.channelRuntime unavailable; cannot wake a turn"
+            };
           }
-          const client = connection.client;
-          const roomId = decoded.roomId;
           const identity = loadIdentity();
-          const isBackchannel = !!identity?.ccRoomId && roomId === identity.ccRoomId;
-          const deliver = async (payload) => {
-            const text = replyText(payload);
-            if (!text.trim()) {
-              log("filament: agent produced no text reply; nothing to post");
-              return;
-            }
-            const res = isBackchannel ? await client.messagePrincipal(text) : await client.postMessage(roomId, text);
-            log(
-              res.ok ? `filament: reply posted to ${roomId}` : `filament: reply post failed (${res.error?.code ?? "?"})`
-            );
-          };
+          let result;
           try {
-            if (isBackchannel || decoded.branchType === "direct_message") {
-              await dispatchInboundDirectDmWithRuntime({
-                cfg: ctx.cfg,
-                runtime: { channel: ctx.channelRuntime },
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                peer: { kind: "direct", id: roomId },
-                senderId: decoded.senderId ?? "unknown",
-                senderAddress: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                // The principal's own agent; Filament already gates who can reach it.
-                commandAuthorized: true,
-                deliver,
-                onRecordError: (error) => log(`filament: record error (continuing): ${String(error)}`),
-                // oxlint-disable-next-line typescript/no-explicit-any
-                onDispatchError: (error, info) => log(`filament: dispatch error (${info?.kind ?? "?"}): ${String(error)}`)
-              });
-            } else {
-              const sessionKey = await dispatchInboundGroupTurn({
-                cfg: ctx.cfg,
-                channelRuntime: ctx.channelRuntime,
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                roomId,
-                senderId: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                deliver,
-                log: (message) => log(`filament: ${message}`)
-              });
-              log(`filament: dispatched channel_message (session=${sessionKey ?? "?"})`);
-            }
+            result = await dispatchWorkItemTurn({
+              cfg: ctx.cfg,
+              channelRuntime: ctx.channelRuntime,
+              channel: FILAMENT_CHANNEL_ID,
+              channelLabel: "Filament",
+              accountId: ctx.accountId ?? "default",
+              peerKind: item.is_backchannel ? "direct" : "group",
+              channelId: item.channel_id,
+              threadId: item.thread_id,
+              messages: item.messages,
+              recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
+              conversationLabel: item.channel_id,
+              // Filament (not OpenClaw) decides who can reach the agent; this
+              // only ever authorizes the backchannel/control-plane item, never
+              // an arbitrary conversation (see the plan's item 5).
+              commandAuthorized: item.is_backchannel === true,
+              log
+            });
           } catch (error) {
-            log(`filament: inbound dispatch threw: ${String(error)}`);
+            return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
           }
+          if (result.sawError) {
+            return {
+              kind: "error",
+              diagnostic: result.errorDetail ?? "dispatch reported an error"
+            };
+          }
+          if (result.sawFinal) {
+            if (abortSignal.aborted) {
+              return { kind: "error", diagnostic: "aborted before publish" };
+            }
+            const publishRes = await connection.client.replyWith(replyWith, result.finalText, {
+              signal: abortSignal
+            });
+            if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
+              return {
+                kind: "error",
+                diagnostic: `publish failed/ambiguous (${publishRes.kind ?? "?"}: ${publishRes.error?.message ?? "no event_id"})`
+              };
+            }
+            log(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
+            return { kind: "published" };
+          }
+          if (result.sawSkip) {
+            return { kind: "silent" };
+          }
+          log(
+            `filament: turn produced no text and no explicit skip signal for ${item.channel_id}; leaving unacknowledged`
+          );
+          return { kind: "ambiguous" };
         };
         let token = "";
         if (mcp.tokenInput !== void 0) {
           const resolved = await resolveConfiguredSecretInputString({
+            // oxlint-disable-next-line typescript/no-explicit-any
             config: api.config,
             env: process.env,
             value: mcp.tokenInput,
@@ -182,21 +128,39 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               mcpUrl: mcp.mcpUrl,
               token,
               log,
-              onInbound: (env) => void handleInbound(env)
+              abortSignal
             });
             onConnectionChange(connection);
           } catch (error) {
             log(`filament: connect failed: ${String(error)}`);
+            connection = null;
           }
         } else {
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
-        await new Promise((resolve) => {
-          const signal = ctx?.abortSignal;
-          if (!signal) return resolve();
-          if (signal.aborted) return resolve();
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
+        if (connection) {
+          const { fatal } = await runPollLoop({
+            client: connection.client,
+            abortSignal,
+            log,
+            dispatchItem
+          });
+          if (fatal) {
+            log(`filament: account entering a fatal/paused state: ${fatal}`);
+            ctx.setStatus?.({
+              accountId: ctx.accountId ?? "default",
+              connected: false,
+              statusState: "error",
+              restartPending: false
+            });
+          }
+        }
+        if (!abortSignal.aborted) {
+          await new Promise((resolve) => {
+            if (abortSignal.aborted) return resolve();
+            abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
         connection?.stop();
         onConnectionChange(null);
       },
