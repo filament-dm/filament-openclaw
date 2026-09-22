@@ -1,179 +1,137 @@
 # Roadmap: OpenClaw ↔ Filament parity
 
-This plugin can **onboard** an agent and keep it **online**, and it **registers for
-push** — but it does not yet **act on** the pushes it receives. This document maps the
-path from "connected and registered" to full parity with the Python `filament-hermes`
-plugin's inbound message loop.
+This plugin connects an OpenClaw agent to Filament using `poll_work` as the inbound transport
+(replacing an earlier FCM-based design). This document maps what the current PoC covers, what
+it deliberately defers, and the path toward a robust migration.
 
-## Where we are today
+See `/Users/p4bloch/scv/filament/openclaw-poll-work-plan.md` (workspace root) for the full
+validation this PoC implements: the seven findings behind the transport swap, the acceptance
+criteria, and the SDK checkpoint that pinned the target version and resolved the open contract
+questions below.
 
-Working end-to-end (verified live against local Synapse + a lima gateway):
+## Where we are today (PoC)
 
-- **Connect sequence** (`src/connect.ts`): initialize → `get_self` poll → accept pending
-  invites/vouches → FCM register → `register_push_token` → heartbeat loop →
-  first-contact greeting.
-- **Presence**: the heartbeat loop keeps the agent showing **online** in Filament.
-- **FCM registration**: `register_push_token` tells Filament to push to us, and
-  `FcmConnection` holds an open MCS socket, so **pushes do arrive at the socket**.
+Build/lint/typecheck/unit-tests pass; **no live-gateway smoke test on this host** (no OpenClaw
+install, no running Synapse with `poll_work` enabled here — see "Verification still needed").
 
-The gap:
+- **Bootstrap** (`src/connect.ts`): resolves a bearer (exchanging a connect token once via RFC
+  8693 token-exchange and persisting the result, or using an already-issued bearer directly),
+  verifies it with a read-only `initialize` + `get_self`, and starts an independent 20s
+  heartbeat.
+- **Poll loop** (`src/poll-work.ts`): sequential, cancelable `poll_work` long-poll
+  (`max_items: 1`), backoff with jitter on transient failures, hard stop (no restart) on auth
+  failure or a dispatch/publish error.
+- **Dispatch** (`src/inbound-dispatch.ts`): one turn per item, session isolated per
+  account/channel/thread, only `final` callbacks collected, one publish attempt via
+  `reply_with`.
+- **FCM removed**: no push socket, no `@eneris/push-receiver` dependency, no invite/vouch
+  auto-accept sweep, no first-contact greeting.
 
-- **Inbound pushes are dropped on the floor.** `FcmConnection` never subscribes to
-  `receiver.onNotification`, so nothing decodes or dispatches an incoming message.
-- **No dedup across restarts.** `start()` passes `persistentIds: []` and we don't persist
-  received IDs, so a restart invites Google to **redeliver** everything. Hermes avoids
-  this with a durable received-ID store seeded into each MCS login.
-
-## The architecture (and the one unverified assumption)
+## The architecture (unchanged from the FCM design)
 
 Hermes' inbound loop is: decode push → `handle_message(event)` → **the gateway runs the
 LLM** → `adapter.send()` → `post_message`. The plugin is plumbing; the gateway owns the
-harness. OpenClaw is the same shape, so our plugin needs to (a) feed the inbound message
-to the agent and (b) get the reply back out.
+harness. OpenClaw is the same shape: our plugin feeds inbound work to the agent and gets the
+reply back out — only the inbound transport changed (long-poll instead of a push socket).
 
-Two candidate OpenClaw SDK paths (names from a source-exploration pass — **not yet run**,
-hence the Phase 0 spike):
+### Why a channel, not turn injection (Phase 0, resolved against gateway `2026.7.1-2` / `0790d9f`)
 
-- **Turn injection** — `api.session.workflow.enqueueNextTurnInjection({ sessionKey, text,
-  idempotencyKey })` to inject the inbound message, then observe a
-  `message_sending`/`message_sent` hook to forward the agent's reply back out via MCP.
-- **Channel registration** — `api.registerChannel(...)` to become a first-class transport
-  the gateway drives bidirectionally (the closest analog to Hermes' adapter: the gateway
-  handles session mapping and routes the reply back through our channel's send fn).
+OpenClaw gates `scheduleSessionTurn` (the "wake a turn" call) to `origin === "bundled"`
+plugins — plugins shipped inside the OpenClaw package. A git/npm-installed plugin is
+`origin: global`/`config` and can **never** be `bundled`, and user trust
+(`plugins.allow` / `entries.<id>.enabled`) does not change origin. So a background service
+cannot wake a turn. `enqueueNextTurnInjection` is *not* origin-gated but only decorates the
+next turn (doesn't start one). **`registerChannel` is not origin-gated** (it only rejects a
+*disabled workspace* plugin), so the supported path is to register Filament as a native
+**channel plugin** and let the gateway drive inbound→turn→outbound. See the README's "Plugin
+trust and the OpenClaw origin gate".
 
-⚠️ **The entire reply-generation design hinges on which of these actually works.** Phase 0
-resolves it before any downstream phase is built on it.
+### SDK contract, pinned during the poll_work migration (2026.7.1-2, commit `0790d9f`)
 
-**RESOLVED (Phase 0, against gateway `2026.7.1-2` / commit `0790d9f`):** turn injection is a
-dead end for us and the channel path is the answer. OpenClaw gates `scheduleSessionTurn`
-(the "wake a turn" call) to `origin === "bundled"` plugins — plugins shipped inside the
-OpenClaw package. A git/npm-installed plugin is `origin: global`/`config` and can **never**
-be `bundled`, and user trust (`plugins.allow` / `entries.<id>.enabled`) does not change
-origin. So a background service cannot wake a turn. `enqueueNextTurnInjection` is *not*
-origin-gated but only decorates the next turn (doesn't start one). **`registerChannel` is
-not origin-gated** (it only rejects a *disabled workspace* plugin), so the supported path
-is to register Filament as a native **channel plugin** and let the gateway drive
-inbound→turn→outbound. See the README's "Plugin trust and the OpenClaw origin gate".
+Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and reading the real
+`.d.ts` files under `node_modules/openclaw/dist/` (not just the docs/source browsed earlier):
 
-## FCM payload reference (DirectPusher)
+- `abortSignal` is a **required** field of `ChannelGatewayContext` (not optional) — every
+  `startAccount` gets one.
+- The manifest field is `setupWizard`, not `setupEntry`; it's optional, and this plugin doesn't
+  set one.
+- `OutboundReplyPayload` (the plugin-facing normalized payload) has **no `isError` field** —
+  only the lower-level dispatcher's `onError`/`onSkip` hooks and `info.kind` ("tool" | "block" |
+  "final") tell a plugin what happened. This is why `src/inbound-dispatch.ts` composes the
+  low-level `dispatchReplyWithBufferedBlockDispatcher` primitives directly instead of using
+  `dispatchInboundDirectDmWithRuntime`: that one-call DM facade forwards every dispatcher
+  callback to `deliver` **without** the `kind` info, so a caller can't tell a `final` from an
+  intermediate `block`/`tool` callback — which a single-publish-per-item design needs to get
+  right. The real export name for the reply-pipeline helper is also
+  `createChannelMessageReplyPipeline`, not `createChannelReplyPipeline` (a real bug the type
+  install caught).
+- Thread-scoped session isolation with case preserved uses
+  `resolveThreadSessionKeys({baseSessionKey, threadId, normalizeThreadId})` from
+  `openclaw/plugin-sdk/routing` — its default thread-id normalizer lowercases, so a custom
+  identity normalizer is required to keep a Matrix event id's case intact.
+- Returning from `startAccount` without waiting for `ctx.abortSignal` triggers the gateway's own
+  recovery/auto-restart (it logs "channel exited without an error" and restarts on a backoff).
+  That is the right behavior for the idle/no-token case, but wrong for a fatal
+  auth/dispatch failure — restarting would just hit the same failure again. So on a fatal
+  condition, `src/channel.ts` sets an error status via `ctx.setStatus` **and keeps holding the
+  account open** (awaiting abort) rather than returning, so the gateway never auto-restarts a
+  poll loop that just told us to stop. This is a judgment call under an unverified assumption
+  (no live gateway here to confirm the exact recovery behavior) — flag it in review if the
+  real gateway behaves differently.
 
-`env.message.data` (from `@eneris/push-receiver`'s `MessageEnvelope`) carries the
-DirectPusher data dict; `env.persistentId` is the dedup key.
+## Limitations (explicit, not silently dropped)
 
-```
-data = {
-  body: "<JSON-serialized PushPayload>",   // the real content
-  room_name, message_text, badge_count, from_directpusher, badge_only, ...
-}
+- **No invites/vouches.** `poll_work` only surfaces `m.room.message` work
+  (see `tools_poll.py:261`); it doesn't deliver `add_to_channel`/`add_to_space`/
+  `knock_invite_received`/reactions/the `io.filament.ping` liveness ping. An agent that isn't
+  already in a conversation has no way to join one through this transport alone. A full
+  migration needs a separate `list_pending_invites`/`accept_invite` reconciliation policy;
+  it is out of scope for this PoC.
+- **The reachability probe may report `push_path_silent`.** `probe.py` still pings over FCM;
+  a poll-only agent has no FCM registration to answer, so its "reachable" signal is stale for
+  this transport. The heartbeat loop keeps presence working independently of the probe.
+- **Publish recovery is not durable across restarts/workers.** The MCP client only ever
+  attempts one publish per item; a failed or ambiguous result (no HTTP success + `event_id`)
+  pauses the account with a diagnostic instead of guessing. Separately, the *server's* write
+  path claims an item (`record_issued`/`claim_reply`) before confirming the send — a send
+  failure after the claim can strand the item outside future polls with that cursor. Fixing
+  that is server-side work (`work_ledger.py`/`tools_write.py`), tracked separately and not
+  part of this plugin's change.
+- **The poll cursor is kept in memory only** (not persisted — see `src/token-store.ts`'s
+  header). A restart re-scans from the start of unread work; this is safe (already-answered
+  items are skipped server-side) but means a redelivered item runs a fresh agent turn rather
+  than resuming a partial one.
+- **DM classification beyond the backchannel is deferred.** `poll_work` items carry
+  `is_backchannel` but no general conversation-type flag, so every non-backchannel item is
+  routed through the per-channel/group session path, even a true 1:1 DM outside the
+  backchannel. `commandAuthorized` is only ever true for `is_backchannel` items regardless.
 
-PushPayload = {
-  event_id, room_id, is_direct,
-  branch: {
-    type: "direct_message" | "channel_message" | "add_to_channel" | "add_to_space"
-        | "knock_invite_received" | "reaction" | ...,
-    sender, sender_id,
-    content: { text } | null,             // null for media-only (ENG-603)
-    channel, thread_id,
-    is_mention_of_recipient, is_everyone_mention,
-    key, target_event_id,                 // reactions
-  },
-}
-// Non-message payloads (e.g. "io.filament.ping") put the type at top level, no `branch`.
-```
+## Verification still needed
 
-## Phases
+No OpenClaw install and no running Synapse with `poll_work` enabled on this host, so the
+following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP client:
 
-### Phase 0 — Spike the channel path — ✅ DONE
-**Injection-vs-channel question: resolved.** `scheduleSessionTurn` is bundled-only (closed to
-a git-installed plugin); `registerChannel` is the supported path (see the resolved note above
-and the README).
+- Loading the plugin against a real gateway (`openclaw plugins install --link ...`) and
+  confirming `ctx.channelRuntime`'s real shape matches what `src/inbound-dispatch.ts` assumes
+  (session/routing/reply sub-objects, `dispatchReplyWithBufferedBlockDispatcher`'s actual
+  `info.kind` values in practice).
+- An end-to-end turn against a live agent: multiple `final` callbacks joined correctly, a
+  thread reply (`reply_in_thread`) landing on the right anchor, and the fatal-status behavior
+  on an auth failure actually preventing the gateway from restarting the account.
+- The token-exchange call against a real Synapse (`oauth_token.py`'s
+  `_exchange_connect_token`), including the `authorization_pending` retry path while an agent
+  finishes onboarding in the Filament app.
 
-**Minimal `ChannelPlugin` spike: proven end-to-end** against the lima gateway (`2026.7.1-2`).
-The throwaway `src/spike-channel.ts` (env `FILAMENT_CHANNEL_SPIKE_ENABLED`) registered a
-minimal `filament-echo` direct-message channel; the gateway started it (only `enabled` is
-required — no channel config), a synthetic inbound woke a real agent turn on `agent:main:main`,
-and the reply came back to our `deliver` callback as `{ text }`. (Reply text was an
-auth-error only because no model provider is configured — the pipeline itself works.)
+## MCP tools used
 
-Findings that feed the real implementation:
-- **Minimal working surface:** `id` + `meta` + `capabilities: { chatTypes: ["direct"] }` +
-  `config: { listAccountIds, resolveAccount }` + `gateway.startAccount`. Wake a turn from
-  `startAccount` via `dispatchInboundDirectDmWithRuntime(...)` (exported from
-  `openclaw/plugin-sdk/channel-inbound`), passing `runtime: { channel: ctx.channelRuntime }`.
-- **Outbound seam:** the `deliver(payload)` callback receives an `OutboundReplyPayload`
-  (`{ text }`) — this is where Phase 5 posts to Filament over MCP.
-- **`startAccount` must stay alive** (keep the FCM socket open + `await ctx.abortSignal`).
-  Returning immediately makes the gateway log `channel exited without an error` and
-  auto-restart the channel on a backoff (re-firing inbound each time).
-- **Routing:** the inbound resolved to the main agent session (`agent:main:main`); real
-  per-conversation routing is Phase 4.
-
-Both throwaway spikes (`src/spike-channel.ts`, and the already-removed `spike-injection.ts`)
-can be deleted once the real channel lands.
-
-### Phase 1 — Receive, decode, dedup — ✅ DONE
-- `FcmConnection` now takes an `onMessage` callback and wires `receiver.onNotification`,
-  seeding `persistentIds` from a durable store and deduping by persistent ID before
-  forwarding (`src/fcm.ts`, `src/token-store.ts`).
-- Pure `decodeDirectPusher` (`message.data.body` → `PushPayload`) with unit tests
-  (`src/inbound-core.ts` / `.test.ts`).
-- The `filament` channel logs each decoded push and holds `startAccount` open.
-**Exit met:** a Filament message logs a fully-decoded push; restarts don't reprocess.
-
-### Phase 2 — Ping → pong — ✅ DONE
-`branchType === "io.filament.ping"` → `connection.client.pong(nonce)` in the channel's
-inbound handler. LLM-free.
-
-### Phase 3 — Invites / vouches — ✅ DONE
-Startup acceptance runs inside `runConnect` (`acceptPending`). Runtime pushes are now handled
-in the channel's inbound handler, mirroring Hermes' `_on_invite` / `_on_vouch`:
-- `add_to_channel` / `add_to_space` → `acceptInvite(roomId)` (invite target = top-level `room_id`).
-- `knock_invite_received` → `acceptVouch(loopId)` (`branch.loop_id`, falling back to `room_id`).
-Best-effort (logged, never throws). **Possible refinement:** Hermes retries `accept_vouch`
-on transient/knock-timing failures; we do a single attempt for now.
-
-### Phase 4 — Message → agent turn — ✅ DONE (routing hardened)
-Chat pushes wake a turn via `ctx.channelRuntime`. Routing distinguishes chat type so
-sessions don't bleed across rooms:
-- **Backchannel** (`roomId === ccRoomId`, arrives as `channel_message`) and true DMs →
-  `dispatchInboundDirectDmWithRuntime` (direct / control plane).
-- **Group channels** → `dispatchInboundGroupTurn` (`src/inbound-dispatch.ts`), which mirrors
-  the SDK's DM facade composition with `ChatType: "group"` / `peer.kind: "group"` so each
-  channel gets its own session (`agent:…:filament:group:<roomId>`) instead of collapsing to
-  the single `agent:main:main` session. `capabilities.chatTypes` is `["direct","group"]`.
-- Fetching full content via `get_thread` for media-only messages is still deferred (text-only).
-**Exit met:** a chat message produces an agent turn (proven end-to-end).
-**Caveat:** the group path composes exported SDK primitives (there's no group facade for
-third-party plugins) and is only build/lint-checked — verify the group case at runtime.
-
-### Phase 5 — Reply → MCP — ✅ DONE
-The `deliver(payload)` callback posts the agent's reply: `message_principal` when the room
-is the backchannel (`ccRoomId`), else `post_message(roomId, text)`.
-**Exit met:** the reply is posted back to the originating conversation.
-**Remaining refinements:** thread-aware replies (`reply_in_thread`) and richer payloads.
-
-### Phase 6 — Advanced parity (scope deliberately; probably don't port wholesale)
-Hermes' wake policy, control-vs-reactive planes, per-`(channel, sender)` capability
-gating, and disk-backed standing instructions. **Recommendation:** lean on OpenClaw's
-**native** agent config / system prompt rather than replicate Hermes' `WAKE-UP SIGNAL`
-framing — that framing exists because Hermes injects its own prompt, whereas in OpenClaw
-the gateway already owns the system prompt. Treat each of these as an explicit
-keep/drop/adapt decision, not a reflexive port.
-
-## MCP tools status
-
-Implemented in `src/mcp-client.ts`: `get_self`, `register_push_token`,
-`list_pending_invites`, `accept_invite`, `list_vouches`, `accept_vouch`, `post_message`,
-`message_principal`, `heartbeat`, `pong`.
-
-Still to add (Phases 4–5): `get_thread`, `reply_in_thread`, `react`
-(and `get_recent_messages` if we want channel breadcrumbs).
+`initialize`, `get_self`, `heartbeat`, `poll_work`, and whatever `reply_with.tool` names
+(`post_message` or `reply_in_thread`, both invoked generically via `FilamentMcpClient.replyWith`
+with `reply_with.args` plus `markdown_body`). `message_principal` is no longer used — it is
+never a valid `reply_with.tool` value, and the connect-time greeting that used it is removed.
 
 ## Notes / open questions
 
-- **Callback threading**: `@eneris/push-receiver` fires `onNotification` on Node's event
-  loop (no cross-thread bridging needed, unlike the Python `firebase-messaging` port).
-- **sessionKey mapping** (Phase 4): needs a stable, reversible mapping from a Filament
-  `room_id` (+ sender for DMs) to an OpenClaw `sessionKey`, so replies route back to the
-  right conversation. Design during Phase 0/4.
-- **How much of Hermes' framing to keep** (Phase 6): the biggest parity judgment call.
+- **How much of Hermes' framing to keep** (e.g. wake-policy prompts, control-vs-reactive
+  planes): still the biggest parity judgment call, unaffected by the transport change.
+- **Media** (images/attachments) is not addressed by `poll_work`'s `messages[]` shape
+  (`body` is text only); parity here is a separate, later piece of work.
