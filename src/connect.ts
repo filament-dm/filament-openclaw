@@ -1,7 +1,7 @@
 /**
  * Filament connect sequence — the client half of onboarding.
  *
- * PoC scope (see /Users/p4bloch/scv/filament/openclaw-poll-work-plan.md):
+ * PoC scope (RFC-007, "OpenClaw as a `poll_work` channel plugin"):
  *   1. Resolve the configured token. If it's a connect token (`fmcp_…`),
  *      exchange it once for a bearer via the token-exchange grant and persist
  *      the result; if a persisted bearer already exists, reuse it and skip

@@ -4,8 +4,8 @@ This plugin connects an OpenClaw agent to Filament using `poll_work` as the inbo
 (replacing an earlier FCM-based design). This document maps what the current PoC covers, what
 it deliberately defers, and the path toward a robust migration.
 
-See `/Users/p4bloch/scv/filament/openclaw-poll-work-plan.md` (workspace root) for the full
-validation this PoC implements: the seven findings behind the transport swap, the acceptance
+The validation this PoC implements lives in the maintainers' planning notes
+(RFC-007, "OpenClaw as a `poll_work` channel plugin"), outside this repository: the seven findings behind the transport swap, the acceptance
 criteria, and the SDK checkpoint that pinned the target version and resolved the open contract
 questions below.
 
