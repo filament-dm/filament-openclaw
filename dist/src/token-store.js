@@ -1,9 +1,9 @@
+import { createHash } from "node:crypto";
 import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doctor";
 const PLUGIN_ID = "filament-fcm";
 const IDENTITY_NAMESPACE = "identity";
 const IDENTITY_KEY = "self";
 const BEARER_NAMESPACE = "bearer";
-const BEARER_KEY = "current";
 let idStore = null;
 let bearerStore = null;
 function identityStore() {
@@ -20,11 +20,17 @@ function bearerStoreInstance() {
   if (!bearerStore) {
     bearerStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
       namespace: BEARER_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new"
+      // Keyed per connect token now (see module header), so more than one
+      // entry is the normal case across a token rotation, not an anomaly —
+      // evict the oldest rather than rejecting a legitimate new exchange.
+      maxEntries: 16,
+      overflowPolicy: "evict-oldest"
     });
   }
   return bearerStore;
+}
+function bearerKey(connectToken) {
+  return createHash("sha256").update(connectToken).digest("hex").slice(0, 16);
 }
 function loadIdentity() {
   return identityStore().lookup(IDENTITY_KEY);
@@ -32,11 +38,11 @@ function loadIdentity() {
 function saveIdentity(identity) {
   identityStore().register(IDENTITY_KEY, identity);
 }
-function loadBearer() {
-  return bearerStoreInstance().lookup(BEARER_KEY)?.bearer;
+function loadBearer(connectToken) {
+  return bearerStoreInstance().lookup(bearerKey(connectToken))?.bearer;
 }
-function saveBearer(bearer) {
-  bearerStoreInstance().register(BEARER_KEY, { bearer, obtainedAt: Date.now() });
+function saveBearer(connectToken, bearer) {
+  bearerStoreInstance().register(bearerKey(connectToken), { bearer, obtainedAt: Date.now() });
 }
 export {
   loadBearer,

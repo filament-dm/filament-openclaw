@@ -80,17 +80,19 @@ async function exchangeConnectToken(mcpUrl, connectToken, log, abortSignal, fetc
   }
   throw new Error("connect token exchange did not complete within the retry window");
 }
-async function resolveBearer(mcpUrl, configuredToken, log, abortSignal, fetchImpl, persistence = { load: loadBearer, save: saveBearer }) {
+const defaultBearerPersistence = { load: loadBearer, save: saveBearer };
+async function resolveBearer(mcpUrl, configuredToken, log, abortSignal, fetchImpl, persistence = defaultBearerPersistence) {
   if (!configuredToken.startsWith(CONNECT_TOKEN_PREFIX)) {
     return configuredToken;
   }
-  const persisted = persistence.load();
+  const persisted = persistence.load(configuredToken);
   if (persisted) {
-    log("filament-connect: using previously-persisted bearer (skipping exchange)");
+    log("filament-connect: persisted bearer found for this connect token; skipping exchange");
     return persisted;
   }
+  log("filament-connect: new connect token; exchanging");
   const bearer = await exchangeConnectToken(mcpUrl, configuredToken, log, abortSignal, fetchImpl);
-  persistence.save(bearer);
+  persistence.save(configuredToken, bearer);
   return bearer;
 }
 async function runConnect(opts) {
@@ -102,7 +104,7 @@ async function runConnect(opts) {
     log,
     abortSignal,
     fetchImpl,
-    bearerPersistence ?? { load: loadBearer, save: saveBearer }
+    bearerPersistence ?? defaultBearerPersistence
   );
   if (abortSignal?.aborted) throw new ConnectAbortedError();
   const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl);

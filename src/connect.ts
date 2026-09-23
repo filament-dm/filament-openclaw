@@ -173,30 +173,44 @@ export async function exchangeConnectToken(
 }
 
 export interface BearerPersistence {
-  load: () => string | undefined;
-  save: (bearer: string) => void;
+  load: (connectToken: string) => string | undefined;
+  save: (connectToken: string, bearer: string) => void;
 }
 
-/** Resolve the bearer to use for MCP calls, exchanging/persisting as needed. */
+const defaultBearerPersistence: BearerPersistence = { load: loadBearer, save: saveBearer };
+
+/**
+ * Resolve the bearer to use for MCP calls, exchanging/persisting as needed.
+ *
+ * Three cases:
+ *   - `configuredToken` isn't a connect token (`fmcp_…`) at all: it's already
+ *     a bearer, use it directly.
+ *   - it is a connect token AND a bearer is already persisted under THIS
+ *     token's own key: reuse it, no exchange.
+ *   - otherwise (new/unseen connect token): exchange it and persist the
+ *     result under its key, so a later run with the same token skips the
+ *     exchange but a *different* token never reuses someone else's bearer.
+ */
 export async function resolveBearer(
   mcpUrl: string,
   configuredToken: string,
   log: (message: string) => void,
   abortSignal: AbortSignal | undefined,
   fetchImpl: typeof fetch,
-  persistence: BearerPersistence = { load: loadBearer, save: saveBearer },
+  persistence: BearerPersistence = defaultBearerPersistence,
 ): Promise<string> {
   if (!configuredToken.startsWith(CONNECT_TOKEN_PREFIX)) {
     // Already a bearer.
     return configuredToken;
   }
-  const persisted = persistence.load();
+  const persisted = persistence.load(configuredToken);
   if (persisted) {
-    log("filament-connect: using previously-persisted bearer (skipping exchange)");
+    log("filament-connect: persisted bearer found for this connect token; skipping exchange");
     return persisted;
   }
+  log("filament-connect: new connect token; exchanging");
   const bearer = await exchangeConnectToken(mcpUrl, configuredToken, log, abortSignal, fetchImpl);
-  persistence.save(bearer);
+  persistence.save(configuredToken, bearer);
   return bearer;
 }
 
@@ -215,7 +229,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     log,
     abortSignal,
     fetchImpl,
-    bearerPersistence ?? { load: loadBearer, save: saveBearer },
+    bearerPersistence ?? defaultBearerPersistence,
   );
   if (abortSignal?.aborted) throw new ConnectAbortedError();
 

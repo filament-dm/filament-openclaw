@@ -15,12 +15,13 @@ function makeFetch(handlers: Handler[]): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-function memoryPersistence(initial?: string) {
-  let stored = initial;
+/** Fake persistence keyed by connect token, mirroring token-store.ts's real keying. */
+function memoryPersistence(initial?: Record<string, string>) {
+  const stored = new Map<string, string>(Object.entries(initial ?? {}));
   return {
-    load: () => stored,
-    save: (bearer: string) => {
-      stored = bearer;
+    load: (connectToken: string) => stored.get(connectToken),
+    save: (connectToken: string, bearer: string) => {
+      stored.set(connectToken, bearer);
     },
   };
 }
@@ -54,9 +55,47 @@ test("resolveBearer: a persisted bearer skips the exchange entirely", async () =
     () => {},
     undefined,
     fetchImpl,
-    memoryPersistence("persisted-bearer"),
+    memoryPersistence({ fmcp_sometoken: "persisted-bearer" }),
   );
   assert.equal(bearer, "persisted-bearer");
+});
+
+test("resolveBearer: a different connect token triggers a new exchange, and the first token's bearer stays stored", async () => {
+  let exchangeCalls = 0;
+  const fetchImpl = makeFetch([
+    () => {
+      exchangeCalls += 1;
+      return new Response(JSON.stringify({ access_token: "bearer-for-token-two" }), {
+        status: 200,
+      });
+    },
+  ]);
+  const persistence = memoryPersistence({ fmcp_tokenOne: "bearer-for-token-one" });
+
+  // A second, different connect token: no persisted bearer under its own key,
+  // so it must exchange rather than reuse token one's bearer.
+  const bearerTwo = await resolveBearer(
+    "https://x.test/mcp/agents",
+    "fmcp_tokenTwo",
+    () => {},
+    undefined,
+    fetchImpl,
+    persistence,
+  );
+  assert.equal(bearerTwo, "bearer-for-token-two");
+  assert.equal(exchangeCalls, 1);
+
+  // Token one's bearer is untouched and still resolves without exchanging.
+  const bearerOne = await resolveBearer(
+    "https://x.test/mcp/agents",
+    "fmcp_tokenOne",
+    () => {},
+    undefined,
+    fetchImpl,
+    persistence,
+  );
+  assert.equal(bearerOne, "bearer-for-token-one");
+  assert.equal(exchangeCalls, 1);
 });
 
 test("exchangeConnectToken: posts form-urlencoded RFC 8693 params to <mcpUrl>/oauth/token", async () => {
