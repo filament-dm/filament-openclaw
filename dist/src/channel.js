@@ -1,7 +1,6 @@
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { resolveMcpSettings, runConnect } from "./connect.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
-import { startInviteSweeper } from "./invite-sweep.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
 const FILAMENT_CHANNEL_ID = "filament";
@@ -139,16 +138,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         } else {
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
-        let inviteSweeper = null;
-        if (connection && mcp.autoAcceptInvites) {
-          log(`filament-invites: auto-accept enabled, sweeping every ${mcp.inviteSweepSeconds}s`);
-          inviteSweeper = startInviteSweeper({
-            client: connection.client,
-            log,
-            abortSignal,
-            intervalSeconds: mcp.inviteSweepSeconds
-          });
-        }
         if (connection) {
           const { fatal } = await runPollLoop({
             client: connection.client,
@@ -157,7 +146,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             dispatchItem,
             waitSeconds: mcp.pollWaitSeconds
           });
-          inviteSweeper?.stop();
           if (fatal) {
             log(`filament: account entering a fatal/paused state: ${fatal}`);
             ctx.setStatus?.({

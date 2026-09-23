@@ -41,18 +41,6 @@
         "minimum": 1,
         "maximum": 60,
         "description": "How long (seconds) each poll_work long-poll blocks server-side waiting for work (default 30, matching the server default; clamped to 1-60, the server's own max). Kept at or below 60 so an intermediary with a ~60s timeout (e.g. an nginx dev proxy) doesn't cut the connection before the server's own wait completes."
-      },
-      "autoAcceptInvites": {
-        "type": "boolean",
-        "default": false,
-        "description": "Accept pending loop invites and vouches automatically. Off by default because poll_work does not deliver them and accepting is a policy decision."
-      },
-      "inviteSweepSeconds": {
-        "type": "integer",
-        "minimum": 10,
-        "maximum": 600,
-        "default": 60,
-        "description": "How often (seconds) to sweep for pending loop invites and vouches when autoAcceptInvites is on (default 60, clamped to 10-600)."
       }
     }
   },

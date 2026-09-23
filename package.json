@@ -16,9 +16,9 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts src/util.ts src/token-store.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/poll-work.ts src/invite-sweep.ts src/channel.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
+    "build": "esbuild index.ts src/util.ts src/token-store.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/poll-work.ts src/channel.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
     "prepare": "npm run build",
-    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/connect.test.ts src/poll-work.test.ts src/invite-sweep.test.ts --bundle --external:openclaw --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/connect.test.mjs dist-test/poll-work.test.mjs dist-test/invite-sweep.test.mjs",
+    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/connect.test.ts src/poll-work.test.ts --bundle --external:openclaw --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/connect.test.mjs dist-test/poll-work.test.mjs",
     "format": "oxfmt index.ts src",
     "format:check": "oxfmt --check index.ts src",
     "lint": "oxlint index.ts src",

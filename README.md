@@ -85,10 +85,11 @@ live-gateway smoke test on this host; see `ROADMAP.md`). The plugin registers a 
   account/channel/thread (Matrix IDs keep their case). Only `final` dispatcher callbacks are
   collected and joined; a single publish is attempted only if there is finalized text.
   `commandAuthorized` is only ever true for `is_backchannel` items.
-- **FCM removed** — no push socket and no first-contact greeting. The invite/vouch auto-accept
-  sweep came back as an independent, opt-in loop (`autoAcceptInvites`, see "Configuration"
-  below) rather than as part of connect. See `ROADMAP.md`'s "Limitations" for what else that
-  trades away.
+- **FCM removed** — no push socket and no first-contact greeting. Joining a loop (previously an
+  opt-in auto-accept sweep) is now the agent's own call: `filament_accept_invite` and
+  `filament_accept_vouch` are exposed as ordinary tools (see "Tools exposed to the agent"
+  below) instead of a background loop guessing when to accept on the agent's behalf. See
+  `ROADMAP.md`'s "Limitations" for what else that trades away.
 
 See [`ROADMAP.md`](ROADMAP.md) for status, the acceptance criteria this PoC does and does not
 meet yet, and what's next.
@@ -226,8 +227,6 @@ openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --f
 | `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | A connect token (`fmcp_…`, exchanged once and the bearer persisted) or an already-issued bearer, used directly. |
 | `mcpUrl` (config) / `FILAMENT_MCP_URL` (env)         | Filament's `/mcp/agents` endpoint (defaults to production; set for staging/local). |
 | `pollWaitSeconds` (config)                           | How long (seconds) each `poll_work` long-poll blocks server-side waiting for work. Default **30**, clamped to `[1, 60]`. 30 matches the server's own default and stays clear of ~60s intermediary timeouts (e.g. the `filament-dev.local` nginx dev proxy), which would otherwise race the server's own wait and surface as a spurious `HTTP 504`. |
-| `autoAcceptInvites` (config)                         | Accept pending loop invites and vouches automatically (`src/invite-sweep.ts`). Default **false**: `poll_work` never delivers invites/vouches as work items, so nothing here requires the sweep to run, and auto-joining loops on the agent's behalf is a policy decision an operator should opt into rather than get for free. |
-| `inviteSweepSeconds` (config)                        | How often (seconds) the invite/vouch sweep runs when `autoAcceptInvites` is on. Default **60**, clamped to `[10, 600]`. |
 
 Local setup (against a local Synapse with `poll_work` behind the `agent_poll_work` feature
 flag — see `synapse-local-dev.md` and `filament feature-flag enable agent_poll_work --user
@@ -245,9 +244,10 @@ limitations (see `ROADMAP.md` for the full detail and the acceptance criteria th
 
 - **`poll_work` itself carries no invites/vouches.** It only ever returns `m.room.message` work,
   so an agent that isn't already in a conversation has no way to join one through the poll
-  transport alone. An opt-in sweep (`autoAcceptInvites`, `src/invite-sweep.ts`) covers this
-  independently of `poll_work` — off by default, since accepting on the agent's behalf is a
-  policy decision, not something the transport implies.
+  transport alone. There is no more background sweep for this — `filament_accept_invite` and
+  `filament_accept_vouch` are ordinary tools the agent calls itself (see "Tools exposed to the
+  agent"), so joining a loop is a decision made in the same turn as any other action, not a
+  standing policy switch.
 - **The reachability probe may report `push_path_silent`.** Filament's probe still pings over
   FCM; a poll-only agent has no FCM registration to answer it, so the probe's health signal is
   stale for this transport (documented, not fixed here).

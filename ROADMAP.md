@@ -25,8 +25,8 @@ install, no running Synapse with `poll_work` enabled here — see "Verification 
   account/channel/thread, only `final` callbacks collected, one publish attempt via
   `reply_with`.
 - **FCM removed**: no push socket, no `@eneris/push-receiver` dependency, no first-contact
-  greeting. The invite/vouch auto-accept sweep came back as an independent, opt-in loop
-  (`src/invite-sweep.ts`, `autoAcceptInvites`) — see "Limitations" below.
+  greeting. Invite/vouch acceptance is no longer a background sweep — see "Tool surface"
+  below and the README's "Tools exposed to the agent".
 
 ## The architecture (unchanged from the FCM design)
 
@@ -85,11 +85,11 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
 - **`poll_work` itself carries no invites/vouches.** `poll_work` only surfaces `m.room.message`
   work (see `tools_poll.py:261`); it doesn't deliver `add_to_channel`/`add_to_space`/
   `knock_invite_received`/reactions/the `io.filament.ping` liveness ping. An agent that isn't
-  already in a conversation has no way to join one through the poll transport alone. This is
-  now covered separately: `src/invite-sweep.ts` is an opt-in (`autoAcceptInvites`, default off)
-  `list_pending_invites`/`accept_invite`/`list_vouches`/`accept_vouch` reconciliation loop,
-  independent of the poll loop and its own interval (`inviteSweepSeconds`). Off by default
-  because accepting on the agent's behalf is a policy decision `poll_work` doesn't make for you.
+  already in a conversation has no way to join one through the poll transport alone. This is now
+  covered by the tool surface itself: `filament_list_pending_invites`/`filament_accept_invite`/
+  `filament_list_vouches`/`filament_accept_vouch` are ordinary registered tools (see
+  `src/filament-tools.ts`) the agent calls when asked, rather than a standing background
+  reconciliation loop.
 - **The reachability probe may report `push_path_silent`.** `probe.py` still pings over FCM;
   a poll-only agent has no FCM registration to answer, so its "reachable" signal is stale for
   this transport. The heartbeat loop keeps presence working independently of the probe.
@@ -127,10 +127,17 @@ following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP 
 
 ## MCP tools used
 
-`initialize`, `get_self`, `heartbeat`, `poll_work`, and whatever `reply_with.tool` names
-(`post_message` or `reply_in_thread`, both invoked generically via `FilamentMcpClient.replyWith`
-with `reply_with.args` plus `markdown_body`). `message_principal` is no longer used — it is
-never a valid `reply_with.tool` value, and the connect-time greeting that used it is removed.
+By the plugin's own transport: `initialize`, `get_self`, `heartbeat`, `poll_work`, `tools/list`
+(to discover the agent-facing surface), and whatever `reply_with.tool` names (`post_message` or
+`reply_in_thread`, both invoked generically via `FilamentMcpClient.replyWith` with
+`reply_with.args` plus `markdown_body`). `message_principal` is no longer used by the plugin
+itself — the connect-time greeting that used it is removed — but it is exposed to the agent (see
+below), so the model may call it directly.
+
+By the agent, as registered tools (`src/filament-tools.ts`): every tool the live `tools/list`
+response returns except `poll_work` (the poll loop owns it), filtered to the names declared in
+`openclaw.plugin.json`'s `contracts.tools` (a reviewed snapshot of the server's tool surface —
+see the README's "Tools exposed to the agent" for the full list and the authorization rules).
 
 ## Notes / open questions
 
