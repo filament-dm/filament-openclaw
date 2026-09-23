@@ -6,9 +6,9 @@
 #
 #   CONNECT_TOKEN=fmcp_... bash install.sh
 #
-# (filament-openclaw is a private repo; a public "curl | bash" one-liner
-# needs a GitHub token with access — run this locally after cloning until
-# it is published to ClawHub.)
+# The repository is public, so the curl-pipe-bash form works without
+# credentials:
+#   curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... bash
 #
 # Optional env: FILAMENT_MCP_URL (staging/local MCP endpoint instead of
 # production), PLUGIN_REF (branch/tag/commit to install, default: main),

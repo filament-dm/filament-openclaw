@@ -143,8 +143,8 @@ openclaw plugins install git:git@github.com:filament-dm/filament-openclaw.git@pa
 
 Rules of the installer that matter here:
 
-- The repo is private: the host needs an SSH key with access, hence the
-  `git@github.com:` form.
+- The repo is public: the HTTPS form needs no credentials; `git@github.com:`
+  works too if the host has a key.
 - `dist/` must be committed on the ref you install (see below). A branch whose
   `dist/` is stale or missing fails with the "compiled runtime output" error.
 - `--force` is only needed when the id `filament-fcm` is already installed and
