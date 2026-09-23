@@ -110,6 +110,22 @@ meet yet, and what's next.
 
 ## Install (from this private git repository)
 
+**One-line install** (what the Filament app's "Connect your OpenClaw agent"
+dialog shows; the token is the single-use `fmcp_…` connect token, exchanged
+once by the plugin for a persistent bearer):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... bash
+```
+
+`install.sh` checks for `openclaw` and a running gateway, installs or updates
+the plugin from git (`PLUGIN_REF` selects a branch, default `main`), writes
+`connectToken` and, when `FILAMENT_MCP_URL` is set, `mcpUrl`, enables the
+plugin, binds the `filament` channel to an agent when the gateway has several
+(`OPENCLAW_AGENT=<id>` or an interactive prompt), and waits for the connect
+log line. `OPENCLAW_PLUGIN_SOURCE` overrides the install spec for a future
+ClawHub package.
+
 This plugin is **not published to ClawHub or npm**. Install it straight from git.
 OpenClaw's `git:` installer (verified against 2026.7.1-2) accepts `@<ref>` or
 `#<ref>`, where the ref is a branch, tag or commit. It clones to a temporary
