@@ -223,6 +223,7 @@ openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --f
 | --------------------------------------------------- | ------------------------------------------------------------------------ |
 | `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | A connect token (`fmcp_…`, exchanged once and the bearer persisted) or an already-issued bearer, used directly. |
 | `mcpUrl` (config) / `FILAMENT_MCP_URL` (env)         | Filament's `/mcp/agents` endpoint (defaults to production; set for staging/local). |
+| `pollWaitSeconds` (config)                           | How long (seconds) each `poll_work` long-poll blocks server-side waiting for work. Default **30**, clamped to `[1, 60]`. 30 matches the server's own default and stays clear of ~60s intermediary timeouts (e.g. the `filament-dev.local` nginx dev proxy), which would otherwise race the server's own wait and surface as a spurious `HTTP 504`. |
 
 Local setup (against a local Synapse with `poll_work` behind the `agent_poll_work` feature
 flag — see `synapse-local-dev.md` and `filament feature-flag enable agent_poll_work --user

@@ -35,6 +35,12 @@
       "mcpUrl": {
         "type": "string",
         "description": "Filament MCP agents endpoint (defaults to production; set for staging/local)."
+      },
+      "pollWaitSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 60,
+        "description": "How long (seconds) each poll_work long-poll blocks server-side waiting for work (default 30, matching the server default; clamped to 1-60, the server's own max). Kept at or below 60 so an intermediary with a ~60s timeout (e.g. an nginx dev proxy) doesn't cut the connection before the server's own wait completes."
       }
     }
   },

@@ -197,6 +197,7 @@ export function registerFilamentChannel(
             abortSignal,
             log,
             dispatchItem,
+            waitSeconds: mcp.pollWaitSeconds,
           });
           if (fatal) {
             // Surface a diagnostic and stop: returning normally here (rather

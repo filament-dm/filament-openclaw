@@ -11,6 +11,13 @@ const EXCHANGE_MAX_ATTEMPTS = 40;
 const EXCHANGE_INTERVAL_MS = 3e3;
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+const MIN_POLL_WAIT_SECONDS = 1;
+const MAX_POLL_WAIT_SECONDS = 60;
+function clampPollWaitSeconds(raw) {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return void 0;
+  return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
+}
 function resolveMcpSettings(pluginConfig, env = process.env) {
   const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
   const cfgToken = cfg.connectToken;
@@ -19,7 +26,8 @@ function resolveMcpSettings(pluginConfig, env = process.env) {
   const tokenInput = hasCfgToken ? cfgToken : envToken || void 0;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
   const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  return { tokenInput, mcpUrl };
+  const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
+  return { tokenInput, mcpUrl, pollWaitSeconds };
 }
 class ConnectAbortedError extends Error {
   constructor() {
@@ -166,6 +174,8 @@ async function runConnect(opts) {
 }
 export {
   ConnectAbortedError,
+  MAX_POLL_WAIT_SECONDS,
+  MIN_POLL_WAIT_SECONDS,
   exchangeConnectToken,
   resolveBearer,
   resolveMcpSettings,

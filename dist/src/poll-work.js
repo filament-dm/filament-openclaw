@@ -38,7 +38,7 @@ function parsePollWorkResponse(data) {
     acknowledged: typeof d.acknowledged === "number" ? d.acknowledged : 0
   };
 }
-const DEFAULT_WAIT_SECONDS = 60;
+const DEFAULT_WAIT_SECONDS = 30;
 function itemKey(item) {
   const ids = item.messages.map((m) => m.event_id).sort();
   return `${item.channel_id}\0${item.thread_id ?? ""}\0${ids.join(",")}`;

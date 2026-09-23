@@ -69,8 +69,8 @@ test("empty poll result: re-polls immediately with the returned cursor, no dispa
   });
   assert.equal(dispatchCalls, 0);
   assert.equal(calls.length, 3);
-  assert.deepEqual(calls[1], { cursor: "c:1", ack: undefined, wait_seconds: 60, max_items: 1 });
-  assert.deepEqual(calls[2], { cursor: "c:2", ack: undefined, wait_seconds: 60, max_items: 1 });
+  assert.deepEqual(calls[1], { cursor: "c:1", ack: undefined, wait_seconds: 30, max_items: 1 });
+  assert.deepEqual(calls[2], { cursor: "c:2", ack: undefined, wait_seconds: 30, max_items: 1 });
 });
 
 test("one item, dispatch published: no ack is sent on the next poll", async () => {
@@ -96,7 +96,7 @@ test("one item, dispatch published: no ack is sent on the next poll", async () =
     },
   });
   assert.equal(outcomes.length, 1);
-  assert.deepEqual(calls[1], { cursor: "c:1", ack: undefined, wait_seconds: 60, max_items: 1 });
+  assert.deepEqual(calls[1], { cursor: "c:1", ack: undefined, wait_seconds: 30, max_items: 1 });
 });
 
 test("deliberate silence: the item's event_ids are ack'd on the next poll", async () => {
@@ -121,7 +121,7 @@ test("deliberate silence: the item's event_ids are ack'd on the next poll", asyn
     log: () => {},
     dispatchItem: async () => ({ kind: "silent" }),
   });
-  assert.deepEqual(calls[1], { cursor: "c:1", ack: ["$e1"], wait_seconds: 60, max_items: 1 });
+  assert.deepEqual(calls[1], { cursor: "c:1", ack: ["$e1"], wait_seconds: 30, max_items: 1 });
 });
 
 test("item dispatch error: no ack, no further polling — the loop reports fatal", async () => {

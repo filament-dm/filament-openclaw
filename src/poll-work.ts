@@ -127,7 +127,10 @@ export interface PollLoopResult {
   fatal?: string;
 }
 
-const DEFAULT_WAIT_SECONDS = 60;
+// Matches the server's own default (max 60s). A longer wait risks losing the
+// race against an intermediary's own timeout (e.g. the filament-dev.local
+// nginx dev proxy times out around 60s) before the server's response lands.
+const DEFAULT_WAIT_SECONDS = 30;
 
 function itemKey(item: PollWorkItem): string {
   const ids = item.messages.map((m) => m.event_id).sort();

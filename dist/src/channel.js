@@ -143,7 +143,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             client: connection.client,
             abortSignal,
             log,
-            dispatchItem
+            dispatchItem,
+            waitSeconds: mcp.pollWaitSeconds
           });
           if (fatal) {
             log(`filament: account entering a fatal/paused state: ${fatal}`);

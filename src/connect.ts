@@ -32,6 +32,12 @@ const EXCHANGE_INTERVAL_MS = 3_000;
 const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 
+/** Bounds for the configurable `pollWaitSeconds`: server max is 60, and a
+ *  known intermediary (the filament-dev.local nginx dev proxy) times out
+ *  around 60s, so nothing above that is usable end to end. */
+export const MIN_POLL_WAIT_SECONDS = 1;
+export const MAX_POLL_WAIT_SECONDS = 60;
+
 export interface McpSettings {
   /**
    * The raw connect-token input: a string, a `${ENV}` shorthand, or a SecretRef
@@ -40,12 +46,27 @@ export interface McpSettings {
    */
   tokenInput?: unknown;
   mcpUrl: string;
+  /**
+   * The `poll_work` `wait_seconds` to request, already clamped to
+   * [MIN_POLL_WAIT_SECONDS, MAX_POLL_WAIT_SECONDS]. Undefined when not
+   * configured (or not a finite number) — the caller falls back to
+   * poll-work.ts's own default.
+   */
+  pollWaitSeconds?: number;
+}
+
+/** Parse and clamp a configured `pollWaitSeconds` value; undefined if absent/invalid. */
+function clampPollWaitSeconds(raw: unknown): number | undefined {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return undefined;
+  return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
 }
 
 /**
- * Resolve the MCP endpoint and the connect-token *input* from plugin config,
- * falling back to env (`FILAMENT_MCP_TOKEN`/`FILAMENT_MCP_URL`) then the prod
- * default. A present token input is the gate that enables connect.
+ * Resolve the MCP endpoint, the connect-token *input*, and the poll wait
+ * from plugin config, falling back to env (`FILAMENT_MCP_TOKEN`/
+ * `FILAMENT_MCP_URL`) then the prod default. A present token input is the
+ * gate that enables connect.
  */
 export function resolveMcpSettings(
   pluginConfig: unknown,
@@ -63,7 +84,8 @@ export function resolveMcpSettings(
   const tokenInput = hasCfgToken ? cfgToken : envToken || undefined;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
   const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  return { tokenInput, mcpUrl };
+  const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
+  return { tokenInput, mcpUrl, pollWaitSeconds };
 }
 
 /** A running connection: stop the heartbeat, or use the MCP client for outbound calls. */
