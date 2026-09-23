@@ -1,39 +1,7 @@
+import rawToolSnapshot from "./filament-tools.snapshot.json" with { type: "json" };
 const TOOL_NAME_PREFIX = "filament_";
-const KNOWN_TOOL_NAMES = [
-  // tools_read.py
-  "list_channels",
-  "list_loop_channels",
-  "get_channel_details",
-  "get_recent_messages",
-  "search_messages",
-  "get_thread",
-  "get_user_profile",
-  "search_members",
-  "list_mentions",
-  "list_reactions",
-  "list_pending_invites",
-  "list_vouches",
-  // tools_write.py
-  "post_message",
-  "message_principal",
-  "reply_in_thread",
-  "react",
-  "unreact",
-  "mark_read",
-  "set_status",
-  "accept_invite",
-  "accept_vouch",
-  "join_channel",
-  "leave_channel",
-  "create_channel",
-  "rechat",
-  "quote",
-  // tools_config.py (register_push_token / list_push_tokens excluded)
-  "get_self",
-  "set_profile",
-  "set_channel_notification_level",
-  "get_backchannel"
-];
+const TOOL_SNAPSHOT = rawToolSnapshot;
+const KNOWN_TOOL_NAMES = TOOL_SNAPSHOT.map((t) => t.name);
 const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
   ["poll_work", "the poll loop owns this call exclusively"],
   ["register_push_token", "FCM harness plumbing; this transport is poll_work, not FCM"],
@@ -73,6 +41,13 @@ function authorizeToolCall(tier) {
   }
   return { ok: true };
 }
+let currentFilamentClient = null;
+function setFilamentClient(client) {
+  currentFilamentClient = client;
+}
+function getFilamentClient() {
+  return currentFilamentClient;
+}
 const FALLBACK_PARAMETERS = { type: "object", properties: {}, additionalProperties: true };
 function toLabel(name) {
   return name.split("_").map((w) => w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
@@ -88,7 +63,7 @@ function makeExecute(toolName, tier, getClient, log) {
     const client = getClient();
     if (!client) {
       log(`filament-tools: ${qualifiedName} failed`);
-      throw new Error(`${qualifiedName}: not connected to Filament`);
+      throw new Error(`${qualifiedName}: Filament is not connected yet`);
     }
     let result;
     try {
@@ -110,58 +85,67 @@ function makeExecute(toolName, tier, getClient, log) {
     };
   };
 }
-function registerFilamentTools(api, liveTools, getClient, log) {
-  const known = new Set(KNOWN_TOOL_NAMES);
+function registerFilamentToolsFromSnapshot(api, getClient, log) {
   const registered = [];
-  const skipped = [];
-  for (const descriptor of liveTools) {
-    const excludedReason = EXCLUDED_TOOLS.get(descriptor.name);
-    if (excludedReason) {
-      skipped.push({ name: descriptor.name, reason: excludedReason });
-      continue;
-    }
-    if (!known.has(descriptor.name)) {
-      skipped.push({
-        name: descriptor.name,
-        reason: "not in KNOWN_TOOL_NAMES (unreviewed server-side addition)"
-      });
-      continue;
-    }
+  for (const descriptor of TOOL_SNAPSHOT) {
     const tier = classifyToolTier(descriptor);
     const qualifiedName = `${TOOL_NAME_PREFIX}${descriptor.name}`;
     api.registerTool({
       name: qualifiedName,
       label: toLabel(descriptor.name),
-      description: descriptor.description ?? descriptor.name,
+      description: descriptor.description || descriptor.name,
       parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
       execute: makeExecute(descriptor.name, tier, getClient, log)
     });
     registered.push(qualifiedName);
   }
-  log(
-    `filament-tools: registered ${registered.length} tool(s)` + (skipped.length > 0 ? `, skipped ${skipped.length}` : "")
-  );
-  return { registered, skipped };
+  log(`filament-tools: registered ${registered.length} tool(s) from snapshot`);
+  return { registered, skipped: [] };
 }
-async function fetchAndRegisterFilamentTools(api, client, getClient, log) {
+function logToolDrift(liveTools, log) {
+  const snapshotNames = new Set(TOOL_SNAPSHOT.map((t) => t.name));
+  const liveNames = new Set(
+    liveTools.map((t) => t.name).filter((name) => !EXCLUDED_TOOLS.has(name))
+  );
+  const extra = [...liveNames].filter((name) => !snapshotNames.has(name)).sort();
+  const missing = [...snapshotNames].filter((name) => !liveNames.has(name)).sort();
+  if (extra.length > 0) {
+    log(
+      `filament-tools: server exposes ${extra.length} tool(s) not in the snapshot: ${extra.join(", ")}`
+    );
+  }
+  if (missing.length > 0) {
+    log(
+      `filament-tools: snapshot has ${missing.length} tool(s) the server no longer serves: ${missing.join(", ")}`
+    );
+  }
+  if (extra.length === 0 && missing.length === 0) {
+    log("filament-tools: snapshot matches the live server's tool surface");
+  }
+}
+async function checkFilamentToolDrift(client, log) {
   const result = await client.listTools();
   if (!result.ok || !result.tools) {
     log(
-      `filament-tools: tools/list failed (${result.kind ?? "?"}: ${result.error?.message ?? "?"}); no agent tools registered`
+      `filament-tools: drift check skipped (tools/list failed: ${result.kind ?? "?"}: ${result.error?.message ?? "?"})`
     );
-    return { registered: [], skipped: [] };
+    return;
   }
-  return registerFilamentTools(api, result.tools, getClient, log);
+  logToolDrift(result.tools, log);
 }
 export {
   KNOWN_TOOL_NAMES,
   TOOL_NAME_PREFIX,
+  TOOL_SNAPSHOT,
   _getActiveFilamentTurnForTest,
   authorizeToolCall,
   beginFilamentTurn,
+  checkFilamentToolDrift,
   classifyToolTier,
   endFilamentTurn,
-  fetchAndRegisterFilamentTools,
-  registerFilamentTools
+  getFilamentClient,
+  logToolDrift,
+  registerFilamentToolsFromSnapshot,
+  setFilamentClient
 };
 //# sourceMappingURL=filament-tools.js.map

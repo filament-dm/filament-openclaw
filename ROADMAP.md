@@ -31,12 +31,21 @@ install, no running Synapse with `poll_work` enabled here — see "Verification 
 ## Tool surface
 
 `src/filament-tools.ts` registers Filament's MCP tool surface as OpenClaw agent tools, in
-parity with `filament-hermes` (which does the same against the same server). Registration is
-tied to the connect sequence rather than the plugin's synchronous `register(api)` entry point —
-see that module's docstring for why (OpenClaw's plugin entry has no async variant, but the live
-tool list needs an MCP round trip only possible after a resolved bearer) and for the
-**unverified-without-a-live-gateway** risk that implies (whether `api.registerTool()` calls made
-this late are honored). Authorization (read/Ring-0/write tiers) is enforced per call inside each
+parity with `filament-hermes`'s *intent* (which does the same against the same server) but not
+its live-fetch mechanism. Registration used to be tied to the connect sequence rather than the
+plugin's synchronous `register(api)` entry point, on the theory that OpenClaw's plugin entry has
+no async variant but the live tool list needs an MCP round trip only possible after a resolved
+bearer. **That theory turned out to be the wrong risk to worry about.** A live-gateway log
+(`2026.9.5`, `plans/openclaw/tools-not-visible-diagnosis.md`) confirmed `api.registerTool()`
+calls made after `register(api)` returns *are* honored by the mutable process-wide registry —
+but a harness (Codex app-server, via deferred/searchable dynamic tools) can resolve a session's
+toolset from that registry *before* the late write lands, so the tools were registered but
+invisible to that particular session. The fix: register every tool synchronously inside
+`register(api)`, from a schema **snapshotted ahead of time** (`npm run snapshot:tools` →
+`src/filament-tools.snapshot.json`) rather than fetched live — this removes the race outright,
+since nothing can resolve a toolset before `register(api)` has finished. `tools/list` is still
+called once after connect, but only to log drift against the snapshot, never to register
+anything. Authorization (read/Ring-0/write tiers) is unchanged: enforced per call inside each
 tool's `execute()` via a module-level "current turn" flag set by `src/channel.ts`, because
 `ExtensionContext` carries no session/channel identity and `registerTool`'s options are just
 `{name, names, optional}` — no channel-scoping primitive exists to do this at registration time.
@@ -138,25 +147,35 @@ following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP 
 - The token-exchange call against a real Synapse (`oauth_token.py`'s
   `_exchange_connect_token`), including the `authorization_pending` retry path while an agent
   finishes onboarding in the Filament app.
-- Whether `api.registerTool()` calls made from inside `startAccount` (after `register(api)` has
-  already returned — see `src/filament-tools.ts`'s docstring) actually reach the model's tool
-  list, and whether `ctx: ExtensionContext` inside a tool's `execute()` truly carries nothing
-  that identifies the originating channel/session (both asserted from reading the `.d.ts` files
-  and stock plugin source under the installed OpenClaw, never exercised live).
+- **Resolved against a live gateway (`2026.9.5`):** `api.registerTool()` calls made late (from
+  `startAccount`, after `register(api)` returns) *are* honored by the process-wide registry, but
+  a harness can resolve its toolset before that late write lands — see
+  `plans/openclaw/tools-not-visible-diagnosis.md`. This plugin no longer registers late at all
+  (see "Tool surface" above), so the question is moot for us going forward; still open: whether
+  the fix actually restores visibility on a live gateway (no live gateway on this host to
+  confirm), and whether `openclaw gateway restart` (vs. a plugin reload) is really needed for an
+  *upgrade* of an already-installed plugin to reach a session that resolved its toolset before
+  the upgrade — flagged as a hypothesis in the README's "Tools exposed to the agent".
+- Whether `ctx: ExtensionContext` inside a tool's `execute()` truly carries nothing that
+  identifies the originating channel/session (asserted from reading the `.d.ts` files and stock
+  plugin source under the installed OpenClaw, never exercised live).
 
 ## MCP tools used
 
-By the plugin's own transport: `initialize`, `get_self`, `heartbeat`, `poll_work`, `tools/list`
-(to discover the agent-facing surface), and whatever `reply_with.tool` names (`post_message` or
-`reply_in_thread`, both invoked generically via `FilamentMcpClient.replyWith` with
-`reply_with.args` plus `markdown_body`). `message_principal` is no longer used by the plugin
-itself — the connect-time greeting that used it is removed — but it is exposed to the agent (see
-below), so the model may call it directly.
+By the plugin's own transport: `initialize`, `get_self`, `heartbeat`, `poll_work`, and whatever
+`reply_with.tool` names (`post_message` or `reply_in_thread`, both invoked generically via
+`FilamentMcpClient.replyWith` with `reply_with.args` plus `markdown_body`). `message_principal`
+is no longer used by the plugin itself — the connect-time greeting that used it is removed — but
+it is exposed to the agent (see below), so the model may call it directly. `tools/list` is no
+longer part of the connect sequence proper: it's called once, after connect, purely to log drift
+against the schema snapshot (see "Tool surface" above), and separately by
+`scripts/snapshot-tools.mjs` (`npm run snapshot:tools`) to regenerate that snapshot offline.
 
-By the agent, as registered tools (`src/filament-tools.ts`): every tool the live `tools/list`
-response returns except `poll_work` (the poll loop owns it), filtered to the names declared in
-`openclaw.plugin.json`'s `contracts.tools` (a reviewed snapshot of the server's tool surface —
-see the README's "Tools exposed to the agent" for the full list and the authorization rules).
+By the agent, as registered tools (`src/filament-tools.ts`): every tool in
+`src/filament-tools.snapshot.json` except `poll_work` and the two FCM push-token tools (already
+excluded from the snapshot), registered synchronously at plugin load and mirrored in
+`openclaw.plugin.json`'s `contracts.tools` (a unit test asserts the two stay equal — see the
+README's "Tools exposed to the agent" for the full list and the authorization rules).
 
 ## Notes / open questions
 

@@ -2,8 +2,11 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 import { resolveMcpSettings, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
+  checkFilamentToolDrift,
   endFilamentTurn,
-  fetchAndRegisterFilamentTools
+  getFilamentClient,
+  registerFilamentToolsFromSnapshot,
+  setFilamentClient
 } from "./filament-tools.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
@@ -27,6 +30,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     else console.log(message);
   };
   const mcp = resolveMcpSettings(api.pluginConfig);
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const plugin = {
     id: FILAMENT_CHANNEL_ID,
     meta: {
@@ -157,12 +161,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
         if (connection) {
-          await fetchAndRegisterFilamentTools(
-            api,
-            connection.client,
-            () => connection?.client ?? null,
-            log
-          );
+          setFilamentClient(connection.client);
+          void checkFilamentToolDrift(connection.client, log).catch((error) => {
+            log(`filament: tool drift check failed: ${String(error)}`);
+          });
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,
@@ -179,6 +181,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               restartPending: false
             });
           }
+          setFilamentClient(null);
         }
         if (!abortSignal.aborted) {
           await new Promise((resolve) => {
@@ -187,9 +190,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
         }
         connection?.stop();
+        setFilamentClient(null);
         onConnectionChange(null);
       },
       stopAccount: async () => {
+        setFilamentClient(null);
         onConnectionChange(null);
       }
     }

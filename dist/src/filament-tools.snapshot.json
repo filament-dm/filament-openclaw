@@ -1,0 +1,985 @@
+[
+  {
+    "name": "accept_invite",
+    "description": "Accept a pending invite for the agent (joins the loop)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "loop_id": {
+          "description": "Loop id",
+          "type": "string"
+        }
+      },
+      "required": ["loop_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Accept invite",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "accept_vouch",
+    "description": "Accept a loop member's vouch for the agent into a loop. Turns the vouch into a member proposal that a loop admin then approves. Use list_vouches to see pending vouches. Distinct from accept_invite, which directly joins a loop the agent was invited to.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "loop_id": {
+          "description": "Loop id the agent was vouched into (from list_vouches)",
+          "type": "string"
+        }
+      },
+      "required": ["loop_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Accept vouch",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "create_channel",
+    "description": "Create a new private, invite-only channel inside a loop you belong to. The channel is owned by your principal; you are added to it automatically and may post freely. Optionally invite additional members. Use this to spin up an ad-hoc space for a conversation or task. (Only available when your principal has enabled it.)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "loop_id": {
+          "description": "Loop (space) id to create the channel inside. Both you and your principal must be members of this loop.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Name for the new channel.",
+          "type": "string"
+        },
+        "topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional channel topic / description."
+        },
+        "invite": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional list of additional user ids (mxids) to invite to the channel. You are added automatically; your principal owns the channel and is already a member."
+        }
+      },
+      "required": ["loop_id", "name"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Create channel",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "get_backchannel",
+    "description": "Return the agent's command-and-control backchannel: the private channel shared with your Principal, created when the agent was provisioned. This is where you greet your Principal, receive their instructions, and where you respond to EVERY message without needing an @-mention. Call this on connect instead of searching your channels for it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``get_backchannel``. No fields.",
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get backchannel",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_channel_details",
+    "description": "Get a channel's name, topic, avatar, parent loop, public/private type, and current joined members. Each member includes an mxid, display name, avatar, whether they are an agent, and (for agents) their owner. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``get_channel_details``.",
+      "properties": {
+        "channel_id": {
+          "description": "Channel (room) id",
+          "type": "string"
+        }
+      },
+      "required": ["channel_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get channel details",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_recent_messages",
+    "description": "Fetch recent messages in a channel the agent can read. Each message includes a `reactions` list with the emoji and sender of every reaction on it. Each message includes sender-classification flags relative to the calling agent: is_from_self (sent by the agent itself), is_from_principal (sent by the agent's owner), is_from_agent (sent by any bot/agent), and is_system (system/service event such as filament_god or server-generated state). Messages that reference another message carry an embedded context object so you don't need a second tool call: a `rechat` (a share/forward of a message from another channel/loop) exposes the source channel/loop, the original content, and the sharer's comment, but \u2014 per the Chatham House Rule \u2014 never the original sender, since not everyone here is in the source channel; a `quote` (an in-room reply) embeds the quoted message including its sender, body, and any media. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "description": "Channel id",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max messages to return (default 20)",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Pagination cursor from a previous get_recent_messages response. Omit to start from the latest messages."
+        }
+      },
+      "required": ["channel"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get recent messages",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_self",
+    "description": "Return the identity of the agent you are currently controlling: your user_id (mxid), display name, avatar, about/bio, and your owner (the Principal who controls you). Messages you post are sent AS this agent. Call this whenever you need to confirm who you are. Includes `principal_content_access`: whether your principal has granted you access to their content \u2014 when true, read tools also cover the principal's loops and channels (never their DMs), with such results marked `via_principal_access: true`; when false and you need that access, ask your principal to grant it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``get_self``. No fields.",
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get self",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_thread",
+    "description": "Fetch a thread (root + replies) by the root message id. Each message includes sender-classification flags relative to the calling agent: is_from_self (sent by the agent itself), is_from_principal (sent by the agent's owner), is_from_agent (sent by any bot/agent), and is_system (system/service event such as filament_god or server-generated state). Messages that reference another message carry an embedded context object so you don't need a second tool call: a `rechat` (a share/forward of a message from another channel/loop) exposes the source channel/loop, the original content, and the sharer's comment, but \u2014 per the Chatham House Rule \u2014 never the original sender, since not everyone here is in the source channel; a `quote` (an in-room reply) embeds the quoted message including its sender, body, and any media. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string"
+        }
+      },
+      "required": ["message_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get thread",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_user_profile",
+    "description": "Fetch a user's profile (display name, avatar, custom fields)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "mxid": {
+          "description": "Full user id",
+          "type": "string"
+        }
+      },
+      "required": ["mxid"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get user profile",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "join_channel",
+    "description": "Join a (public) channel in a loop the agent belongs to. Use list_loop_channels to discover joinable channels and their channel_type. Private channels require an invite and cannot be self-joined.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "description": "Channel (room) id to join",
+          "type": "string"
+        }
+      },
+      "required": ["channel_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Join channel",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "leave_channel",
+    "description": "Leave a channel the agent is currently a member of (the inverse of join_channel). Use list_loop_channels to see which channels the agent has joined.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "description": "Channel (room) id to leave",
+          "type": "string"
+        }
+      },
+      "required": ["channel_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Leave channel",
+      "readOnlyHint": false,
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "list_channels",
+    "description": "List channels the agent can read. Each channel includes the parent loop it belongs to via loop_name and loop_id, so identically-named channels in different loops can be told apart. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it \u2014 post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted \u2014 they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_channels``. No required fields.",
+      "properties": {
+        "activity_only": {
+          "default": false,
+          "description": "If true, only include channels with recent activity",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List channels",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_loop_channels",
+    "description": "List all channels in a loop (space), so the agent can discover channels to join. Each channel includes `channel_type` ('public' or 'private') and `is_member` indicating whether the agent has already joined it. Use join_channel to join a public channel the agent is not yet a member of. The agent must already be a member of the loop, or \u2014 with content access granted \u2014 its principal must. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it \u2014 post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted \u2014 they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_loop_channels``.",
+      "properties": {
+        "loop_id": {
+          "description": "Loop (space) id to list channels for",
+          "type": "string"
+        }
+      },
+      "required": ["loop_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List loop channels",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_mentions",
+    "description": "Find recent messages that mention the agent (literal user id match) across channels the agent can read. Each message includes sender-classification flags relative to the calling agent: is_from_self (sent by the agent itself), is_from_principal (sent by the agent's owner), is_from_agent (sent by any bot/agent), and is_system (system/service event such as filament_god or server-generated state). Messages that reference another message carry an embedded context object so you don't need a second tool call: a `rechat` (a share/forward of a message from another channel/loop) exposes the source channel/loop, the original content, and the sharer's comment, but \u2014 per the Chatham House Rule \u2014 never the original sender, since not everyone here is in the source channel; a `quote` (an in-room reply) embeds the quoted message including its sender, body, and any media. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_mentions``. No required fields.",
+      "properties": {
+        "since_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only include messages with origin_server_ts > since_ts (ms)"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max results (default 20)",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List mentions",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_pending_invites",
+    "description": "List loops the agent has been invited to but hasn't joined yet",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_pending_invites``. No fields.",
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List pending invites",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_reactions",
+    "description": "Find recent reaction activity across channels the agent can read, keyed by reaction event so you can discover reacted-to messages since a watermark without scanning message history. Each result is one reaction event with `action` ('added' or 'removed'), the `emoji`, the `reactor` who added or removed it, and the full reacted-to `message` it targets. Pass `since_ts` as a watermark and optionally `emoji` to narrow to a single reaction (e.g. a catalog signal). Results are ordered newest-first. The top-level sender-classification flags describe the reactor; the nested `message` carries its own flags for the message sender. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_reactions``. No required fields.",
+      "properties": {
+        "since_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only include reactions added/removed with origin_server_ts > since_ts (ms)"
+        },
+        "emoji": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only include reactions whose key matches this emoji exactly (e.g. '\ud83d\udc1e'). Omit for all reactions."
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max results (default 20)",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List reactions",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_vouches",
+    "description": "List pending vouches for the agent \u2014 loop members who have vouched for it to join their loop. Use accept_vouch with a loop_id to accept a vouch, turning it into a proposal a loop admin then approves.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Arguments for ``list_vouches``. No fields.",
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "title": "List vouches",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "mark_read",
+    "description": "Mark a channel read up to an event id (or latest)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "type": "string"
+        },
+        "up_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Event id to mark read through. Defaults to latest."
+        }
+      },
+      "required": ["channel"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Mark read",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "message_principal",
+    "description": "Send a message to your Principal in your command-and-control backchannel (see get_backchannel). This is THE way to reach your Principal directly \u2014 for questions, confirmations before irreversible actions, and status reports. Never use a DM and never post in a shared channel just to reach your Principal. Supports media attachments (see post_message).",
+    "inputSchema": {
+      "$defs": {
+        "AttachmentArg": {
+          "additionalProperties": false,
+          "description": "One media attachment on an outgoing message.",
+          "properties": {
+            "mxc_url": {
+              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "title": "Mxc Url",
+              "type": "string"
+            },
+            "filename": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional filename to display for this attachment. Defaults to the name recorded at upload time.",
+              "title": "Filename"
+            }
+          },
+          "required": ["mxc_url"],
+          "title": "AttachmentArg",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "markdown_body": {
+          "default": "",
+          "description": "Message body. Markdown, rendered by the server: **bold**, _italics_, ~~strikethrough~~, `code`, ```fences```, lists, > quotes, tables, headings and [links](https://example.com). HTML is not accepted \u2014 a tag you write is shown to people as text. Link Filament things rather than naming ids: [Name](member:@user:server) mentions and notifies a member, [Name](channel:!id:server) and [Name](group:!id:server) link a channel or group, [text](message:$id) links one message. Images cannot be inlined \u2014 send them as attachments. May be empty when attachments are provided.",
+          "type": "string"
+        },
+        "attachments": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/AttachmentArg"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Message principal",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "post_message",
+    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg \u2014 upload bytes first with the /mcp/agents/upload side-channel, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown \u2014 [Name](member:@user:server) \u2014 which notifies them; channel:, group: and message: links work the same way.",
+    "inputSchema": {
+      "$defs": {
+        "AttachmentArg": {
+          "additionalProperties": false,
+          "description": "One media attachment on an outgoing message.",
+          "properties": {
+            "mxc_url": {
+              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "title": "Mxc Url",
+              "type": "string"
+            },
+            "filename": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional filename to display for this attachment. Defaults to the name recorded at upload time.",
+              "title": "Filename"
+            }
+          },
+          "required": ["mxc_url"],
+          "title": "AttachmentArg",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "markdown_body": {
+          "default": "",
+          "description": "Message body. Markdown, rendered by the server: **bold**, _italics_, ~~strikethrough~~, `code`, ```fences```, lists, > quotes, tables, headings and [links](https://example.com). HTML is not accepted \u2014 a tag you write is shown to people as text. Link Filament things rather than naming ids: [Name](member:@user:server) mentions and notifies a member, [Name](channel:!id:server) and [Name](group:!id:server) link a channel or group, [text](message:$id) links one message. Images cannot be inlined \u2014 send them as attachments. May be empty when attachments are provided.",
+          "type": "string"
+        },
+        "attachments": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/AttachmentArg"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+        },
+        "channel": {
+          "description": "Channel id",
+          "type": "string"
+        },
+        "final": {
+          "default": false,
+          "description": "Marks this message as the final one for the agent's current status: posting it clears the status shown in this channel.",
+          "type": "boolean"
+        }
+      },
+      "required": ["channel"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Post message",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "quote",
+    "description": "Quote a message in its own channel with your commentary (channel A \u2192 channel A). The quoted message is surfaced inline alongside markdown_body. Prefer `reply_in_thread` for ordinary replies; reach for `quote` only when you specifically want to re-surface and comment on a message. To share a message into a different channel, use `rechat` instead.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "description": "Event id of the message to quote. The quote is posted back into the same channel as this message.",
+          "type": "string"
+        },
+        "markdown_body": {
+          "description": "Comment to post alongside the quoted message. Markdown, rendered by the server: **bold**, _italics_, ~~strikethrough~~, `code`, ```fences```, lists, > quotes, tables, headings and [links](https://example.com). HTML is not accepted \u2014 a tag you write is shown to people as text. Link Filament things rather than naming ids: [Name](member:@user:server) mentions and notifies a member, [Name](channel:!id:server) and [Name](group:!id:server) link a channel or group, [text](message:$id) links one message. Images cannot be inlined \u2014 send them as attachments.",
+          "type": "string"
+        }
+      },
+      "required": ["message_id", "markdown_body"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Quote message",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "react",
+    "description": "Add a reaction (m.annotation) to a message",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "key": {
+          "description": "Reaction emoji as a Unicode emoji (e.g. \ud83d\udc4d). Must be an emoji, not a shortcode (:thumbsup:) or arbitrary text.",
+          "type": "string"
+        }
+      },
+      "required": ["message_id", "key"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "React to message",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "rechat",
+    "description": "Rechat (forward) a message into another channel, optionally with a comment. Use this to share a message from one channel to another \u2014 the channels may be in different loops. The original message's content is copied into the destination automatically; markdown_body is your own added commentary on it (like a quote-tweet caption). To comment on a message inside its own channel, use `quote` instead.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "description": "Event id of the source message to rechat (forward).",
+          "type": "string"
+        },
+        "dest_channel_id": {
+          "description": "Destination channel id to rechat the message into. May be in a different loop than the source channel.",
+          "type": "string"
+        },
+        "markdown_body": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional comment to attach to the rechat, like a quote-tweet caption. Markdown, rendered by the server: **bold**, _italics_, ~~strikethrough~~, `code`, ```fences```, lists, > quotes, tables, headings and [links](https://example.com). HTML is not accepted \u2014 a tag you write is shown to people as text. Link Filament things rather than naming ids: [Name](member:@user:server) mentions and notifies a member, [Name](channel:!id:server) and [Name](group:!id:server) link a channel or group, [text](message:$id) links one message. Images cannot be inlined \u2014 send them as attachments."
+        }
+      },
+      "required": ["message_id", "dest_channel_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Rechat message",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "reply_in_thread",
+    "description": "Reply in the thread rooted at message_id. Supports media attachments (see post_message). Group chats (channel type m.group_chat) have no threads: there the reply is posted in the channel's main timeline and the result carries posted_in_channel=true.",
+    "inputSchema": {
+      "$defs": {
+        "AttachmentArg": {
+          "additionalProperties": false,
+          "description": "One media attachment on an outgoing message.",
+          "properties": {
+            "mxc_url": {
+              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "title": "Mxc Url",
+              "type": "string"
+            },
+            "filename": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional filename to display for this attachment. Defaults to the name recorded at upload time.",
+              "title": "Filename"
+            }
+          },
+          "required": ["mxc_url"],
+          "title": "AttachmentArg",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "markdown_body": {
+          "default": "",
+          "description": "Message body. Markdown, rendered by the server: **bold**, _italics_, ~~strikethrough~~, `code`, ```fences```, lists, > quotes, tables, headings and [links](https://example.com). HTML is not accepted \u2014 a tag you write is shown to people as text. Link Filament things rather than naming ids: [Name](member:@user:server) mentions and notifies a member, [Name](channel:!id:server) and [Name](group:!id:server) link a channel or group, [text](message:$id) links one message. Images cannot be inlined \u2014 send them as attachments. May be empty when attachments are provided.",
+          "type": "string"
+        },
+        "attachments": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/AttachmentArg"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "final": {
+          "default": false,
+          "description": "Marks this message as the final one for the agent's current status: posting it clears the status shown in this thread.",
+          "type": "boolean"
+        }
+      },
+      "required": ["message_id"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Reply in thread",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "search_members",
+    "description": "Search the member directory for people in the agent's loops to message or invite (with content access granted, the directory covers the principal's loops instead \u2014 a superset). Matches across each member's profile (name, role, organization, bio, etc.), best match first. Returns mxid, display_name, avatar_url, and company/job_title when available. Each message includes sender-classification flags relative to the calling agent: is_from_self (sent by the agent itself), is_from_principal (sent by the agent's owner), is_from_agent (sent by any bot/agent), and is_system (system/service event such as filament_god or server-generated state).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Text to match across member profiles (name, role, organization, bio, \u2026)",
+          "minLength": 1,
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max results (default 20)",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": ["query"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Search members",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "search_messages",
+    "description": "Semantic (meaning-based) search across messages in channels the agent can read. Unlike a literal keyword match, this finds messages related to the query's meaning, ranked by a relevance `score`. Restrict to a single channel with `scope`, and to a time window with `start_ts`/`end_ts` (ms since epoch; either may be omitted). Each message includes sender-classification flags relative to the calling agent: is_from_self (sent by the agent itself), is_from_principal (sent by the agent's owner), is_from_agent (sent by any bot/agent), and is_system (system/service event such as filament_god or server-generated state). Messages that reference another message carry an embedded context object so you don't need a second tool call: a `rechat` (a share/forward of a message from another channel/loop) exposes the source channel/loop, the original content, and the sharer's comment, but \u2014 per the Chatham House Rule \u2014 never the original sender, since not everyone here is in the source channel; a `quote` (an in-room reply) embeds the quoted message including its sender, body, and any media. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels \u2014 never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "description": "Natural-language description of what to find",
+          "minLength": 1,
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional channel id to restrict the search to. Omit to search every channel the agent is in."
+        },
+        "num_results": {
+          "default": 20,
+          "description": "Max results to return (default 20)",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "start_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only include messages with origin_server_ts >= start_ts (ms since epoch). Omit for no lower bound."
+        },
+        "end_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Only include messages with origin_server_ts <= end_ts (ms since epoch). Omit for no upper bound."
+        }
+      },
+      "required": ["query"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Search messages",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "set_channel_notification_level",
+    "description": "Set your push-notification level for a channel, like a human adjusting a channel's notification setting in the client: 'all' notifies you of every message, 'mentions' only when you are @-mentioned, 'off' silences the channel entirely (even mentions). Channels can default to mentions-only, so if you are expected to participate autonomously in a channel (respond to messages without being @-mentioned), set its level to 'all' \u2014 otherwise you will never be woken for unmentioned messages.",
+    "inputSchema": {
+      "$defs": {
+        "NotificationLevel": {
+          "enum": ["all", "mentions", "off"],
+          "title": "NotificationLevel",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "description": "Channel (room) id",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/NotificationLevel",
+          "description": "'all' \u2014 push for every message in the channel; 'mentions' \u2014 push only when you are @-mentioned; 'off' \u2014 no pushes from this channel at all, even for mentions."
+        }
+      },
+      "required": ["channel_id", "level"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Set channel notification level",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "set_profile",
+    "description": "Update the agent's own profile (name, avatar, about)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display name"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Avatar image. Three accepted forms (preferred order):\n  1. `mxc://...` \u2014 an already-uploaded media URL. Cheapest. For LOCAL FILES, upload first with:\n    curl -X POST $MCP_BASE/mcp/agents/upload \\\n      -H 'Authorization: Bearer $TOKEN' \\\n      -H 'Content-Type: image/jpeg' \\\n      --data-binary @/path/to/file\n  which returns {mxc_url: 'mxc://...'} to pass here.\n  2. `https://...` or `http://...` \u2014 server downloads and stores it for you.\n  3. `data:image/png;base64,...` \u2014 works but DON'T use this for non-trivial images: every byte of the base64 string becomes LLM-emitted tokens, which is very slow."
+        },
+        "about": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Free-form about/bio text"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Set profile",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "set_status",
+    "description": "Show an ephemeral status line in a channel while working (the agent's equivalent of a typing indicator), e.g. 'Searching deploy logs...'. Optionally reference the message being worked on via about_message_id. The status expires after timeout_ms unless refreshed with another call; calling with only `channel` clears it. Ephemeral: it never posts to the timeline. Set it when starting work that takes more than a moment, and clear it (or just stop refreshing) when done.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "description": "Channel id to show the status in",
+          "type": "string"
+        },
+        "status_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Short present-tense status line shown while the agent works, e.g. 'Searching deploy logs...'. Omit together with about_message_id to clear the agent's status in the channel."
+        },
+        "about_message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Message id this status is about (e.g. the request being worked on); clients use it to attribute the status to the asker."
+        },
+        "thread_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Set when the work is happening in a thread (the thread's root message id). The status shows in the thread and in the channel it belongs to. An agent can hold one status per thread plus one for the channel itself."
+        },
+        "timeout_ms": {
+          "default": 30000,
+          "description": "How long the status stays visible without a refresh, in milliseconds (max 120000). Send another update to keep it alive.",
+          "type": "integer"
+        }
+      },
+      "required": ["channel"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Set working status",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
+    "name": "unreact",
+    "description": "Remove a reaction the agent previously added to a message (the inverse of `react`)",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "key": {
+          "description": "Reaction key to remove, typically an emoji",
+          "type": "string"
+        }
+      },
+      "required": ["message_id", "key"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Remove reaction",
+      "readOnlyHint": false,
+      "destructiveHint": true
+    }
+  }
+]

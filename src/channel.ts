@@ -20,8 +20,11 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
+  checkFilamentToolDrift,
   endFilamentTurn,
-  fetchAndRegisterFilamentTools,
+  getFilamentClient,
+  registerFilamentToolsFromSnapshot,
+  setFilamentClient,
   type FilamentToolsApi,
 } from "./filament-tools.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
@@ -79,6 +82,15 @@ export function registerFilamentChannel(
     else console.log(message);
   };
   const mcp = resolveMcpSettings(api.pluginConfig);
+
+  // Register the whole Filament tool surface now, synchronously, from the
+  // schema snapshot — before any connection exists. See
+  // src/filament-tools.ts's module docstring for why this replaced the old
+  // post-connect, tools/list-fetching registration: a session can resolve
+  // its toolset before that later write ever lands in the registry. Each
+  // tool's execute() resolves the live connection lazily via
+  // getFilamentClient(), which startAccount below populates once connected.
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
 
   const plugin: ChannelPlugin = {
     id: FILAMENT_CHANNEL_ID,
@@ -231,19 +243,16 @@ export function registerFilamentChannel(
         }
 
         if (connection) {
-          // Register the agent-facing tool surface from the live server's
-          // tools/list, before any turn can be dispatched (see
-          // src/filament-tools.ts's module docstring for why this happens
-          // here — after connect, before the poll loop — rather than
-          // synchronously in register(api)). getClient reads `connection`
-          // fresh on every tool call, so a tool degrades cleanly if the
-          // connection is later torn down without needing to be unregistered.
-          await fetchAndRegisterFilamentTools(
-            api,
-            connection.client,
-            () => connection?.client ?? null,
-            log,
-          );
+          // The tool surface is already registered (see registerFilamentChannel
+          // above); populate the connection holder so each tool's execute()
+          // can reach the live client. Cleared below on the way out, whatever
+          // the exit reason (normal wind-down or fatal).
+          setFilamentClient(connection.client);
+          // Best-effort diagnostic only — see src/filament-tools.ts's
+          // checkFilamentToolDrift docstring. Never blocks/aborts connect.
+          void checkFilamentToolDrift(connection.client, log).catch((error) => {
+            log(`filament: tool drift check failed: ${String(error)}`);
+          });
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,
@@ -265,6 +274,7 @@ export function registerFilamentChannel(
               restartPending: false,
             });
           }
+          setFilamentClient(null);
         }
 
         // Hold the account open until the gateway aborts it (covers both the
@@ -278,9 +288,11 @@ export function registerFilamentChannel(
         }
 
         connection?.stop();
+        setFilamentClient(null);
         onConnectionChange(null);
       },
       stopAccount: async () => {
+        setFilamentClient(null);
         onConnectionChange(null);
       },
     },

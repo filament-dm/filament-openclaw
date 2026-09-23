@@ -94,11 +94,12 @@ live-gateway smoke test on this host; see `ROADMAP.md`). The plugin registers a 
   `filament_accept_vouch` are exposed as ordinary tools (see "Tools exposed to the agent"
   below) instead of a background loop guessing when to accept on the agent's behalf. See
   `ROADMAP.md`'s "Limitations" for what else that trades away.
-- **Tools** (`src/filament-tools.ts`) — after connect, every tool from Filament's live
-  `tools/list` (minus `poll_work` and the two FCM push-token tools) is registered as an
-  OpenClaw agent tool, `filament_`-prefixed, with per-call authorization gating writes to
-  Filament-originated turns and Ring-0 tools to the backchannel. See "Tools exposed to the
-  agent" below.
+- **Tools** (`src/filament-tools.ts`) — the whole Filament MCP tool surface, minus `poll_work`
+  and the two FCM push-token tools, is registered as OpenClaw agent tools, `filament_`-prefixed,
+  synchronously inside `register(api)` from a reviewed schema snapshot
+  (`src/filament-tools.snapshot.json`, regenerated with `npm run snapshot:tools`) — not fetched
+  live at connect time. Per-call authorization still gates writes to Filament-originated turns
+  and Ring-0 tools to the backchannel. See "Tools exposed to the agent" below.
 
 See [`ROADMAP.md`](ROADMAP.md) for status, the acceptance criteria this PoC does and does not
 meet yet, and what's next.
@@ -264,19 +265,38 @@ FILAMENT_MCP_TOKEN=fmcp_... FILAMENT_MCP_URL=http://localhost:8008/mcp/agents \
 
 ## Tools exposed to the agent
 
-Once connected, `src/filament-tools.ts` registers every tool from Filament's live `tools/list`
-response as an OpenClaw agent tool, name-prefixed `filament_` (e.g. `filament_post_message`) —
-in parity with how the Python `filament-hermes` plugin exposes the same MCP server's tools to
-its agent. This is on top of, and separate from, the poll loop's own `reply_with` publish (see
+`src/filament-tools.ts` registers Filament's MCP tool surface as OpenClaw agent tools,
+name-prefixed `filament_` (e.g. `filament_post_message`) — in parity with how the Python
+`filament-hermes` plugin exposes the same MCP server's tools to its agent, but not with its
+mechanism: schemas are **snapshotted from the server** (`src/filament-tools.snapshot.json`, via
+`npm run snapshot:tools`) and **registered synchronously at plugin load** (`register(api)`),
+rather than fetched live over `tools/list` after connect. This matters because a session's
+toolset can be resolved before a *late* registration (the old approach: fetch `tools/list` after
+`runConnect`, then call `api.registerTool()` from inside `startAccount`) ever lands in the
+registry — see `plans/openclaw/tools-not-visible-diagnosis.md` for the live-gateway log that
+caught this. Registering at load removes the race: every `filament_*` tool exists in the
+registry before any session can resolve its toolset. After connect, `tools/list` is still called
+once, but only to **log drift** (`filament-tools: server exposes N tool(s) not in the snapshot…`
+/ `snapshot has M tool(s) the server no longer serves…`) — never to register anything at
+runtime any more. Real drift needs a human to re-run `npm run snapshot:tools` and review the
+diff. This is on top of, and separate from, the poll loop's own `reply_with` publish (see
 "Architecture" and "Interaction with the poll loop" below).
 
 **Excluded:** `poll_work` (the poll loop owns it exclusively — the agent must never call it) and
 `register_push_token`/`list_push_tokens` (FCM harness plumbing; this plugin uses `poll_work`, not
-FCM, so these tools have nothing to register). Everything else the server returns — **including**
-`post_message`, `reply_in_thread`, `message_principal`, `accept_invite`, `accept_vouch` — is
-registered, filtered to a reviewed name allowlist (`KNOWN_TOOL_NAMES` in `src/filament-tools.ts`,
-mirrored in `openclaw.plugin.json`'s `contracts.tools`) so a brand-new server-side tool doesn't
-reach the model without a review pass.
+FCM, so these tools have nothing to register). Everything else in the reviewed snapshot —
+**including** `post_message`, `reply_in_thread`, `message_principal`, `accept_invite`,
+`accept_vouch` — is registered (`TOOL_SNAPSHOT`/`KNOWN_TOOL_NAMES` in `src/filament-tools.ts`,
+mirrored in `openclaw.plugin.json`'s `contracts.tools` — a unit test asserts the two stay equal)
+so a brand-new server-side tool doesn't reach the model without a review pass (regenerating the
+snapshot and updating the manifest).
+
+> **Operator note (hypothesis, not yet confirmed live):** after upgrading this plugin, a
+> gateway/agent session that already resolved its toolset before the upgrade may need a full
+> `openclaw gateway restart` to see a tool-surface change — a plugin **reload** alone may not be
+> enough, since the diagnosis above shows toolset resolution is a per-session snapshot taken
+> early, not something a later write to the registry retroactively reaches. Flag if a live
+> gateway shows a reload *is* sufficient after this change.
 
 **Authorization** (checked inside each tool's `execute()`, since OpenClaw's `registerTool` has no
 channel/session-scoping option — see the module docstring in `src/filament-tools.ts` for the full
