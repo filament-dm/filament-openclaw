@@ -38,6 +38,11 @@ const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 export const MIN_POLL_WAIT_SECONDS = 1;
 export const MAX_POLL_WAIT_SECONDS = 60;
 
+/** Bounds for the configurable `inviteSweepSeconds`. */
+export const MIN_INVITE_SWEEP_SECONDS = 10;
+export const MAX_INVITE_SWEEP_SECONDS = 600;
+const DEFAULT_INVITE_SWEEP_SECONDS = 60;
+
 export interface McpSettings {
   /**
    * The raw connect-token input: a string, a `${ENV}` shorthand, or a SecretRef
@@ -53,6 +58,19 @@ export interface McpSettings {
    * poll-work.ts's own default.
    */
   pollWaitSeconds?: number;
+  /**
+   * Whether to run the opt-in pending-invite/vouch sweep (src/invite-sweep.ts).
+   * Off by default: `poll_work` never delivers invites/vouches, so accepting
+   * them is a policy decision the operator must opt into.
+   */
+  autoAcceptInvites: boolean;
+  /**
+   * How often (seconds) the invite/vouch sweep runs when enabled, already
+   * clamped to [MIN_INVITE_SWEEP_SECONDS, MAX_INVITE_SWEEP_SECONDS]. Always
+   * concrete (defaults to 60) since, unlike `pollWaitSeconds`, the sweeper
+   * has no other place to apply a default.
+   */
+  inviteSweepSeconds: number;
 }
 
 /** Parse and clamp a configured `pollWaitSeconds` value; undefined if absent/invalid. */
@@ -60,6 +78,13 @@ function clampPollWaitSeconds(raw: unknown): number | undefined {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return undefined;
   return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
+}
+
+/** Parse and clamp a configured `inviteSweepSeconds` value; falls back to the default if absent/invalid. */
+function clampInviteSweepSeconds(raw: unknown): number {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return DEFAULT_INVITE_SWEEP_SECONDS;
+  return Math.min(MAX_INVITE_SWEEP_SECONDS, Math.max(MIN_INVITE_SWEEP_SECONDS, Math.trunc(n)));
 }
 
 /**
@@ -85,7 +110,9 @@ export function resolveMcpSettings(
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
   const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
   const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
-  return { tokenInput, mcpUrl, pollWaitSeconds };
+  const autoAcceptInvites = cfg.autoAcceptInvites === true;
+  const inviteSweepSeconds = clampInviteSweepSeconds(cfg.inviteSweepSeconds);
+  return { tokenInput, mcpUrl, pollWaitSeconds, autoAcceptInvites, inviteSweepSeconds };
 }
 
 /** A running connection: stop the heartbeat, or use the MCP client for outbound calls. */

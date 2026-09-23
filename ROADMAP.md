@@ -24,8 +24,9 @@ install, no running Synapse with `poll_work` enabled here — see "Verification 
 - **Dispatch** (`src/inbound-dispatch.ts`): one turn per item, session isolated per
   account/channel/thread, only `final` callbacks collected, one publish attempt via
   `reply_with`.
-- **FCM removed**: no push socket, no `@eneris/push-receiver` dependency, no invite/vouch
-  auto-accept sweep, no first-contact greeting.
+- **FCM removed**: no push socket, no `@eneris/push-receiver` dependency, no first-contact
+  greeting. The invite/vouch auto-accept sweep came back as an independent, opt-in loop
+  (`src/invite-sweep.ts`, `autoAcceptInvites`) — see "Limitations" below.
 
 ## The architecture (unchanged from the FCM design)
 
@@ -81,12 +82,14 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
 
 ## Limitations (explicit, not silently dropped)
 
-- **No invites/vouches.** `poll_work` only surfaces `m.room.message` work
-  (see `tools_poll.py:261`); it doesn't deliver `add_to_channel`/`add_to_space`/
+- **`poll_work` itself carries no invites/vouches.** `poll_work` only surfaces `m.room.message`
+  work (see `tools_poll.py:261`); it doesn't deliver `add_to_channel`/`add_to_space`/
   `knock_invite_received`/reactions/the `io.filament.ping` liveness ping. An agent that isn't
-  already in a conversation has no way to join one through this transport alone. A full
-  migration needs a separate `list_pending_invites`/`accept_invite` reconciliation policy;
-  it is out of scope for this PoC.
+  already in a conversation has no way to join one through the poll transport alone. This is
+  now covered separately: `src/invite-sweep.ts` is an opt-in (`autoAcceptInvites`, default off)
+  `list_pending_invites`/`accept_invite`/`list_vouches`/`accept_vouch` reconciliation loop,
+  independent of the poll loop and its own interval (`inviteSweepSeconds`). Off by default
+  because accepting on the agent's behalf is a policy decision `poll_work` doesn't make for you.
 - **The reachability probe may report `push_path_silent`.** `probe.py` still pings over FCM;
   a poll-only agent has no FCM registration to answer, so its "reachable" signal is stale for
   this transport. The heartbeat loop keeps presence working independently of the probe.

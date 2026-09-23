@@ -355,6 +355,26 @@ export class FilamentMcpClient {
     return this.callTool("get_self", {}, opts);
   }
 
+  /** List pending loop invites for this agent. Read-only. */
+  listPendingInvites(opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("list_pending_invites", {}, opts);
+  }
+
+  /** Join a loop the agent was invited into. */
+  acceptInvite(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("accept_invite", { loop_id: loopId }, opts);
+  }
+
+  /** List pending vouches (member-initiated) for this agent. Read-only. */
+  listVouches(opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("list_vouches", {}, opts);
+  }
+
+  /** Accept a member's vouch, turning it into a proposal a loop admin approves. */
+  acceptVouch(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("accept_vouch", { loop_id: loopId }, opts);
+  }
+
   /**
    * Ask for outstanding work: a long-poll that blocks server-side up to
    * `args.wait_seconds`. The HTTP timeout must exceed that, hence the

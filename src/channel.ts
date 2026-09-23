@@ -19,6 +19,7 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
+import { type InviteSweeperHandle, startInviteSweeper } from "./invite-sweep.js";
 import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
 
@@ -191,6 +192,17 @@ export function registerFilamentChannel(
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
 
+        let inviteSweeper: InviteSweeperHandle | null = null;
+        if (connection && mcp.autoAcceptInvites) {
+          log(`filament-invites: auto-accept enabled, sweeping every ${mcp.inviteSweepSeconds}s`);
+          inviteSweeper = startInviteSweeper({
+            client: connection.client,
+            log,
+            abortSignal,
+            intervalSeconds: mcp.inviteSweepSeconds,
+          });
+        }
+
         if (connection) {
           const { fatal } = await runPollLoop({
             client: connection.client,
@@ -199,6 +211,7 @@ export function registerFilamentChannel(
             dispatchItem,
             waitSeconds: mcp.pollWaitSeconds,
           });
+          inviteSweeper?.stop();
           if (fatal) {
             // Surface a diagnostic and stop: returning normally here (rather
             // than throwing) is a deliberate choice — see the module header

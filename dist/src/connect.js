@@ -13,10 +13,18 @@ const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 const MIN_POLL_WAIT_SECONDS = 1;
 const MAX_POLL_WAIT_SECONDS = 60;
+const MIN_INVITE_SWEEP_SECONDS = 10;
+const MAX_INVITE_SWEEP_SECONDS = 600;
+const DEFAULT_INVITE_SWEEP_SECONDS = 60;
 function clampPollWaitSeconds(raw) {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return void 0;
   return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
+}
+function clampInviteSweepSeconds(raw) {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return DEFAULT_INVITE_SWEEP_SECONDS;
+  return Math.min(MAX_INVITE_SWEEP_SECONDS, Math.max(MIN_INVITE_SWEEP_SECONDS, Math.trunc(n)));
 }
 function resolveMcpSettings(pluginConfig, env = process.env) {
   const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
@@ -27,7 +35,9 @@ function resolveMcpSettings(pluginConfig, env = process.env) {
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
   const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
   const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
-  return { tokenInput, mcpUrl, pollWaitSeconds };
+  const autoAcceptInvites = cfg.autoAcceptInvites === true;
+  const inviteSweepSeconds = clampInviteSweepSeconds(cfg.inviteSweepSeconds);
+  return { tokenInput, mcpUrl, pollWaitSeconds, autoAcceptInvites, inviteSweepSeconds };
 }
 class ConnectAbortedError extends Error {
   constructor() {
@@ -174,7 +184,9 @@ async function runConnect(opts) {
 }
 export {
   ConnectAbortedError,
+  MAX_INVITE_SWEEP_SECONDS,
   MAX_POLL_WAIT_SECONDS,
+  MIN_INVITE_SWEEP_SECONDS,
   MIN_POLL_WAIT_SECONDS,
   exchangeConnectToken,
   resolveBearer,
