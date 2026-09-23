@@ -50,7 +50,12 @@ export interface StoredBearer {
 const PLUGIN_ID = "filament-fcm";
 const IDENTITY_NAMESPACE = "identity";
 const IDENTITY_KEY = "self";
-const BEARER_NAMESPACE = "bearer";
+// "bearers" (plural), not the pre-rotation "bearer": the gateway keeps a keyed
+// store's options for the life of the process, and reopening a namespace with
+// different maxEntries/overflowPolicy throws PluginStateStoreError on a hot
+// reload. A fresh namespace also leaves the legacy global `bearer/current`
+// entry behind by construction.
+const BEARER_NAMESPACE = "bearers";
 // Pre-migration installs stored the bearer under the fixed key "current"
 // (one bearer, no notion of which connect token produced it). That entry is
 // never looked up by the per-token key below, so it's harmlessly orphaned

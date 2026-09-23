@@ -3,7 +3,7 @@ import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doc
 const PLUGIN_ID = "filament-fcm";
 const IDENTITY_NAMESPACE = "identity";
 const IDENTITY_KEY = "self";
-const BEARER_NAMESPACE = "bearer";
+const BEARER_NAMESPACE = "bearers";
 let idStore = null;
 let bearerStore = null;
 function identityStore() {
