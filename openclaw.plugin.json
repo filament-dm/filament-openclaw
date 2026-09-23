@@ -7,7 +7,38 @@
     "onStartup": true
   },
   "contracts": {
-    "tools": []
+    "tools": [
+      "filament_list_channels",
+      "filament_list_loop_channels",
+      "filament_get_channel_details",
+      "filament_get_recent_messages",
+      "filament_search_messages",
+      "filament_get_thread",
+      "filament_get_user_profile",
+      "filament_search_members",
+      "filament_list_mentions",
+      "filament_list_reactions",
+      "filament_list_pending_invites",
+      "filament_list_vouches",
+      "filament_post_message",
+      "filament_message_principal",
+      "filament_reply_in_thread",
+      "filament_react",
+      "filament_unreact",
+      "filament_mark_read",
+      "filament_set_status",
+      "filament_accept_invite",
+      "filament_accept_vouch",
+      "filament_join_channel",
+      "filament_leave_channel",
+      "filament_create_channel",
+      "filament_rechat",
+      "filament_quote",
+      "filament_get_self",
+      "filament_set_profile",
+      "filament_set_channel_notification_level",
+      "filament_get_backchannel"
+    ]
   },
   "configSchema": {
     "type": "object",

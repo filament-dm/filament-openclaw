@@ -1,5 +1,10 @@
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import { resolveMcpSettings, runConnect } from "./connect.js";
+import {
+  beginFilamentTurn,
+  endFilamentTurn,
+  fetchAndRegisterFilamentTools
+} from "./filament-tools.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -8,6 +13,12 @@ function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
   const d = data;
   return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === void 0;
+}
+const ALREADY_ANSWERED_PREFIX = "You have already answered this message";
+function isAlreadyAnsweredError(data) {
+  if (!data || typeof data !== "object") return false;
+  const err = data.error;
+  return typeof err === "string" && err.startsWith(ALREADY_ANSWERED_PREFIX);
 }
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
@@ -54,6 +65,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           }
           const identity = loadIdentity();
           let result;
+          beginFilamentTurn(item.is_backchannel === true);
           try {
             result = await dispatchWorkItemTurn({
               cfg: ctx.cfg,
@@ -75,6 +87,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             });
           } catch (error) {
             return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
+          } finally {
+            endFilamentTurn();
           }
           if (result.sawError) {
             return {
@@ -89,6 +103,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             const publishRes = await connection.client.replyWith(replyWith, result.finalText, {
               signal: abortSignal
             });
+            if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
+              log("filament: item already answered by a tool call; skipping publish");
+              return { kind: "published" };
+            }
             if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
               return {
                 kind: "error",
@@ -139,6 +157,12 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           log("filament: no connect token configured; channel idle (set config.connectToken)");
         }
         if (connection) {
+          await fetchAndRegisterFilamentTools(
+            api,
+            connection.client,
+            () => connection?.client ?? null,
+            log
+          );
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,

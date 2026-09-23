@@ -13,9 +13,13 @@ Same shape as the Hermes plugin — **no Matrix client or Matrix token is involv
   and pre-resolves the reply destination in `reply_with` — there is no push
   socket and no separate decode step.
 - **Outbound (send/act):** replies go through Filament's **MCP-over-HTTP agents
-  API**, authenticated with a **bearer token** (not a Matrix access token):
-  exactly one call per item, using `reply_with.tool` (`post_message` or
-  `reply_in_thread`) with `reply_with.args` verbatim.
+  API**, authenticated with a **bearer token** (not a Matrix access token). The
+  poll loop itself attempts exactly one `reply_with` publish per item, using
+  `reply_with.tool` (`post_message` or `reply_in_thread`) with `reply_with.args`
+  verbatim. The agent can also act directly through the registered Filament
+  tools mid-turn (see "Tools exposed to the agent" below) — including posting
+  its own reply, in which case the loop's publish is recognized as a duplicate
+  and skipped rather than treated as a failure.
 
 Earlier revisions of this plugin used Firebase Cloud Messaging (FCM) as the
 inbound transport; that has been replaced by `poll_work` (see "Current
@@ -90,6 +94,11 @@ live-gateway smoke test on this host; see `ROADMAP.md`). The plugin registers a 
   `filament_accept_vouch` are exposed as ordinary tools (see "Tools exposed to the agent"
   below) instead of a background loop guessing when to accept on the agent's behalf. See
   `ROADMAP.md`'s "Limitations" for what else that trades away.
+- **Tools** (`src/filament-tools.ts`) — after connect, every tool from Filament's live
+  `tools/list` (minus `poll_work` and the two FCM push-token tools) is registered as an
+  OpenClaw agent tool, `filament_`-prefixed, with per-call authorization gating writes to
+  Filament-originated turns and Ring-0 tools to the backchannel. See "Tools exposed to the
+  agent" below.
 
 See [`ROADMAP.md`](ROADMAP.md) for status, the acceptance criteria this PoC does and does not
 meet yet, and what's next.
@@ -236,6 +245,47 @@ flag — see `synapse-local-dev.md` and `filament feature-flag enable agent_poll
 FILAMENT_MCP_TOKEN=fmcp_... FILAMENT_MCP_URL=http://localhost:8008/mcp/agents \
   openclaw plugins enable filament-fcm
 ```
+
+## Tools exposed to the agent
+
+Once connected, `src/filament-tools.ts` registers every tool from Filament's live `tools/list`
+response as an OpenClaw agent tool, name-prefixed `filament_` (e.g. `filament_post_message`) —
+in parity with how the Python `filament-hermes` plugin exposes the same MCP server's tools to
+its agent. This is on top of, and separate from, the poll loop's own `reply_with` publish (see
+"Architecture" and "Interaction with the poll loop" below).
+
+**Excluded:** `poll_work` (the poll loop owns it exclusively — the agent must never call it) and
+`register_push_token`/`list_push_tokens` (FCM harness plumbing; this plugin uses `poll_work`, not
+FCM, so these tools have nothing to register). Everything else the server returns — **including**
+`post_message`, `reply_in_thread`, `message_principal`, `accept_invite`, `accept_vouch` — is
+registered, filtered to a reviewed name allowlist (`KNOWN_TOOL_NAMES` in `src/filament-tools.ts`,
+mirrored in `openclaw.plugin.json`'s `contracts.tools`) so a brand-new server-side tool doesn't
+reach the model without a review pass.
+
+**Authorization** (checked inside each tool's `execute()`, since OpenClaw's `registerTool` has no
+channel/session-scoping option — see the module docstring in `src/filament-tools.ts` for the full
+reasoning and its documented limitation):
+
+| Tier | Rule | Tools |
+| --- | --- | --- |
+| **Read** | Always allowed, any turn. | Every tool whose live schema sets `annotations.readOnlyHint: true` — `list_channels`, `list_loop_channels`, `get_channel_details`, `get_recent_messages`, `search_messages`, `get_thread`, `get_user_profile`, `search_members`, `list_mentions`, `list_reactions`, `list_pending_invites`, `list_vouches`, `get_self`, `get_backchannel`. |
+| **Ring 0** (principal-only) | Allowed only during a turn dispatched from the backchannel (`item.is_backchannel === true`). | `set_profile` — Filament's own tool declares this `agent self-configuration, not channel content` (synapse `tools_config.py`), matching `filament-hermes/docs/agent-boundaries.md` §5's "tools that change the agent are Ring 0 and principal-only". A tool whose `readOnlyHint` is missing or malformed also falls here (fail closed). |
+| **Write** | Allowed during any turn this plugin's own poll loop dispatched (backchannel or group) — denied if called with no active Filament turn at all (e.g. from a different channel's turn). | Everything else: `post_message`, `message_principal`, `reply_in_thread`, `react`, `unreact`, `mark_read`, `set_status`, `accept_invite`, `accept_vouch`, `join_channel`, `leave_channel`, `create_channel`, `rechat`, `quote`, `set_channel_notification_level`. |
+
+A denied or failed call throws (OpenClaw's own tool convention — "throw on failure instead of
+encoding errors in content", per its SDK types); calls are logged as
+`filament-tools: filament_<name> ok|denied|failed`, without request/response bodies.
+
+### Interaction with the poll loop's own publish
+
+The poll loop still attempts exactly one `reply_with` publish per item after the turn finishes
+(see "Architecture"). If the model already answered the item itself via a tool call
+(`filament_post_message`/`filament_reply_in_thread`/`filament_message_principal`) during the
+turn, Filament's work ledger rejects the loop's own publish as a duplicate
+(`work_ledger.AlreadyAnswered`, surfaced as `{"error": "You have already answered this
+message…"}` — HTTP 200, no `isError`). `src/channel.ts` recognizes that specific message and
+treats the item as `published` (logging `filament: item already answered by a tool call; skipping
+publish`) rather than as a publish failure.
 
 ## Local setup and limitations
 

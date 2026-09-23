@@ -5,7 +5,7 @@
 // `reply_with`. The channel lives in src/channel.ts.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-import { registerFilamentChannel } from "./src/channel.js";
+import { registerFilamentChannel, type FilamentChannelApi } from "./src/channel.js";
 
 export default definePluginEntry({
   // Kept as "filament-fcm" for config/storage compatibility (renaming the
@@ -18,6 +18,11 @@ export default definePluginEntry({
     "Connects an OpenClaw agent to Filament: receives work via a poll_work " +
     "long-poll and replies through Filament's MCP-over-HTTP agents API.",
   register(api) {
-    registerFilamentChannel(api);
+    // The real OpenClawPluginApi.registerTool requires a TypeBox `TSchema`
+    // for `parameters`; `typebox` isn't importable from this package (see
+    // src/filament-tools.ts's module docstring), so FilamentChannelApi
+    // deliberately types `parameters` as `unknown` and this boundary needs
+    // an explicit cast rather than relying on structural inference.
+    registerFilamentChannel(api as unknown as FilamentChannelApi);
   },
 });

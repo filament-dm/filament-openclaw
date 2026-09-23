@@ -222,6 +222,68 @@ class FilamentMcpClient {
     }
     return { ok: true, httpStatus: status, data };
   }
+  /**
+   * `tools/list`: the live agent-facing tool catalog (name, description,
+   * inputSchema, annotations) this bearer's server advertises right now.
+   * Used by `src/filament-tools.ts` to register the agent's tools with
+   * server-provided descriptions/schemas instead of a hand-maintained copy.
+   *
+   * Unlike `callTool`, there is no MCP content envelope to unwrap: a
+   * `tools/list` result is `{ tools: [...] }` directly. Classified the same
+   * way as `callTool` (auth/transient/protocol) for a consistent caller
+   * contract; a `tools/list` result never carries `isError`, so there is no
+   * "tool" kind here.
+   */
+  async listTools(opts) {
+    await this.initialize(opts);
+    const { status, json, parseError } = await this.post(
+      this.mcpUrl,
+      { jsonrpc: "2.0", id: this.nextId++, method: "tools/list", params: {} },
+      true,
+      opts
+    );
+    if (status === 0 && !json) {
+      return { ok: false, kind: "transient", error: { code: -1, message: "request timed out" } };
+    }
+    if (status === 401 || status === 403) {
+      return { ok: false, kind: "auth", error: { code: -32001, message: `HTTP ${status}` } };
+    }
+    if (status === 429 || status >= 500) {
+      return { ok: false, kind: "transient", error: { code: -32e3, message: `HTTP ${status}` } };
+    }
+    if (parseError) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -32700, message: "invalid JSON in response body" }
+      };
+    }
+    if (json?.error) {
+      return { ok: false, kind: classifyJsonRpcError(json.error), error: json.error };
+    }
+    if (status < 200 || status >= 300) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: `unexpected HTTP ${status}` }
+      };
+    }
+    const tools = json?.result?.tools;
+    if (!Array.isArray(tools)) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: "tools/list result missing a tools[] array" }
+      };
+    }
+    const parsed = tools.filter((t) => !!t && typeof t === "object").filter((t) => typeof t.name === "string" && t.name.length > 0).map((t) => ({
+      name: t.name,
+      description: typeof t.description === "string" ? t.description : void 0,
+      inputSchema: t.inputSchema,
+      annotations: t.annotations && typeof t.annotations === "object" ? t.annotations : void 0
+    }));
+    return { ok: true, tools: parsed };
+  }
   /** Fetch the agent's own identity (principal, backchannel, mxid). Read-only. */
   getSelf(opts) {
     return this.callTool("get_self", {}, opts);

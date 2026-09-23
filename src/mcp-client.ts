@@ -26,6 +26,28 @@
 /** MCP protocol version we advertise. */
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 
+/**
+ * One entry from a `tools/list` response, as Filament's server generates it
+ * (see synapse's `ToolDef.to_mcp_schema()`): the tool's dispatch name, its
+ * model-facing description, its JSON Schema argument shape, and MCP
+ * annotations. `annotations.readOnlyHint` is the one flag this plugin relies
+ * on — every read tool sets it `true`, every write tool (and `poll_work`)
+ * sets it `false` — see `src/filament-tools.ts`.
+ */
+export interface McpToolDescriptor {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  annotations?: { readOnlyHint?: boolean; [key: string]: unknown };
+}
+
+export interface ListToolsResult {
+  ok: boolean;
+  tools?: McpToolDescriptor[];
+  error?: McpError;
+  kind?: ClientErrorKind;
+}
+
 export type ClientErrorKind = "auth" | "transient" | "tool" | "protocol";
 
 export interface McpError {
@@ -348,6 +370,76 @@ export class FilamentMcpClient {
       };
     }
     return { ok: true, httpStatus: status, data };
+  }
+
+  /**
+   * `tools/list`: the live agent-facing tool catalog (name, description,
+   * inputSchema, annotations) this bearer's server advertises right now.
+   * Used by `src/filament-tools.ts` to register the agent's tools with
+   * server-provided descriptions/schemas instead of a hand-maintained copy.
+   *
+   * Unlike `callTool`, there is no MCP content envelope to unwrap: a
+   * `tools/list` result is `{ tools: [...] }` directly. Classified the same
+   * way as `callTool` (auth/transient/protocol) for a consistent caller
+   * contract; a `tools/list` result never carries `isError`, so there is no
+   * "tool" kind here.
+   */
+  async listTools(opts?: CallOptions): Promise<ListToolsResult> {
+    await this.initialize(opts);
+    const { status, json, parseError } = await this.post(
+      this.mcpUrl,
+      { jsonrpc: "2.0", id: this.nextId++, method: "tools/list", params: {} },
+      true,
+      opts,
+    );
+
+    if (status === 0 && !json) {
+      return { ok: false, kind: "transient", error: { code: -1, message: "request timed out" } };
+    }
+    if (status === 401 || status === 403) {
+      return { ok: false, kind: "auth", error: { code: -32001, message: `HTTP ${status}` } };
+    }
+    if (status === 429 || status >= 500) {
+      return { ok: false, kind: "transient", error: { code: -32000, message: `HTTP ${status}` } };
+    }
+    if (parseError) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -32700, message: "invalid JSON in response body" },
+      };
+    }
+    if (json?.error) {
+      return { ok: false, kind: classifyJsonRpcError(json.error), error: json.error };
+    }
+    if (status < 200 || status >= 300) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: `unexpected HTTP ${status}` },
+      };
+    }
+    const tools = (json?.result as { tools?: unknown } | undefined)?.tools;
+    if (!Array.isArray(tools)) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: "tools/list result missing a tools[] array" },
+      };
+    }
+    const parsed: McpToolDescriptor[] = tools
+      .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+      .filter((t) => typeof t.name === "string" && t.name.length > 0)
+      .map((t) => ({
+        name: t.name as string,
+        description: typeof t.description === "string" ? t.description : undefined,
+        inputSchema: t.inputSchema,
+        annotations:
+          t.annotations && typeof t.annotations === "object"
+            ? (t.annotations as McpToolDescriptor["annotations"])
+            : undefined,
+      }));
+    return { ok: true, tools: parsed };
   }
 
   /** Fetch the agent's own identity (principal, backchannel, mxid). Read-only. */

@@ -28,6 +28,20 @@ install, no running Synapse with `poll_work` enabled here — see "Verification 
   greeting. Invite/vouch acceptance is no longer a background sweep — see "Tool surface"
   below and the README's "Tools exposed to the agent".
 
+## Tool surface
+
+`src/filament-tools.ts` registers Filament's MCP tool surface as OpenClaw agent tools, in
+parity with `filament-hermes` (which does the same against the same server). Registration is
+tied to the connect sequence rather than the plugin's synchronous `register(api)` entry point —
+see that module's docstring for why (OpenClaw's plugin entry has no async variant, but the live
+tool list needs an MCP round trip only possible after a resolved bearer) and for the
+**unverified-without-a-live-gateway** risk that implies (whether `api.registerTool()` calls made
+this late are honored). Authorization (read/Ring-0/write tiers) is enforced per call inside each
+tool's `execute()` via a module-level "current turn" flag set by `src/channel.ts`, because
+`ExtensionContext` carries no session/channel identity and `registerTool`'s options are just
+`{name, names, optional}` — no channel-scoping primitive exists to do this at registration time.
+Full detail in the README's "Tools exposed to the agent".
+
 ## The architecture (unchanged from the FCM design)
 
 Hermes' inbound loop is: decode push → `handle_message(event)` → **the gateway runs the
@@ -124,6 +138,11 @@ following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP 
 - The token-exchange call against a real Synapse (`oauth_token.py`'s
   `_exchange_connect_token`), including the `authorization_pending` retry path while an agent
   finishes onboarding in the Filament app.
+- Whether `api.registerTool()` calls made from inside `startAccount` (after `register(api)` has
+  already returned — see `src/filament-tools.ts`'s docstring) actually reach the model's tool
+  list, and whether `ctx: ExtensionContext` inside a tool's `execute()` truly carries nothing
+  that identifies the originating channel/session (both asserted from reading the `.d.ts` files
+  and stock plugin source under the installed OpenClaw, never exercised live).
 
 ## MCP tools used
 

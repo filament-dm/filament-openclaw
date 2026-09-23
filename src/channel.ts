@@ -18,6 +18,12 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
 import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
+import {
+  beginFilamentTurn,
+  endFilamentTurn,
+  fetchAndRegisterFilamentTools,
+  type FilamentToolsApi,
+} from "./filament-tools.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -27,7 +33,7 @@ export const FILAMENT_CHANNEL_ID = "filament";
 // Loose structural view of the plugin API surface the channel touches. The
 // concrete OpenClaw SDK types only resolve inside the gateway, so we keep
 // this minimal and let the runtime provide the real objects.
-export interface FilamentChannelApi {
+export interface FilamentChannelApi extends FilamentToolsApi {
   config: unknown;
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
@@ -39,6 +45,23 @@ function publishSucceeded(data: unknown): boolean {
   if (!data || typeof data !== "object") return false;
   const d = data as Record<string, unknown>;
   return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === undefined;
+}
+
+/**
+ * The exact prefix of synapse's `_ALREADY_ANSWERED` message
+ * (`tools_write.py`), returned as `{"error": "..."}` (HTTP 200, no
+ * `isError`) when a reply targets a work-ledger item a tool call already
+ * answered this turn (e.g. the model called `filament_post_message` itself
+ * before the poll loop's own `reply_with` publish ran). This is a success
+ * from the ledger's point of view — the item got exactly one reply — so it
+ * must not be treated as a publish failure.
+ */
+const ALREADY_ANSWERED_PREFIX = "You have already answered this message";
+
+function isAlreadyAnsweredError(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const err = (data as Record<string, unknown>).error;
+  return typeof err === "string" && err.startsWith(ALREADY_ANSWERED_PREFIX);
 }
 
 /**
@@ -99,6 +122,11 @@ export function registerFilamentChannel(
           }
           const identity = loadIdentity();
           let result;
+          // Marks this turn as Filament-originated (and whether it came from
+          // the backchannel) for src/filament-tools.ts's authorization gate —
+          // see that module's docstring for why this is a module-level flag
+          // rather than something read off `ctx` inside a tool's execute().
+          beginFilamentTurn(item.is_backchannel === true);
           try {
             result = await dispatchWorkItemTurn({
               cfg: ctx.cfg,
@@ -120,6 +148,8 @@ export function registerFilamentChannel(
             });
           } catch (error) {
             return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
+          } finally {
+            endFilamentTurn();
           }
 
           if (result.sawError) {
@@ -135,6 +165,15 @@ export function registerFilamentChannel(
             const publishRes = await connection.client.replyWith(replyWith, result.finalText, {
               signal: abortSignal,
             });
+            if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
+              // The model already answered this item with a tool call
+              // (filament_post_message/filament_reply_in_thread/
+              // filament_message_principal) during the turn; the ledger
+              // rejected our own reply_with publish as a duplicate. The item
+              // got its one reply, so this is success, not a publish failure.
+              log("filament: item already answered by a tool call; skipping publish");
+              return { kind: "published" };
+            }
             if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
               return {
                 kind: "error",
@@ -192,6 +231,19 @@ export function registerFilamentChannel(
         }
 
         if (connection) {
+          // Register the agent-facing tool surface from the live server's
+          // tools/list, before any turn can be dispatched (see
+          // src/filament-tools.ts's module docstring for why this happens
+          // here — after connect, before the poll loop — rather than
+          // synchronously in register(api)). getClient reads `connection`
+          // fresh on every tool call, so a tool degrades cleanly if the
+          // connection is later torn down without needing to be unregistered.
+          await fetchAndRegisterFilamentTools(
+            api,
+            connection.client,
+            () => connection?.client ?? null,
+            log,
+          );
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,
