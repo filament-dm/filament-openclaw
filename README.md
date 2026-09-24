@@ -116,16 +116,44 @@ dialog shows; the token is the single-use `fmcp_…` connect token, exchanged
 once by the plugin for a persistent bearer):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... bash
+curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash
 ```
 
-`install.sh` checks for `openclaw` and a running gateway, installs or updates
-the plugin from git (`PLUGIN_REF` selects a branch, default `main`), writes
-`connectToken` and, when `FILAMENT_MCP_URL` is set, `mcpUrl`, enables the
-plugin, binds the `filament` channel to an agent when the gateway has several
-(`OPENCLAW_AGENT=<id>` or an interactive prompt), and waits for the connect
-log line. `OPENCLAW_PLUGIN_SOURCE` overrides the install spec for a future
-ClawHub package.
+Run it once per Filament agent; it is idempotent. `install.sh` checks for
+`openclaw` and a running gateway, installs the plugin from git only if the
+gateway lacks it (`PLUGIN_REF` selects a branch, default `main`;
+`FILAMENT_PLUGIN_UPDATE=1` updates an existing install), creates the OpenClaw
+agent `OPENCLAW_AGENT` if it doesn't exist, and writes — in one validated
+`openclaw config patch` — the token as the channel account of the same id plus
+the binding that routes it to that agent. It then waits for that account's
+connect log line. `OPENCLAW_PLUGIN_SOURCE` overrides the install spec for a
+future ClawHub package. Without `OPENCLAW_AGENT` it keeps the single-agent
+shape (the `default` account).
+
+### Several Filament agents on one gateway
+
+Each Filament agent is one **channel account**, and each account is bound to
+its own OpenClaw agent:
+
+```json5
+plugins: { entries: { "filament-fcm": { config: {
+  mcpUrl: "…/mcp/agents",                       // shared by every account
+  accounts: {
+    researcher: { connectToken: "fmcp_…" },
+    writer:     { connectToken: "fmcp_…" },
+  },
+} } } },
+bindings: [
+  { agentId: "researcher", match: { channel: "filament", accountId: "researcher" } },
+  { agentId: "writer",     match: { channel: "filament", accountId: "writer" } },
+],
+```
+
+Every account runs its own poll loop and bearer. The `filament_*` tools are
+registered as factories, so each OpenClaw agent's tools call Filament as *its*
+account (found through its binding), and an agent with no Filament account gets
+none. The legacy top-level `connectToken` is still read, as the `default`
+account.
 
 This plugin is **not published to ClawHub or npm**. Install it straight from git.
 OpenClaw's `git:` installer (verified against 2026.7.1-2) accepts `@<ref>` or
