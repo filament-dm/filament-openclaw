@@ -17,7 +17,19 @@
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
-import { type ConnectHandle, resolveMcpSettings, runConnect } from "./connect.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  FILAMENT_CHANNEL_ID,
+  listConfiguredAccountIds,
+  PLUGIN_ID,
+  pluginConfigFrom,
+} from "./accounts.js";
+import {
+  type ConnectHandle,
+  connectTokenConfigPath,
+  resolveAccountSettings,
+  runConnect,
+} from "./connect.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -31,7 +43,7 @@ import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
 
-export const FILAMENT_CHANNEL_ID = "filament";
+export { FILAMENT_CHANNEL_ID };
 
 // Loose structural view of the plugin API surface the channel touches. The
 // concrete OpenClaw SDK types only resolve inside the gateway, so we keep
@@ -81,7 +93,10 @@ export function registerFilamentChannel(
     if (api.logger?.info) api.logger.info(message);
     else console.log(message);
   };
-  const mcp = resolveMcpSettings(api.pluginConfig);
+  // The live gateway config wins over the load-time snapshot, so an account
+  // added by `openclaw config set` is seen on the next reload.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const pluginConfigOf = (cfg: any): unknown => pluginConfigFrom(cfg) ?? api.pluginConfig;
 
   // Register the whole Filament tool surface now, synchronously, from the
   // schema snapshot — before any connection exists. See
@@ -103,10 +118,13 @@ export function registerFilamentChannel(
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
-      listAccountIds: () => ["default"],
+      // One account per Filament agent: `config.accounts.<id>`, plus the
+      // legacy top-level token as `default` (src/accounts.ts).
+      // oxlint-disable-next-line typescript/no-explicit-any
+      listAccountIds: (cfg: any) => listConfiguredAccountIds(pluginConfigOf(cfg)),
       // oxlint-disable-next-line typescript/no-explicit-any
       resolveAccount: (_cfg: any, accountId?: string | null) => ({
-        accountId: accountId ?? "default",
+        accountId: accountId ?? DEFAULT_ACCOUNT_ID,
       }),
     },
     gateway: {
@@ -114,6 +132,10 @@ export function registerFilamentChannel(
       startAccount: async (ctx: any) => {
         let connection: ConnectHandle | null = null;
         const abortSignal: AbortSignal = ctx.abortSignal;
+        const accountId: string = ctx.accountId ?? DEFAULT_ACCOUNT_ID;
+        const pluginConfig = pluginConfigOf(ctx.cfg);
+        const mcp = resolveAccountSettings(pluginConfig, accountId);
+        const accountLog = (message: string) => log(`[${accountId}] ${message}`);
 
         // Dispatch one work item: run the turn, publish at most once via
         // reply_with, and classify the outcome for the poll loop.
@@ -132,20 +154,20 @@ export function registerFilamentChannel(
               diagnostic: "ctx.channelRuntime unavailable; cannot wake a turn",
             };
           }
-          const identity = loadIdentity();
+          const identity = loadIdentity(accountId);
           let result;
           // Marks this turn as Filament-originated (and whether it came from
           // the backchannel) for src/filament-tools.ts's authorization gate —
           // see that module's docstring for why this is a module-level flag
           // rather than something read off `ctx` inside a tool's execute().
-          beginFilamentTurn(item.is_backchannel === true);
+          beginFilamentTurn(item.is_backchannel === true, accountId);
           try {
             result = await dispatchWorkItemTurn({
               cfg: ctx.cfg,
               channelRuntime: ctx.channelRuntime,
               channel: FILAMENT_CHANNEL_ID,
               channelLabel: "Filament",
-              accountId: ctx.accountId ?? "default",
+              accountId,
               peerKind: item.is_backchannel ? "direct" : "group",
               channelId: item.channel_id,
               threadId: item.thread_id,
@@ -156,12 +178,12 @@ export function registerFilamentChannel(
               // only ever authorizes the backchannel/control-plane item, never
               // an arbitrary conversation (see the plan's item 5).
               commandAuthorized: item.is_backchannel === true,
-              log,
+              log: accountLog,
             });
           } catch (error) {
             return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
           } finally {
-            endFilamentTurn();
+            endFilamentTurn(accountId);
           }
 
           if (result.sawError) {
@@ -183,7 +205,7 @@ export function registerFilamentChannel(
               // filament_message_principal) during the turn; the ledger
               // rejected our own reply_with publish as a duplicate. The item
               // got its one reply, so this is success, not a publish failure.
-              log("filament: item already answered by a tool call; skipping publish");
+              accountLog("filament: item already answered by a tool call; skipping publish");
               return { kind: "published" };
             }
             if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
@@ -192,13 +214,13 @@ export function registerFilamentChannel(
                 diagnostic: `publish failed/ambiguous (${publishRes.kind ?? "?"}: ${publishRes.error?.message ?? "no event_id"})`,
               };
             }
-            log(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
+            accountLog(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
             return { kind: "published" };
           }
           if (result.sawSkip) {
             return { kind: "silent" };
           }
-          log(
+          accountLog(
             `filament: turn produced no text and no explicit skip signal for ${item.channel_id}; leaving unacknowledged`,
           );
           return { kind: "ambiguous" };
@@ -213,11 +235,11 @@ export function registerFilamentChannel(
             config: api.config as any,
             env: process.env,
             value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken",
+            path: connectTokenConfigPath(PLUGIN_ID, accountId, pluginConfig),
           });
           token = resolved.value ?? "";
           if (!token) {
-            log(
+            accountLog(
               `filament: connect token did not resolve${
                 resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""
               }`,
@@ -230,16 +252,19 @@ export function registerFilamentChannel(
             connection = await runConnect({
               mcpUrl: mcp.mcpUrl,
               token,
-              log,
+              accountId,
+              log: accountLog,
               abortSignal,
             });
             onConnectionChange(connection);
           } catch (error) {
-            log(`filament: connect failed: ${String(error)}`);
+            accountLog(`filament: connect failed: ${String(error)}`);
             connection = null;
           }
         } else {
-          log("filament: no connect token configured; channel idle (set config.connectToken)");
+          accountLog(
+            "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)",
+          );
         }
 
         if (connection) {
@@ -247,16 +272,16 @@ export function registerFilamentChannel(
           // above); populate the connection holder so each tool's execute()
           // can reach the live client. Cleared below on the way out, whatever
           // the exit reason (normal wind-down or fatal).
-          setFilamentClient(connection.client);
+          setFilamentClient(connection.client, accountId);
           // Best-effort diagnostic only — see src/filament-tools.ts's
           // checkFilamentToolDrift docstring. Never blocks/aborts connect.
-          void checkFilamentToolDrift(connection.client, log).catch((error) => {
-            log(`filament: tool drift check failed: ${String(error)}`);
+          void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+            accountLog(`filament: tool drift check failed: ${String(error)}`);
           });
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,
-            log,
+            log: accountLog,
             dispatchItem,
             waitSeconds: mcp.pollWaitSeconds,
           });
@@ -266,15 +291,15 @@ export function registerFilamentChannel(
             // in poll-work.ts and ROADMAP.md's "lifecycle on fatal" note on
             // why we don't want the gateway's exit-triggers-restart behavior
             // to silently re-run a poll loop that just told us to stop.
-            log(`filament: account entering a fatal/paused state: ${fatal}`);
+            accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
             ctx.setStatus?.({
-              accountId: ctx.accountId ?? "default",
+              accountId,
               connected: false,
               statusState: "error",
               restartPending: false,
             });
           }
-          setFilamentClient(null);
+          setFilamentClient(null, accountId);
         }
 
         // Hold the account open until the gateway aborts it (covers both the
@@ -288,11 +313,12 @@ export function registerFilamentChannel(
         }
 
         connection?.stop();
-        setFilamentClient(null);
+        setFilamentClient(null, accountId);
         onConnectionChange(null);
       },
-      stopAccount: async () => {
-        setFilamentClient(null);
+      // oxlint-disable-next-line typescript/no-explicit-any
+      stopAccount: async (ctx: any) => {
+        setFilamentClient(null, ctx?.accountId ?? DEFAULT_ACCOUNT_ID);
         onConnectionChange(null);
       },
     },

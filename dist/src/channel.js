@@ -1,5 +1,16 @@
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { resolveMcpSettings, runConnect } from "./connect.js";
+import {
+  DEFAULT_ACCOUNT_ID,
+  FILAMENT_CHANNEL_ID,
+  listConfiguredAccountIds,
+  PLUGIN_ID,
+  pluginConfigFrom
+} from "./accounts.js";
+import {
+  connectTokenConfigPath,
+  resolveAccountSettings,
+  runConnect
+} from "./connect.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -11,7 +22,6 @@ import {
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
-const FILAMENT_CHANNEL_ID = "filament";
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
   const d = data;
@@ -29,7 +39,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     if (api.logger?.info) api.logger.info(message);
     else console.log(message);
   };
-  const mcp = resolveMcpSettings(api.pluginConfig);
+  const pluginConfigOf = (cfg) => pluginConfigFrom(cfg) ?? api.pluginConfig;
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const plugin = {
     id: FILAMENT_CHANNEL_ID,
@@ -42,10 +52,13 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
-      listAccountIds: () => ["default"],
+      // One account per Filament agent: `config.accounts.<id>`, plus the
+      // legacy top-level token as `default` (src/accounts.ts).
+      // oxlint-disable-next-line typescript/no-explicit-any
+      listAccountIds: (cfg) => listConfiguredAccountIds(pluginConfigOf(cfg)),
       // oxlint-disable-next-line typescript/no-explicit-any
       resolveAccount: (_cfg, accountId) => ({
-        accountId: accountId ?? "default"
+        accountId: accountId ?? DEFAULT_ACCOUNT_ID
       })
     },
     gateway: {
@@ -53,6 +66,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       startAccount: async (ctx) => {
         let connection = null;
         const abortSignal = ctx.abortSignal;
+        const accountId = ctx.accountId ?? DEFAULT_ACCOUNT_ID;
+        const pluginConfig = pluginConfigOf(ctx.cfg);
+        const mcp = resolveAccountSettings(pluginConfig, accountId);
+        const accountLog = (message) => log(`[${accountId}] ${message}`);
         const dispatchItem = async (item) => {
           const replyWith = item.reply_with;
           if (!replyWith) {
@@ -67,16 +84,16 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               diagnostic: "ctx.channelRuntime unavailable; cannot wake a turn"
             };
           }
-          const identity = loadIdentity();
+          const identity = loadIdentity(accountId);
           let result;
-          beginFilamentTurn(item.is_backchannel === true);
+          beginFilamentTurn(item.is_backchannel === true, accountId);
           try {
             result = await dispatchWorkItemTurn({
               cfg: ctx.cfg,
               channelRuntime: ctx.channelRuntime,
               channel: FILAMENT_CHANNEL_ID,
               channelLabel: "Filament",
-              accountId: ctx.accountId ?? "default",
+              accountId,
               peerKind: item.is_backchannel ? "direct" : "group",
               channelId: item.channel_id,
               threadId: item.thread_id,
@@ -87,12 +104,12 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               // only ever authorizes the backchannel/control-plane item, never
               // an arbitrary conversation (see the plan's item 5).
               commandAuthorized: item.is_backchannel === true,
-              log
+              log: accountLog
             });
           } catch (error) {
             return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
           } finally {
-            endFilamentTurn();
+            endFilamentTurn(accountId);
           }
           if (result.sawError) {
             return {
@@ -108,7 +125,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               signal: abortSignal
             });
             if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
-              log("filament: item already answered by a tool call; skipping publish");
+              accountLog("filament: item already answered by a tool call; skipping publish");
               return { kind: "published" };
             }
             if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
@@ -117,13 +134,13 @@ function registerFilamentChannel(api, onConnectionChange = () => {
                 diagnostic: `publish failed/ambiguous (${publishRes.kind ?? "?"}: ${publishRes.error?.message ?? "no event_id"})`
               };
             }
-            log(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
+            accountLog(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
             return { kind: "published" };
           }
           if (result.sawSkip) {
             return { kind: "silent" };
           }
-          log(
+          accountLog(
             `filament: turn produced no text and no explicit skip signal for ${item.channel_id}; leaving unacknowledged`
           );
           return { kind: "ambiguous" };
@@ -135,11 +152,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             config: api.config,
             env: process.env,
             value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken"
+            path: connectTokenConfigPath(PLUGIN_ID, accountId, pluginConfig)
           });
           token = resolved.value ?? "";
           if (!token) {
-            log(
+            accountLog(
               `filament: connect token did not resolve${resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""}`
             );
           }
@@ -149,39 +166,42 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             connection = await runConnect({
               mcpUrl: mcp.mcpUrl,
               token,
-              log,
+              accountId,
+              log: accountLog,
               abortSignal
             });
             onConnectionChange(connection);
           } catch (error) {
-            log(`filament: connect failed: ${String(error)}`);
+            accountLog(`filament: connect failed: ${String(error)}`);
             connection = null;
           }
         } else {
-          log("filament: no connect token configured; channel idle (set config.connectToken)");
+          accountLog(
+            "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)"
+          );
         }
         if (connection) {
-          setFilamentClient(connection.client);
-          void checkFilamentToolDrift(connection.client, log).catch((error) => {
-            log(`filament: tool drift check failed: ${String(error)}`);
+          setFilamentClient(connection.client, accountId);
+          void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+            accountLog(`filament: tool drift check failed: ${String(error)}`);
           });
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,
-            log,
+            log: accountLog,
             dispatchItem,
             waitSeconds: mcp.pollWaitSeconds
           });
           if (fatal) {
-            log(`filament: account entering a fatal/paused state: ${fatal}`);
+            accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
             ctx.setStatus?.({
-              accountId: ctx.accountId ?? "default",
+              accountId,
               connected: false,
               statusState: "error",
               restartPending: false
             });
           }
-          setFilamentClient(null);
+          setFilamentClient(null, accountId);
         }
         if (!abortSignal.aborted) {
           await new Promise((resolve) => {
@@ -190,11 +210,12 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
         }
         connection?.stop();
-        setFilamentClient(null);
+        setFilamentClient(null, accountId);
         onConnectionChange(null);
       },
-      stopAccount: async () => {
-        setFilamentClient(null);
+      // oxlint-disable-next-line typescript/no-explicit-any
+      stopAccount: async (ctx) => {
+        setFilamentClient(null, ctx?.accountId ?? DEFAULT_ACCOUNT_ID);
         onConnectionChange(null);
       }
     }

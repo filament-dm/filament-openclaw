@@ -16,9 +16,11 @@ import {
   setFilamentClient,
   TOOL_NAME_PREFIX,
   TOOL_SNAPSHOT,
+  type FilamentAgentTool,
   type FilamentToolClient,
   type FilamentToolsApi,
 } from "./filament-tools.js";
+import type { ToolAccountContext } from "./accounts.js";
 
 function okResult(data: unknown): ToolCallResult {
   return { ok: true, httpStatus: 200, data };
@@ -44,15 +46,27 @@ function writeDescriptor(name: string): McpToolDescriptor {
   };
 }
 
-/** A fake registry that captures every registered tool, keyed by name. */
-function fakeApi(): {
+/**
+ * A fake registry that captures every registered tool factory, keyed by name,
+ * and materializes it for `ctx` (default: an unbound single-account agent).
+ */
+function fakeApi(ctx: ToolAccountContext = {}): {
   api: FilamentToolsApi;
-  tools: Map<string, Parameters<FilamentToolsApi["registerTool"]>[0]>;
+  tools: Map<string, FilamentAgentTool>;
+  factories: Map<string, (ctx: ToolAccountContext) => FilamentAgentTool | null>;
 } {
-  const tools = new Map<string, Parameters<FilamentToolsApi["registerTool"]>[0]>();
+  const tools = new Map<string, FilamentAgentTool>();
+  const factories = new Map<string, (ctx: ToolAccountContext) => FilamentAgentTool | null>();
   return {
-    api: { registerTool: (tool) => tools.set(tool.name, tool) },
+    api: {
+      registerTool: (factory, opts) => {
+        factories.set(opts.names[0]!, factory);
+        const tool = factory(ctx);
+        if (tool) tools.set(tool.name, tool);
+      },
+    },
     tools,
+    factories,
   };
 }
 
@@ -168,7 +182,8 @@ test("ring0 write tool (set_profile): denied outside a backchannel turn, allowed
   await assert.rejects(() => tool.execute("call-2", {}, undefined, undefined, {}), /denied/);
   endFilamentTurn();
   assert.ok(
-    lines.filter((l) => l === `filament-tools: ${TOOL_NAME_PREFIX}set_profile denied`).length === 2,
+    lines.filter((l) => l.startsWith(`filament-tools: ${TOOL_NAME_PREFIX}set_profile denied`))
+      .length === 2,
   );
 
   beginFilamentTurn(true); // backchannel
@@ -293,4 +308,49 @@ test("checkFilamentToolDrift: a failed tools/list is logged and does not throw",
   };
   await checkFilamentToolDrift(client, log);
   assert.ok(lines.some((l) => l.includes("drift check skipped")));
+});
+
+// ── Two accounts on one gateway ─────────────────────────────────────────────
+
+test("two accounts: each agent's tool calls through its own account's client and turn", async () => {
+  const bindings = [
+    { agentId: "researcher", match: { channel: "filament", accountId: "researcher" } },
+    { agentId: "writer", match: { channel: "filament", accountId: "writer" } },
+  ];
+  const config = { bindings };
+  const researcher = fakeApi({ agentId: "researcher", config });
+  const writer = fakeApi({ agentId: "writer", config });
+  const { log } = fakeLog();
+  registerFilamentToolsFromSnapshot(researcher.api, getFilamentClient, log);
+  registerFilamentToolsFromSnapshot(writer.api, getFilamentClient, log);
+
+  const calls: string[] = [];
+  setFilamentClient(
+    { callTool: async () => (calls.push("researcher"), okResult({})) },
+    "researcher",
+  );
+  setFilamentClient({ callTool: async () => (calls.push("writer"), okResult({})) }, "writer");
+
+  const name = `${TOOL_NAME_PREFIX}accept_invite`;
+  beginFilamentTurn(false, "writer");
+  await assert.rejects(
+    () => researcher.tools.get(name)!.execute("c1", {}, undefined, undefined, {}),
+    /denied/,
+  );
+  await writer.tools.get(name)!.execute("c2", {}, undefined, undefined, {});
+  endFilamentTurn("writer");
+  assert.deepEqual(calls, ["writer"]);
+
+  setFilamentClient(null, "researcher");
+  setFilamentClient(null, "writer");
+});
+
+test("an agent with no Filament account gets no filament_* tools", () => {
+  const config = {
+    bindings: [{ agentId: "researcher", match: { channel: "filament", accountId: "researcher" } }],
+  };
+  const { api, tools, factories } = fakeApi({ agentId: "coordinator", config });
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
+  assert.equal(factories.size, TOOL_SNAPSHOT.length);
+  assert.equal(tools.size, 0);
 });

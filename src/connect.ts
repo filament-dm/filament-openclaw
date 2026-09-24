@@ -16,6 +16,7 @@
  * greeting side effect. The poll loop (src/poll-work.ts) now owns all inbound
  * dispatch; connect.ts only proves the credential works and learns identity.
  */
+import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 import { sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
@@ -63,6 +64,38 @@ function clampPollWaitSeconds(raw: unknown): number | undefined {
 }
 
 /**
+ * Settings for one channel account: its own `accounts.<id>` entry layered
+ * over the top-level fields (so `mcpUrl`/`pollWaitSeconds` can be set once
+ * for every account). The `default` account is the top-level shape itself.
+ */
+export function resolveAccountSettings(
+  pluginConfig: unknown,
+  accountId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): McpSettings {
+  const cfg = asRecord(pluginConfig);
+  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
+  if (accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)) {
+    return resolveMcpSettings(cfg, env);
+  }
+  const { accounts: _accounts, connectToken: _legacyToken, ...shared } = cfg;
+  // The env token is the default account's; never let it stand in for another.
+  return resolveMcpSettings({ ...shared, ...entry }, { ...env, FILAMENT_MCP_TOKEN: "" });
+}
+
+/** The config path a secret-input resolver reports for an account's token. */
+export function connectTokenConfigPath(
+  pluginId: string,
+  accountId: string,
+  pluginConfig: unknown,
+): string {
+  const entry = asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]);
+  return accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)
+    ? `plugins.entries.${pluginId}.config.connectToken`
+    : `plugins.entries.${pluginId}.config.accounts.${accountId}.connectToken`;
+}
+
+/**
  * Resolve the MCP endpoint, the connect-token *input*, and the poll wait
  * from plugin config, falling back to env (`FILAMENT_MCP_TOKEN`/
  * `FILAMENT_MCP_URL`) then the prod default. A present token input is the
@@ -77,9 +110,7 @@ export function resolveMcpSettings(
       ? (pluginConfig as Record<string, unknown>)
       : {};
   const cfgToken = cfg.connectToken;
-  const hasCfgToken =
-    (typeof cfgToken === "string" && cfgToken.trim().length > 0) ||
-    (typeof cfgToken === "object" && cfgToken !== null);
+  const hasCfgToken = hasTokenInput(cfgToken);
   const envToken = env.FILAMENT_MCP_TOKEN?.trim();
   const tokenInput = hasCfgToken ? cfgToken : envToken || undefined;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
@@ -99,6 +130,8 @@ export interface RunConnectOptions {
   mcpUrl: string;
   /** The configured token: a connect token (`fmcp_…`) or an already-issued bearer. */
   token: string;
+  /** The channel account this connection belongs to; keys its stored identity. */
+  accountId?: string;
   log?: (message: string) => void;
   abortSignal?: AbortSignal;
   /** Overridable for tests. */
@@ -243,7 +276,15 @@ export async function resolveBearer(
  * before finishing.
  */
 export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle> {
-  const { mcpUrl, token, log = () => {}, abortSignal, fetchImpl = fetch, bearerPersistence } = opts;
+  const {
+    mcpUrl,
+    token,
+    accountId = DEFAULT_ACCOUNT_ID,
+    log = () => {},
+    abortSignal,
+    fetchImpl = fetch,
+    bearerPersistence,
+  } = opts;
 
   const bearer = await resolveBearer(
     mcpUrl,
@@ -300,9 +341,9 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
       "agent not finalized within the verification window; will retry on next restart",
     );
   }
-  saveIdentity({ ...identity, onboardedAt: Date.now() });
+  saveIdentity(accountId, { ...identity, onboardedAt: Date.now() });
   log(
-    `filament-connect: identity principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
+    `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
   );
 
   // Presence heartbeat loop — independent of the poll loop, cancelled on abort.

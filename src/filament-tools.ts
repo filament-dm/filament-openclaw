@@ -83,25 +83,29 @@
  * future schema shape) is treated as `ring0` — the strictest tier — rather
  * than guessed as read or ordinary write.
  *
+ * ## One Filament account per OpenClaw agent
+ *
+ * Each tool is registered as a *factory* (`OpenClawPluginToolFactory`),
+ * which OpenClaw calls with the agent/session it is building a toolset for
+ * (`agentId`, `messageChannel`, `agentAccountId`, `config`). The factory
+ * resolves which Filament channel account that agent is bound to
+ * (`resolveToolAccountId`, src/accounts.ts) and closes over it, so a tool
+ * call always uses the bearer of *its own* agent's account; an agent with no
+ * Filament account gets no `filament_*` tools at all. Names stay static, so
+ * `contracts.tools` still lists them exactly.
+ *
  * ## The turn-tracking limitation
  *
  * `execute()`'s `ctx: ExtensionContext` carries no session/channel/peer
- * identity (verified against `node_modules/openclaw/dist/index-CUIIZH35.d.ts`
- * — its `sessionManager` is a `ReadonlySessionManager` exposing only id/file/
- * tree accessors, nothing that maps back to "this call came from the
- * Filament channel's backchannel item"). Lacking that, authorization here
- * uses a **module-level flag** (`beginFilamentTurn`/`endFilamentTurn`),
- * set/cleared by `src/channel.ts` around each `dispatchWorkItemTurn` call.
- * This is NOT concurrency-safe: `poll-work.ts`'s loop is sequential so two
- * Filament turns never overlap, but if OpenClaw runs a turn on a *different*
- * channel (Telegram, Discord, …) concurrently with an in-flight Filament
- * dispatch, that other turn would incorrectly inherit Filament-turn
- * authorization for the overlap. Accepted for this PoC because there is no
- * SDK-level per-turn tool scoping to do better with (see the module
- * docstring above and the manifest's `OpenClawPluginToolOptions`, which is
- * only `{name, names, optional}`) — flag if a live gateway shows this
- * matters in practice.
+ * identity, so authorization uses a per-account "current turn" slot
+ * (`beginFilamentTurn`/`endFilamentTurn`), set/cleared by `src/channel.ts`
+ * around each `dispatchWorkItemTurn` call. Two Filament accounts never share
+ * a slot, and each account's poll loop is sequential. What remains: if the
+ * *same* OpenClaw agent runs a turn on a different channel (Telegram, …)
+ * while its Filament turn is in flight, that turn inherits Filament-turn
+ * authorization for the overlap. Accepted for this PoC.
  */
+import { DEFAULT_ACCOUNT_ID, resolveToolAccountId, type ToolAccountContext } from "./accounts.js";
 import type {
   CallOptions,
   ListToolsResult,
@@ -173,21 +177,25 @@ interface FilamentTurnState {
   backchannel: boolean;
 }
 
-let activeFilamentTurn: FilamentTurnState | null = null;
+// One slot per channel account: two Filament agents on one gateway dispatch
+// turns independently, and each account's poll loop is itself sequential.
+const activeFilamentTurns = new Map<string, FilamentTurnState>();
 
-/** Call before dispatching a Filament work-item turn. */
-export function beginFilamentTurn(isBackchannel: boolean): void {
-  activeFilamentTurn = { backchannel: isBackchannel };
+/** Call before dispatching a Filament work-item turn on `accountId`. */
+export function beginFilamentTurn(isBackchannel: boolean, accountId = DEFAULT_ACCOUNT_ID): void {
+  activeFilamentTurns.set(accountId, { backchannel: isBackchannel });
 }
 
-/** Call after a Filament work-item turn finishes (success or failure). */
-export function endFilamentTurn(): void {
-  activeFilamentTurn = null;
+/** Call after that account's work-item turn finishes (success or failure). */
+export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): void {
+  activeFilamentTurns.delete(accountId);
 }
 
-/** Test-only accessor/reset. */
-export function _getActiveFilamentTurnForTest(): FilamentTurnState | null {
-  return activeFilamentTurn;
+/** Test-only accessor. */
+export function _getActiveFilamentTurnForTest(
+  accountId = DEFAULT_ACCOUNT_ID,
+): FilamentTurnState | null {
+  return activeFilamentTurns.get(accountId) ?? null;
 }
 
 export interface AuthorizationResult {
@@ -195,9 +203,13 @@ export interface AuthorizationResult {
   reason?: string;
 }
 
-/** Decide whether a call in tier `tier` may run right now. Exported for tests. */
-export function authorizeToolCall(tier: ToolTier): AuthorizationResult {
+/** Decide whether a call in tier `tier` may run now on `accountId`. Exported for tests. */
+export function authorizeToolCall(
+  tier: ToolTier,
+  accountId = DEFAULT_ACCOUNT_ID,
+): AuthorizationResult {
   if (tier === "read") return { ok: true };
+  const activeFilamentTurn = activeFilamentTurns.get(accountId);
   if (!activeFilamentTurn) {
     return {
       ok: false,
@@ -224,8 +236,8 @@ export interface FilamentToolClient {
   ): Promise<ToolCallResult>;
 }
 
-/** Resolves the live connection's client, or null when not currently connected. */
-export type GetFilamentClient = () => FilamentToolClient | null;
+/** Resolves an account's live client, or null when it is not currently connected. */
+export type GetFilamentClient = (accountId: string) => FilamentToolClient | null;
 
 // ── Connection holder ───────────────────────────────────────────────────
 //
@@ -238,16 +250,20 @@ export type GetFilamentClient = () => FilamentToolClient | null;
 // that window throws a clear "not connected yet" error rather than silently
 // hanging or reaching a stale client.
 
-let currentFilamentClient: FilamentToolClient | null = null;
+const filamentClients = new Map<string, FilamentToolClient>();
 
-/** Set (or clear, with `null`) the live connection tools should call through. */
-export function setFilamentClient(client: FilamentToolClient | null): void {
-  currentFilamentClient = client;
+/** Set (or clear, with `null`) the live connection an account's tools call through. */
+export function setFilamentClient(
+  client: FilamentToolClient | null,
+  accountId = DEFAULT_ACCOUNT_ID,
+): void {
+  if (client) filamentClients.set(accountId, client);
+  else filamentClients.delete(accountId);
 }
 
 /** The default `GetFilamentClient` used by tools registered at plugin load. */
-export function getFilamentClient(): FilamentToolClient | null {
-  return currentFilamentClient;
+export function getFilamentClient(accountId = DEFAULT_ACCOUNT_ID): FilamentToolClient | null {
+  return filamentClients.get(accountId) ?? null;
 }
 
 /**
@@ -261,15 +277,23 @@ export function getFilamentClient(): FilamentToolClient | null {
  * `tools/list` already returns) is passed through as `parameters` instead.
  */
 export interface FilamentToolsApi {
-  registerTool(tool: FilamentAgentTool): void;
+  registerTool(
+    factory: (ctx: ToolAccountContext) => FilamentAgentTool | null,
+    opts: { names: string[] },
+  ): void;
+  /** Plugin config at load time; the account fallback when a ctx carries no config. */
+  pluginConfig?: unknown;
 }
+
+/** Picks the Filament account a tool call belongs to; see src/accounts.ts. */
+export type ResolveToolAccount = (ctx: ToolAccountContext) => string | null;
 
 interface FilamentToolResult {
   content: Array<{ type: "text"; text: string }>;
   details: unknown;
 }
 
-interface FilamentAgentTool {
+export interface FilamentAgentTool {
   name: string;
   label: string;
   description: string;
@@ -296,17 +320,18 @@ function toLabel(name: string): string {
 function makeExecute(
   toolName: string,
   tier: ToolTier,
+  accountId: string,
   getClient: GetFilamentClient,
   log: (message: string) => void,
 ): FilamentAgentTool["execute"] {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params) => {
-    const authz = authorizeToolCall(tier);
+    const authz = authorizeToolCall(tier, accountId);
     if (!authz.ok) {
-      log(`filament-tools: ${qualifiedName} denied`);
+      log(`filament-tools: ${qualifiedName} denied (account ${accountId})`);
       throw new Error(`${qualifiedName}: denied — ${authz.reason}`);
     }
-    const client = getClient();
+    const client = getClient(accountId);
     if (!client) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
@@ -349,19 +374,30 @@ export function registerFilamentToolsFromSnapshot(
   api: FilamentToolsApi,
   getClient: GetFilamentClient,
   log: (message: string) => void,
+  resolveAccount: ResolveToolAccount = (ctx) => resolveToolAccountId(ctx, api.pluginConfig),
 ): RegisterFilamentToolsResult {
   const registered: string[] = [];
 
   for (const descriptor of TOOL_SNAPSHOT) {
     const tier = classifyToolTier(descriptor as McpToolDescriptor);
     const qualifiedName = `${TOOL_NAME_PREFIX}${descriptor.name}`;
-    api.registerTool({
-      name: qualifiedName,
-      label: toLabel(descriptor.name),
-      description: descriptor.description || descriptor.name,
-      parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
-      execute: makeExecute(descriptor.name, tier, getClient, log),
-    });
+    // A factory, not a tool: OpenClaw builds it per agent/session, so the
+    // tool is bound to that agent's Filament account — and absent (null) for
+    // an agent with none, rather than calling through someone else's bearer.
+    api.registerTool(
+      (ctx) => {
+        const accountId = resolveAccount(ctx ?? {});
+        if (!accountId) return null;
+        return {
+          name: qualifiedName,
+          label: toLabel(descriptor.name),
+          description: descriptor.description || descriptor.name,
+          parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
+          execute: makeExecute(descriptor.name, tier, accountId, getClient, log),
+        };
+      },
+      { names: [qualifiedName] },
+    );
     registered.push(qualifiedName);
   }
 
