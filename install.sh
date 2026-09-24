@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
 #
-# Install and connect the filament-openclaw plugin (channel id "filament",
-# plugin id "filament-fcm") into an existing OpenClaw gateway, using a
-# connect token from the Filament app. Modeled on filament-hermes/install.sh.
+# Connect one Filament agent to an OpenClaw agent on this gateway, installing
+# the filament-openclaw plugin (channel id "filament", plugin id
+# "filament-fcm") the first time. Modeled on filament-hermes/install.sh.
 #
-#   CONNECT_TOKEN=fmcp_... bash install.sh
+#   CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash install.sh
 #
 # The repository is public, so the curl-pipe-bash form works without
 # credentials:
-#   curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... bash
+#   curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
+#     | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash
+#
+# Idempotent, and meant to be run once per Filament agent:
+#   1. installs the plugin only if the gateway doesn't have it (an existing
+#      install — git, npm or a --link dev checkout — is left alone);
+#   2. creates the OpenClaw agent OPENCLAW_AGENT if the gateway lacks it, and
+#      binds it to its own channel account (account id = agent id), holding
+#      this CONNECT_TOKEN under plugins.entries.filament-fcm.config.accounts;
+#   3. waits for that account to connect, so the Filament app flips to online.
+# Re-running with the same token changes nothing; with a new token it
+# replaces the one this agent had.
+#
+# One Filament agent per OpenClaw agent: binding this account to an agent
+# first drops whatever Filament account that agent had, and removes that
+# account's token (an unbound account would silently land on the system
+# agent instead).
 #
 # Optional env: FILAMENT_MCP_URL (staging/local MCP endpoint instead of
 # production), PLUGIN_REF (branch/tag/commit to install, default: main),
-# OPENCLAW_AGENT (agent id to bind the filament channel to, when
-# agents.ownership is explicit with more than one agent),
-# OPENCLAW_PLUGIN_SOURCE (full override of the install spec, e.g. a future
-# clawhub:... spec, instead of the git SSH/HTTPS default built from
-# PLUGIN_REF).
+# OPENCLAW_PLUGIN_SOURCE (full override of the install spec),
+# FILAMENT_PLUGIN_UPDATE=1 (update an already-installed plugin).
+# Without OPENCLAW_AGENT the script keeps its single-agent behavior: the
+# token becomes the "default" account, bound only when the gateway has
+# several agents (prompting on a tty, or failing without one).
 set -euo pipefail
 
 err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -26,6 +42,7 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 # --- Required/optional environment -------------------------------------------
 [ -n "${CONNECT_TOKEN:-}" ] || err \
   "CONNECT_TOKEN is not set. Use the connect command shown in the Filament app."
+export CONNECT_TOKEN
 
 PLUGIN_ID="filament-fcm"
 PLUGIN_REF="${PLUGIN_REF:-main}"
@@ -34,9 +51,20 @@ REPO_HTTPS="git:https://github.com/filament-dm/filament-openclaw.git@${PLUGIN_RE
 # The repo is public: HTTPS needs no key. SSH is tried only as a fallback.
 SPEC="${OPENCLAW_PLUGIN_SOURCE:-$REPO_HTTPS}"
 
+# OpenClaw agent ids are lowercase; the Filament app already sends a slug.
+TARGET_AGENT="$(printf '%s' "${OPENCLAW_AGENT:-}" | tr '[:upper:]' '[:lower:]')"
+if [ -n "$TARGET_AGENT" ]; then
+  printf '%s' "$TARGET_AGENT" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$' || err \
+    "OPENCLAW_AGENT='$OPENCLAW_AGENT' is not a valid agent id (lowercase letters, digits, - and _)."
+  ACCOUNT_ID="$TARGET_AGENT"
+else
+  ACCOUNT_ID="default"
+fi
+
 # --- Preflight -----------------------------------------------------------------
 command -v openclaw >/dev/null 2>&1 || err \
   "openclaw CLI not found on PATH. Install it first: https://docs.openclaw.ai"
+command -v python3 >/dev/null 2>&1 || err "python3 not found on PATH."
 
 # Every command below reads stdout only (2>/dev/null): the CLI's node-version
 # self-restart can interleave banner text with stderr, which has been
@@ -49,9 +77,12 @@ for you."
 
 LOG_PATH="$(printf '%s\n' "$GATEWAY_STATUS" | sed -n 's/^File logs: //p' | head -n1)"
 [ -n "$LOG_PATH" ] || LOG_PATH="/tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+# Only log lines written after this point count as this run's connection.
+LOG_START_LINE=0
+[ -r "$LOG_PATH" ] && LOG_START_LINE="$(wc -l < "$LOG_PATH" | tr -d ' ')"
 
-# --- Detect an existing install -------------------------------------------------
-# FOUND/MISSING + trust.installSource ("git"/"path"/"npm"/...) + status, tab-sep.
+# --- 1. The plugin: install only when missing ------------------------------------
+# FOUND/MISSING + trust.installSource ("git"/"path"/"npm"/...) + enabled, tab-sep.
 LIST_JSON="$(openclaw plugins list --json 2>/dev/null || true)"
 PLUGIN_STATE="$(python3 - "$LIST_JSON" "$PLUGIN_ID" <<'PY'
 import json, sys
@@ -61,27 +92,26 @@ try:
     for p in data.get("plugins", []):
         if p.get("id") == pid:
             src = (p.get("trust") or {}).get("installSource", "")
-            print(f"FOUND\t{src}\t{p.get('status', '')}")
+            print(f"FOUND\t{src or '-'}\t{'1' if p.get('enabled') else '0'}")
             sys.exit(0)
+    print("MISSING\t-\t0")
 except Exception:
-    pass
-print("UNKNOWN\t\t")
+    print("UNKNOWN\t-\t0")
 PY
 )"
-IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE _CUR_STATUS <<EOF
+IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE PLUGIN_ENABLED <<EOF
 $PLUGIN_STATE
 EOF
 
 if [ "$FOUND_STATE" = "UNKNOWN" ]; then
-  # --json parse failed or produced nothing usable; fall back to a plain grep.
+  # --json parse failed; fall back to a plain grep.
   if openclaw plugins list 2>/dev/null | grep -q "$PLUGIN_ID"; then
-    FOUND_STATE="FOUND"; INSTALL_SOURCE=""
+    FOUND_STATE="FOUND"
   else
     FOUND_STATE="MISSING"
   fi
 fi
 
-# --- Install or update the plugin -----------------------------------------------
 install_fresh() {
   info "Installing $PLUGIN_ID from $SPEC ..."
   if openclaw plugins install "$SPEC" --accept-capabilities --force; then
@@ -99,122 +129,168 @@ install_fresh() {
 
 if [ "$FOUND_STATE" = "MISSING" ]; then
   install_fresh
-elif [ "$INSTALL_SOURCE" = "git" ]; then
-  # Best-effort: installSource confirms "git" but not the exact recorded
-  # URL/ref, so this assumes the same filament-openclaw source and just
-  # pulls the latest commit on the recorded ref. To switch branch/ref,
-  # remove the plugin first or set OPENCLAW_PLUGIN_SOURCE and rerun.
-  info "$PLUGIN_ID is already installed from git; updating ..."
-  openclaw plugins update "$PLUGIN_ID" || err "plugin update failed for $PLUGIN_ID."
+  PLUGIN_ENABLED=0
+elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ]; then
+  if [ "$INSTALL_SOURCE" = "git" ]; then
+    info "Updating $PLUGIN_ID (installed from git) ..."
+    openclaw plugins update "$PLUGIN_ID" || err "plugin update failed for $PLUGIN_ID."
+  else
+    info "Reinstalling $PLUGIN_ID (installed from $INSTALL_SOURCE) ..."
+    install_fresh
+  fi
 else
-  info "$PLUGIN_ID is installed from a different source ($INSTALL_SOURCE); reinstalling."
-  install_fresh
+  info "$PLUGIN_ID is already installed (${INSTALL_SOURCE}); reusing it."
 fi
 
-# --- Configure (never echo the token) --------------------------------------------
-info "Setting the connect token ..."
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.connectToken" "$CONNECT_TOKEN" \
-  >/dev/null || err "could not set the connect token."
-
-if [ -n "${FILAMENT_MCP_URL:-}" ]; then
-  info "Setting the MCP URL ..."
-  openclaw config set "plugins.entries.${PLUGIN_ID}.config.mcpUrl" "$FILAMENT_MCP_URL" \
-    >/dev/null || err "could not set FILAMENT_MCP_URL."
-fi
-
-info "Enabling $PLUGIN_ID ..."
-openclaw plugins enable "$PLUGIN_ID" --accept-capabilities \
-  || err "could not enable $PLUGIN_ID."
-
-# --- Binding: pick which agent receives filament channel messages ---------------
+# --- 2. The agent: create it if missing -------------------------------------------
 AGENTS_JSON="$(openclaw config get agents --json 2>/dev/null || true)"
-read -r OWNERSHIP AGENT_IDS_CSV <<EOF
-$(python3 - "$AGENTS_JSON" <<'PY'
-import json, sys
+AGENT_LIST_JSON="$(openclaw agents list --json 2>/dev/null || true)"
+read -r OWNERSHIP AGENT_IDS_CSV WORKSPACE_ROOT <<EOF
+$(python3 - "$AGENTS_JSON" "$AGENT_LIST_JSON" <<'PY'
+import json, os, sys
 try:
-    d = json.loads(sys.argv[1])
+    cfg = json.loads(sys.argv[1])
 except Exception:
-    d = {}
-ownership = d.get("ownership", "implicit")
-ids = list((d.get("entries") or {}).keys())
-print(ownership, ",".join(ids) if ids else "-")
+    cfg = {}
+try:
+    listed = json.loads(sys.argv[2])
+except Exception:
+    listed = []
+ids = [a.get("id") for a in listed if isinstance(a, dict) and a.get("id")]
+ids = ids or list((cfg.get("entries") or {}).keys())
+# New agents sit next to the existing ones' workspaces.
+roots = [os.path.dirname(a["workspace"]) for a in listed
+         if isinstance(a, dict) and a.get("workspace")]
+root = roots[0] if roots else os.path.expanduser("~/.openclaw/workspace")
+print(cfg.get("ownership", "implicit"), ",".join(ids) if ids else "-", root)
 PY
 )
 EOF
 
-AGENT_COUNT="$(printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | wc -l | tr -d ' ')"
-NEED_BINDING=1
-[ "$OWNERSHIP" = "explicit" ] && [ "$AGENT_IDS_CSV" != "-" ] && [ "$AGENT_COUNT" -gt 1 ] || NEED_BINDING=0
+agent_known() { printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -qx "$1"; }
 
-if [ "$NEED_BINDING" = 1 ]; then
-  if [ -n "${OPENCLAW_AGENT:-}" ]; then
-    TARGET_AGENT="$OPENCLAW_AGENT"
-    printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -qx "$TARGET_AGENT" || err \
-      "OPENCLAW_AGENT='$TARGET_AGENT' is not a known agent id. Known agents: $AGENT_IDS_CSV"
-  elif [ -r /dev/tty ]; then
-    printf 'Multiple agents (%s). Which should receive Filament messages? Agent id: ' \
-      "$AGENT_IDS_CSV" > /dev/tty
-    read -r TARGET_AGENT < /dev/tty
-    printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -qx "$TARGET_AGENT" || err \
-      "'$TARGET_AGENT' is not one of: $AGENT_IDS_CSV"
+if [ -n "$TARGET_AGENT" ]; then
+  if agent_known "$TARGET_AGENT"; then
+    info "Using the existing OpenClaw agent '$TARGET_AGENT'."
   else
-    err "agents.ownership is explicit with multiple agents ($AGENT_IDS_CSV) and no \
-tty is available to prompt. Re-run with OPENCLAW_AGENT=<agent-id>."
+    info "Creating the OpenClaw agent '$TARGET_AGENT' ..."
+    openclaw agents add "$TARGET_AGENT" \
+      --workspace "$WORKSPACE_ROOT/$TARGET_AGENT" --non-interactive >/dev/null \
+      || err "could not create the OpenClaw agent '$TARGET_AGENT'."
+    OWNERSHIP="explicit"
   fi
-
-  info "Binding the filament channel to agent '$TARGET_AGENT' ..."
-  EXISTING_BINDINGS="$(openclaw config get bindings --json 2>/dev/null || true)"
-  MERGED_BINDINGS="$(python3 - "$EXISTING_BINDINGS" "$TARGET_AGENT" <<'PY'
-import json, sys
-raw, agent_id = sys.argv[1], sys.argv[2]
-try:
-    existing = json.loads(raw)
-    if not isinstance(existing, list):
-        existing = []
-except Exception:
-    existing = []
-def is_ours(b):
-    m = b.get("match") or {}
-    return m.get("channel") == "filament" and m.get("accountId") == "default"
-merged = [b for b in existing if not is_ours(b)]
-merged.append({"agentId": agent_id, "match": {"channel": "filament", "accountId": "default"}})
-print(json.dumps(merged))
-PY
-)"
-  openclaw config set bindings "$MERGED_BINDINGS" --strict-json >/dev/null \
-    || err "could not write the filament channel binding."
 else
-  info "Single/implicit agent ownership; no explicit binding needed."
+  # Single-agent behavior: bind the default account only when routing needs it.
+  AGENT_COUNT="$(printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -c . || true)"
+  if [ "$OWNERSHIP" = "explicit" ] && [ "$AGENT_COUNT" -gt 1 ]; then
+    if [ -r /dev/tty ]; then
+      printf 'Multiple agents (%s). Which should receive Filament messages? Agent id: ' \
+        "$AGENT_IDS_CSV" > /dev/tty
+      read -r TARGET_AGENT < /dev/tty
+      agent_known "$TARGET_AGENT" || err "'$TARGET_AGENT' is not one of: $AGENT_IDS_CSV"
+    else
+      err "agents.ownership is explicit with multiple agents ($AGENT_IDS_CSV) and no \
+tty is available to prompt. Re-run with OPENCLAW_AGENT=<agent-id>."
+    fi
+  fi
 fi
 
-# --- Verify ------------------------------------------------------------------
-info "Waiting for $PLUGIN_ID to load and connect (up to 60s) ..."
-DEADLINE=$(( $(date +%s) + 60 ))
-STATUS=""
+# --- 2b. Token + binding, in one validated config write --------------------------
+# The token travels through the environment into the patch on stdin, never argv.
+BINDINGS_JSON="$(openclaw config get bindings --json 2>/dev/null || true)"
+PLUGIN_CFG_JSON="$(openclaw config get "plugins.entries.${PLUGIN_ID}.config" --json 2>/dev/null || true)"
+PATCH_AND_NOTES="$(python3 - "$BINDINGS_JSON" "$PLUGIN_CFG_JSON" "$ACCOUNT_ID" "$TARGET_AGENT" "$PLUGIN_ID" <<'PY'
+import json, os, sys
+raw_bindings, raw_cfg, account, agent, plugin_id = sys.argv[1:6]
+def load(raw, default):
+    try:
+        v = json.loads(raw)
+        return v if isinstance(v, type(default)) else default
+    except Exception:
+        return default
+bindings = load(raw_bindings, [])
+cfg = load(raw_cfg, {})
+token = os.environ["CONNECT_TOKEN"]
+mcp_url = os.environ.get("FILAMENT_MCP_URL", "").strip()
+
+plugin_cfg = {}
+if account == "default":
+    plugin_cfg["connectToken"] = token
+else:
+    plugin_cfg["accounts"] = {account: {"connectToken": token}}
+if mcp_url:
+    plugin_cfg["mcpUrl"] = mcp_url
+
+patch = {"plugins": {"entries": {plugin_id: {"config": plugin_cfg}}}}
+notes = []
+if agent:
+    def ours(b):
+        return isinstance(b, dict) and (b.get("match") or {}).get("channel") == "filament"
+    displaced = set()
+    kept = []
+    for b in bindings:
+        if ours(b) and (b.get("agentId") == agent or (b.get("match") or {}).get("accountId", "default") == account):
+            other = (b.get("match") or {}).get("accountId", "default")
+            if b.get("agentId") == agent and other != account:
+                displaced.add(other)
+            if other == account and b.get("agentId") != agent:
+                notes.append(f"Moved Filament account '{account}' off agent '{b.get('agentId')}'.")
+            continue
+        kept.append(b)
+    kept.append({"agentId": agent, "match": {"channel": "filament", "accountId": account}})
+    patch["bindings"] = kept
+    for other in sorted(displaced):
+        if other == "default":
+            plugin_cfg["connectToken"] = None
+        else:
+            plugin_cfg.setdefault("accounts", {})[other] = None
+        notes.append(f"Agent '{agent}' was bound to Filament account '{other}'; removed that account.")
+print(json.dumps(patch))
+for n in notes:
+    print(n)
+PY
+)"
+PATCH="$(printf '%s\n' "$PATCH_AND_NOTES" | head -n1)"
+printf '%s\n' "$PATCH_AND_NOTES" | tail -n +2 | while IFS= read -r note; do
+  [ -n "$note" ] && warn "$note"
+done
+
+info "Saving the connect token${TARGET_AGENT:+ and binding agent '$TARGET_AGENT' to Filament account '$ACCOUNT_ID'} ..."
+REPLACE_ARGS=()
+[ -n "$TARGET_AGENT" ] && REPLACE_ARGS=(--replace-path bindings)
+# ${arr[@]+...}: bash 3.2 (macOS) treats an empty array as unset under set -u.
+printf '%s' "$PATCH" | openclaw config patch --stdin ${REPLACE_ARGS[@]+"${REPLACE_ARGS[@]}"} >/dev/null \
+  || err "could not write the Filament account config (openclaw config patch failed)."
+
+if [ "$PLUGIN_ENABLED" != "1" ]; then
+  info "Enabling $PLUGIN_ID ..."
+  openclaw plugins enable "$PLUGIN_ID" --accept-capabilities \
+    || err "could not enable $PLUGIN_ID."
+fi
+
+# --- 3. Verify this account connected -------------------------------------------
+# channel.ts prefixes every account's log line with "[<account id>]".
+info "Waiting for Filament account '$ACCOUNT_ID' to connect (up to 90s) ..."
+DEADLINE=$(( $(date +%s) + 90 ))
+CONNECTED=0
+PRINCIPAL=""
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-  RUNTIME_JSON="$(openclaw plugins inspect "$PLUGIN_ID" --runtime --json 2>/dev/null || true)"
-  STATUS="$(printf '%s' "$RUNTIME_JSON" | python3 -c '
-import json, sys
-try:
-    print(json.load(sys.stdin).get("plugin", {}).get("status", ""))
-except Exception:
-    print("")' 2>/dev/null || true)"
-  [ "$STATUS" = "loaded" ] && break
+  if [ -r "$LOG_PATH" ]; then
+    LINE="$(tail -n +"$((LOG_START_LINE + 1))" "$LOG_PATH" \
+      | grep -F "filament-connect: identity account=${ACCOUNT_ID} " | tail -n1 || true)"
+    if [ -n "$LINE" ]; then
+      CONNECTED=1
+      PRINCIPAL="$(printf '%s' "$LINE" | sed -n 's/.*principal=\([^ "\\]*\).*/\1/p')"
+      break
+    fi
+  fi
   sleep 3
 done
 
-CONNECTED=0
-PRINCIPAL=""
-if [ -n "$LOG_PATH" ] && [ -r "$LOG_PATH" ] \
-    && grep -Eq 'connect token exchanged for a bearer|persisted bearer found' "$LOG_PATH"; then
-  CONNECTED=1
-  PRINCIPAL="$(grep -E 'filament-connect: identity' "$LOG_PATH" | tail -n1 \
-    | sed -n 's/.*principal=\([^ "\\]*\).*/\1/p')"
-fi
-
-if [ "$STATUS" = "loaded" ] && [ "$CONNECTED" = 1 ]; then
-  info "Connected. $PLUGIN_ID is loaded and running.${PRINCIPAL:+ Principal: $PRINCIPAL.}"
+if [ "$CONNECTED" = 1 ]; then
+  info "Connected.${TARGET_AGENT:+ OpenClaw agent '$TARGET_AGENT' is live on Filament.}${PRINCIPAL:+ Principal: $PRINCIPAL.}"
+  info "Say hi to it from the Filament app."
 else
-  warn "Install/config finished, but the connection was not confirmed within 60s. \
-Follow along with: openclaw logs --follow"
+  warn "Config written, but account '$ACCOUNT_ID' did not report a connection within \
+90s. Follow along with: openclaw logs --follow"
 fi
