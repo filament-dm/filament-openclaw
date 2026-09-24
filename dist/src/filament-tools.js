@@ -1,3 +1,4 @@
+import { DEFAULT_ACCOUNT_ID, resolveToolAccountId } from "./accounts.js";
 import rawToolSnapshot from "./filament-tools.snapshot.json" with { type: "json" };
 const TOOL_NAME_PREFIX = "filament_";
 const TOOL_SNAPSHOT = rawToolSnapshot;
@@ -15,18 +16,19 @@ function classifyToolTier(descriptor) {
   if (readOnly === false) return "write";
   return "ring0";
 }
-let activeFilamentTurn = null;
-function beginFilamentTurn(isBackchannel) {
-  activeFilamentTurn = { backchannel: isBackchannel };
+const activeFilamentTurns = /* @__PURE__ */ new Map();
+function beginFilamentTurn(isBackchannel, accountId = DEFAULT_ACCOUNT_ID) {
+  activeFilamentTurns.set(accountId, { backchannel: isBackchannel });
 }
-function endFilamentTurn() {
-  activeFilamentTurn = null;
+function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID) {
+  activeFilamentTurns.delete(accountId);
 }
-function _getActiveFilamentTurnForTest() {
-  return activeFilamentTurn;
+function _getActiveFilamentTurnForTest(accountId = DEFAULT_ACCOUNT_ID) {
+  return activeFilamentTurns.get(accountId) ?? null;
 }
-function authorizeToolCall(tier) {
+function authorizeToolCall(tier, accountId = DEFAULT_ACCOUNT_ID) {
   if (tier === "read") return { ok: true };
+  const activeFilamentTurn = activeFilamentTurns.get(accountId);
   if (!activeFilamentTurn) {
     return {
       ok: false,
@@ -41,26 +43,27 @@ function authorizeToolCall(tier) {
   }
   return { ok: true };
 }
-let currentFilamentClient = null;
-function setFilamentClient(client) {
-  currentFilamentClient = client;
+const filamentClients = /* @__PURE__ */ new Map();
+function setFilamentClient(client, accountId = DEFAULT_ACCOUNT_ID) {
+  if (client) filamentClients.set(accountId, client);
+  else filamentClients.delete(accountId);
 }
-function getFilamentClient() {
-  return currentFilamentClient;
+function getFilamentClient(accountId = DEFAULT_ACCOUNT_ID) {
+  return filamentClients.get(accountId) ?? null;
 }
 const FALLBACK_PARAMETERS = { type: "object", properties: {}, additionalProperties: true };
 function toLabel(name) {
   return name.split("_").map((w) => w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
 }
-function makeExecute(toolName, tier, getClient, log) {
+function makeExecute(toolName, tier, accountId, getClient, log) {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params) => {
-    const authz = authorizeToolCall(tier);
+    const authz = authorizeToolCall(tier, accountId);
     if (!authz.ok) {
-      log(`filament-tools: ${qualifiedName} denied`);
+      log(`filament-tools: ${qualifiedName} denied (account ${accountId})`);
       throw new Error(`${qualifiedName}: denied \u2014 ${authz.reason}`);
     }
-    const client = getClient();
+    const client = getClient(accountId);
     if (!client) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
@@ -85,18 +88,25 @@ function makeExecute(toolName, tier, getClient, log) {
     };
   };
 }
-function registerFilamentToolsFromSnapshot(api, getClient, log) {
+function registerFilamentToolsFromSnapshot(api, getClient, log, resolveAccount = (ctx) => resolveToolAccountId(ctx, api.pluginConfig)) {
   const registered = [];
   for (const descriptor of TOOL_SNAPSHOT) {
     const tier = classifyToolTier(descriptor);
     const qualifiedName = `${TOOL_NAME_PREFIX}${descriptor.name}`;
-    api.registerTool({
-      name: qualifiedName,
-      label: toLabel(descriptor.name),
-      description: descriptor.description || descriptor.name,
-      parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
-      execute: makeExecute(descriptor.name, tier, getClient, log)
-    });
+    api.registerTool(
+      (ctx) => {
+        const accountId = resolveAccount(ctx ?? {});
+        if (!accountId) return null;
+        return {
+          name: qualifiedName,
+          label: toLabel(descriptor.name),
+          description: descriptor.description || descriptor.name,
+          parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
+          execute: makeExecute(descriptor.name, tier, accountId, getClient, log)
+        };
+      },
+      { names: [qualifiedName] }
+    );
     registered.push(qualifiedName);
   }
   log(`filament-tools: registered ${registered.length} tool(s) from snapshot`);

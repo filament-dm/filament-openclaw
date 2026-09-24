@@ -1,3 +1,4 @@
+import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 import { sleepAbortable } from "./util.js";
 import { FilamentMcpClient } from "./mcp-client.js";
 import { classifyGetSelf } from "./onboarding-core.js";
@@ -18,10 +19,23 @@ function clampPollWaitSeconds(raw) {
   if (!Number.isFinite(n)) return void 0;
   return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
 }
+function resolveAccountSettings(pluginConfig, accountId, env = process.env) {
+  const cfg = asRecord(pluginConfig);
+  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
+  if (accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)) {
+    return resolveMcpSettings(cfg, env);
+  }
+  const { accounts: _accounts, connectToken: _legacyToken, ...shared } = cfg;
+  return resolveMcpSettings({ ...shared, ...entry }, { ...env, FILAMENT_MCP_TOKEN: "" });
+}
+function connectTokenConfigPath(pluginId, accountId, pluginConfig) {
+  const entry = asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]);
+  return accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken) ? `plugins.entries.${pluginId}.config.connectToken` : `plugins.entries.${pluginId}.config.accounts.${accountId}.connectToken`;
+}
 function resolveMcpSettings(pluginConfig, env = process.env) {
   const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
   const cfgToken = cfg.connectToken;
-  const hasCfgToken = typeof cfgToken === "string" && cfgToken.trim().length > 0 || typeof cfgToken === "object" && cfgToken !== null;
+  const hasCfgToken = hasTokenInput(cfgToken);
   const envToken = env.FILAMENT_MCP_TOKEN?.trim();
   const tokenInput = hasCfgToken ? cfgToken : envToken || void 0;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
@@ -104,8 +118,16 @@ async function resolveBearer(mcpUrl, configuredToken, log, abortSignal, fetchImp
   return bearer;
 }
 async function runConnect(opts) {
-  const { mcpUrl, token, log = () => {
-  }, abortSignal, fetchImpl = fetch, bearerPersistence } = opts;
+  const {
+    mcpUrl,
+    token,
+    accountId = DEFAULT_ACCOUNT_ID,
+    log = () => {
+    },
+    abortSignal,
+    fetchImpl = fetch,
+    bearerPersistence
+  } = opts;
   const bearer = await resolveBearer(
     mcpUrl,
     token,
@@ -155,9 +177,9 @@ async function runConnect(opts) {
       "agent not finalized within the verification window; will retry on next restart"
     );
   }
-  saveIdentity({ ...identity, onboardedAt: Date.now() });
+  saveIdentity(accountId, { ...identity, onboardedAt: Date.now() });
   log(
-    `filament-connect: identity principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
+    `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
   );
   const beat = async () => {
     try {
@@ -176,7 +198,9 @@ export {
   ConnectAbortedError,
   MAX_POLL_WAIT_SECONDS,
   MIN_POLL_WAIT_SECONDS,
+  connectTokenConfigPath,
   exchangeConnectToken,
+  resolveAccountSettings,
   resolveBearer,
   resolveMcpSettings,
   runConnect

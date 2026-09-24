@@ -4,7 +4,7 @@
  *
  * Two things are persisted:
  *   - the agent identity learned during onboarding (get_self): principal,
- *     backchannel room, mxid.
+ *     backchannel room, mxid — one per channel account, keyed by account id.
  *   - the bearer token used for MCP calls, once a connect token (`fmcp_…`) has
  *     been exchanged for it (see src/connect.ts). The exchange is one-time
  *     (the connect token is single-use and gets revoked by the server on
@@ -48,8 +48,12 @@ export interface StoredBearer {
 }
 
 const PLUGIN_ID = "filament-fcm";
-const IDENTITY_NAMESPACE = "identity";
-const IDENTITY_KEY = "self";
+// "identities", not the single-account "identity" namespace (fixed key "self",
+// maxEntries 4): one entry per channel account now, and reopening a namespace
+// with different store options throws on a hot reload — see BEARER_NAMESPACE.
+// The identity is re-learned from get_self on every connect, so nothing needs
+// migrating out of the old namespace.
+const IDENTITY_NAMESPACE = "identities";
 // "bearers" (plural), not the pre-rotation "bearer": the gateway keeps a keyed
 // store's options for the life of the process, and reopening a namespace with
 // different maxEntries/overflowPolicy throws PluginStateStoreError on a hot
@@ -75,8 +79,8 @@ function identityStore(): SyncStore<AgentIdentity> {
   if (!idStore) {
     idStore = createPluginStateSyncKeyedStore<AgentIdentity>(PLUGIN_ID, {
       namespace: IDENTITY_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new",
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
     }) as SyncStore<AgentIdentity>;
   }
   return idStore;
@@ -104,14 +108,14 @@ function bearerKey(connectToken: string): string {
   return createHash("sha256").update(connectToken).digest("hex").slice(0, 16);
 }
 
-/** Load the onboarded agent identity, or undefined if not onboarded yet. */
-export function loadIdentity(): AgentIdentity | undefined {
-  return identityStore().lookup(IDENTITY_KEY);
+/** Load one channel account's onboarded identity, or undefined if not onboarded yet. */
+export function loadIdentity(accountId: string): AgentIdentity | undefined {
+  return identityStore().lookup(accountId);
 }
 
-/** Persist the agent identity learned during onboarding. */
-export function saveIdentity(identity: AgentIdentity): void {
-  identityStore().register(IDENTITY_KEY, identity);
+/** Persist the identity a channel account learned during onboarding. */
+export function saveIdentity(accountId: string, identity: AgentIdentity): void {
+  identityStore().register(accountId, identity);
 }
 
 /**

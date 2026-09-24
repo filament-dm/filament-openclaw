@@ -47,21 +47,68 @@
       "secretRef": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["source", "id"],
+        "required": [
+          "source",
+          "id"
+        ],
         "properties": {
-          "source": { "enum": ["env", "file", "exec"] },
-          "provider": { "type": "string" },
-          "id": { "type": "string" }
+          "source": {
+            "enum": [
+              "env",
+              "file",
+              "exec"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          }
         }
       }
     },
     "properties": {
       "connectToken": {
-        "description": "Filament connect/MCP token (fmcp_…). A raw string, a ${ENV_VAR} shorthand, or a SecretRef pointing at a secret provider.",
+        "description": "Connect token (fmcp_…) of the single-agent install — the `default` account. A raw string, a ${ENV_VAR} shorthand, or a SecretRef. For more than one Filament agent on this gateway, use `accounts` instead.",
         "anyOf": [
-          { "type": "string", "minLength": 1 },
-          { "$ref": "#/$defs/secretRef" }
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "$ref": "#/$defs/secretRef"
+          }
         ]
+      },
+      "accounts": {
+        "type": "object",
+        "description": "One entry per Filament agent on this gateway, keyed by channel account id. Route each account to an OpenClaw agent with a binding: {agentId, match: {channel: \"filament\", accountId}}.",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "connectToken"
+          ],
+          "properties": {
+            "connectToken": {
+              "description": "This agent's Filament connect token (fmcp_…), a ${ENV_VAR} shorthand, or a SecretRef.",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "$ref": "#/$defs/secretRef"
+                }
+              ]
+            },
+            "mcpUrl": {
+              "type": "string",
+              "description": "Overrides the top-level mcpUrl for this account."
+            }
+          }
+        }
       },
       "mcpUrl": {
         "type": "string",

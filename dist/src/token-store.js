@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doctor";
 const PLUGIN_ID = "filament-fcm";
-const IDENTITY_NAMESPACE = "identity";
-const IDENTITY_KEY = "self";
+const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
 let idStore = null;
 let bearerStore = null;
@@ -10,8 +9,8 @@ function identityStore() {
   if (!idStore) {
     idStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
       namespace: IDENTITY_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new"
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest"
     });
   }
   return idStore;
@@ -32,11 +31,11 @@ function bearerStoreInstance() {
 function bearerKey(connectToken) {
   return createHash("sha256").update(connectToken).digest("hex").slice(0, 16);
 }
-function loadIdentity() {
-  return identityStore().lookup(IDENTITY_KEY);
+function loadIdentity(accountId) {
+  return identityStore().lookup(accountId);
 }
-function saveIdentity(identity) {
-  identityStore().register(IDENTITY_KEY, identity);
+function saveIdentity(accountId, identity) {
+  identityStore().register(accountId, identity);
 }
 function loadBearer(connectToken) {
   return bearerStoreInstance().lookup(bearerKey(connectToken))?.bearer;
