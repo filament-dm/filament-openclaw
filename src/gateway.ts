@@ -248,16 +248,27 @@ export function applyAgentConnect(
   return { displaced: [...displaced] };
 }
 
-/** Remove `agentId`'s Filament account and its binding. Idempotent. */
+/**
+ * Unbind the OpenClaw agent `agentId` from Filament: drop its binding and
+ * delete the account that binding pointed at — whatever its id, including the
+ * legacy `default` (the top-level token). Idempotent.
+ */
 export function applyAgentDisconnect(draft: Record<string, unknown>, agentId: string): void {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   const accounts = asRecord(config.accounts);
-  delete accounts[agentId];
-  if (Array.isArray(draft.bindings)) {
-    draft.bindings = (draft.bindings as unknown[]).filter((raw) => {
-      const match = asRecord(asRecord(raw).match);
-      return !(match.channel === FILAMENT_CHANNEL_ID && match.accountId === agentId);
-    });
+  const bindings = Array.isArray(draft.bindings) ? (draft.bindings as unknown[]) : [];
+  const unbound = new Set<string>();
+  draft.bindings = bindings.filter((raw) => {
+    const binding = asRecord(raw);
+    const match = asRecord(binding.match);
+    if (match.channel !== FILAMENT_CHANNEL_ID || binding.agentId !== agentId) return true;
+    unbound.add(typeof match.accountId === "string" ? match.accountId : DEFAULT_ACCOUNT_ID);
+    return false;
+  });
+  for (const accountId of unbound) {
+    if (accountId === GATEWAY_ACCOUNT_ID) continue;
+    if (accountId === DEFAULT_ACCOUNT_ID) delete config.connectToken;
+    else delete accounts[accountId];
   }
 }
 

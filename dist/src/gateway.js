@@ -119,12 +119,19 @@ function applyAgentConnect(draft, agentId, token) {
 function applyAgentDisconnect(draft, agentId) {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   const accounts = asRecord(config.accounts);
-  delete accounts[agentId];
-  if (Array.isArray(draft.bindings)) {
-    draft.bindings = draft.bindings.filter((raw) => {
-      const match = asRecord(asRecord(raw).match);
-      return !(match.channel === FILAMENT_CHANNEL_ID && match.accountId === agentId);
-    });
+  const bindings = Array.isArray(draft.bindings) ? draft.bindings : [];
+  const unbound = /* @__PURE__ */ new Set();
+  draft.bindings = bindings.filter((raw) => {
+    const binding = asRecord(raw);
+    const match = asRecord(binding.match);
+    if (match.channel !== FILAMENT_CHANNEL_ID || binding.agentId !== agentId) return true;
+    unbound.add(typeof match.accountId === "string" ? match.accountId : DEFAULT_ACCOUNT_ID);
+    return false;
+  });
+  for (const accountId of unbound) {
+    if (accountId === GATEWAY_ACCOUNT_ID) continue;
+    if (accountId === DEFAULT_ACCOUNT_ID) delete config.connectToken;
+    else delete accounts[accountId];
   }
 }
 function applyUnpair(draft) {

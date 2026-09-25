@@ -390,3 +390,28 @@ test("handleGatewayItem: several commands in one item are written as one mutatio
     ["disconnect:applied", "unpair:applied"],
   );
 });
+
+test("applyAgentDisconnect: unbinds by agent, deleting whatever account it pointed at", () => {
+  const draft: Record<string, unknown> = {
+    plugins: {
+      entries: {
+        "filament-fcm": {
+          config: { connectToken: "fmcp_legacy", accounts: { writer: { connectToken: "w" } } },
+        },
+      },
+    },
+    bindings: [
+      { agentId: "researcher", match: { channel: "filament", accountId: "default" } },
+      { agentId: "writer", match: { channel: "filament", accountId: "writer" } },
+      { agentId: "researcher", match: { channel: "telegram" } },
+    ],
+  };
+  applyAgentDisconnect(draft, "researcher");
+  const config = (draft.plugins as any).entries["filament-fcm"].config;
+  assert.equal(config.connectToken, undefined, "the legacy default account goes with its binding");
+  assert.deepEqual(Object.keys(config.accounts), ["writer"]);
+  assert.deepEqual(
+    (draft.bindings as any[]).map((b) => `${b.agentId}:${b.match.channel}`),
+    ["writer:filament", "researcher:telegram"],
+  );
+});
