@@ -26,6 +26,10 @@
 # account's token (an unbound account would silently land on the system
 # agent instead).
 #
+# OPENCLAW_GATEWAY=1 (instead of OPENCLAW_AGENT) pairs the gateway itself: the
+# token becomes a "gateway" control account the Filament app then drives to
+# connect this gateway's agents with no further terminal step.
+#
 # Optional env: FILAMENT_MCP_URL (staging/local MCP endpoint instead of
 # production), PLUGIN_REF (branch/tag/commit to install, default: main),
 # OPENCLAW_PLUGIN_SOURCE (full override of the install spec),
@@ -53,7 +57,15 @@ SPEC="${OPENCLAW_PLUGIN_SOURCE:-$REPO_HTTPS}"
 
 # OpenClaw agent ids are lowercase; the Filament app already sends a slug.
 TARGET_AGENT="$(printf '%s' "${OPENCLAW_AGENT:-}" | tr '[:upper:]' '[:lower:]')"
-if [ -n "$TARGET_AGENT" ]; then
+# OPENCLAW_GATEWAY=1 pairs the gateway instead: the token becomes the
+# "gateway" control account, which no OpenClaw agent is bound to and which
+# takes connect commands from the Filament app (src/gateway.ts).
+GATEWAY_MODE=0
+[ "${OPENCLAW_GATEWAY:-}" = "1" ] && GATEWAY_MODE=1
+if [ "$GATEWAY_MODE" = 1 ]; then
+  [ -z "$TARGET_AGENT" ] || err "OPENCLAW_GATEWAY=1 and OPENCLAW_AGENT are mutually exclusive."
+  ACCOUNT_ID="gateway"
+elif [ -n "$TARGET_AGENT" ]; then
   printf '%s' "$TARGET_AGENT" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$' || err \
     "OPENCLAW_AGENT='$OPENCLAW_AGENT' is not a valid agent id (lowercase letters, digits, - and _)."
   ACCOUNT_ID="$TARGET_AGENT"
@@ -169,7 +181,9 @@ EOF
 
 agent_known() { printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -qx "$1"; }
 
-if [ -n "$TARGET_AGENT" ]; then
+if [ "$GATEWAY_MODE" = 1 ]; then
+  info "Pairing this gateway with Filament (agents: $AGENT_IDS_CSV)."
+elif [ -n "$TARGET_AGENT" ]; then
   if agent_known "$TARGET_AGENT"; then
     info "Using the existing OpenClaw agent '$TARGET_AGENT'."
   else
@@ -199,9 +213,9 @@ fi
 # The token travels through the environment into the patch on stdin, never argv.
 BINDINGS_JSON="$(openclaw config get bindings --json 2>/dev/null || true)"
 PLUGIN_CFG_JSON="$(openclaw config get "plugins.entries.${PLUGIN_ID}.config" --json 2>/dev/null || true)"
-PATCH_AND_NOTES="$(python3 - "$BINDINGS_JSON" "$PLUGIN_CFG_JSON" "$ACCOUNT_ID" "$TARGET_AGENT" "$PLUGIN_ID" <<'PY'
+PATCH_AND_NOTES="$(python3 - "$BINDINGS_JSON" "$PLUGIN_CFG_JSON" "$ACCOUNT_ID" "$TARGET_AGENT" "$PLUGIN_ID" "$GATEWAY_MODE" <<'PY'
 import json, os, sys
-raw_bindings, raw_cfg, account, agent, plugin_id = sys.argv[1:6]
+raw_bindings, raw_cfg, account, agent, plugin_id, gateway_mode = sys.argv[1:7]
 def load(raw, default):
     try:
         v = json.loads(raw)
@@ -216,6 +230,8 @@ mcp_url = os.environ.get("FILAMENT_MCP_URL", "").strip()
 plugin_cfg = {}
 if account == "default":
     plugin_cfg["connectToken"] = token
+elif gateway_mode == "1":
+    plugin_cfg["accounts"] = {account: {"connectToken": token, "control": True}}
 else:
     plugin_cfg["accounts"] = {account: {"connectToken": token}}
 if mcp_url:
@@ -287,7 +303,9 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   sleep 3
 done
 
-if [ "$CONNECTED" = 1 ]; then
+if [ "$CONNECTED" = 1 ] && [ "$GATEWAY_MODE" = 1 ]; then
+  info "Gateway paired.${PRINCIPAL:+ Principal: $PRINCIPAL.} Pick which agents to connect in the Filament app."
+elif [ "$CONNECTED" = 1 ]; then
   info "Connected.${TARGET_AGENT:+ OpenClaw agent '$TARGET_AGENT' is live on Filament.}${PRINCIPAL:+ Principal: $PRINCIPAL.}"
   info "Say hi to it from the Filament app."
 else
