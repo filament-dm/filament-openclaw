@@ -521,6 +521,11 @@ export class FilamentMcpClient {
     return this.sideChannelPost("/heartbeat", undefined, opts);
   }
 
+  /** Answer a liveness ping pushed over FCM: POST /pong with its nonce. */
+  pong(nonce: string, opts?: CallOptions): Promise<number> {
+    return this.sideChannelPost("/pong", { nonce }, opts);
+  }
+
   /**
    * Whole-inventory report: POST /tools (ENG-914). The gateway control
    * account borrows it to publish this gateway's OpenClaw agents — see

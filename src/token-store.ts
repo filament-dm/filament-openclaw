@@ -2,9 +2,12 @@
  * Persistent storage for the Filament plugin, backed by OpenClaw's plugin-state
  * keyed store (SQLite at ~/.openclaw/plugin-state.sqlite).
  *
- * Two things are persisted:
+ * What is persisted:
  *   - the agent identity learned during onboarding (get_self): principal,
  *     backchannel room, mxid — one per channel account, keyed by account id.
+ *   - for an `fcm` account, its FCM registration (so a restart keeps the
+ *     same push token) and a bounded window of processed push ids (so Google
+ *     does not redeliver them) — both keyed by account id.
  *   - the bearer token used for MCP calls, once a connect token (`fmcp_…`) has
  *     been exchanged for it (see src/connect.ts). The exchange is one-time
  *     (the connect token is single-use and gets revoked by the server on
@@ -47,7 +50,32 @@ export interface StoredBearer {
   obtainedAt: number;
 }
 
+/** Subset of the eneris `Credentials` shape we rely on; persisted opaquely. */
+export interface FcmCredentials {
+  fcm?: { token?: string };
+  [key: string]: unknown;
+}
+
+/**
+ * An account's FCM registration, tagged with the Firebase project it was made
+ * against: a project change (prod ↔ dev) must re-register, or Filament gets a
+ * token its DirectPusher (bound to the other project) can never deliver to.
+ */
+interface StoredFcm {
+  project: string;
+  credentials: FcmCredentials;
+}
+
 const PLUGIN_ID = "filament-fcm";
+// Per-account FCM state. Not the single-account "fcm" / "received-ids"
+// namespaces the pre-multi-account plugin used (fixed keys, maxEntries 4):
+// reopening a namespace with different options throws on a hot reload.
+const FCM_NAMESPACE = "fcm-registrations";
+const RECEIVED_IDS_NAMESPACE = "fcm-received";
+// Bounded window of processed FCM persistent ids per account, small enough
+// that the persisted list and the MCS login payload don't grow unbounded
+// (mirrors the Python plugin's 1000-entry cap).
+const RECEIVED_IDS_MAX = 1_000;
 // "identities", not the single-account "identity" namespace (fixed key "self",
 // maxEntries 4): one entry per channel account now, and reopening a namespace
 // with different store options throws on a hot reload — see BEARER_NAMESPACE.
@@ -74,6 +102,30 @@ type SyncStore<T> = {
 
 let idStore: SyncStore<AgentIdentity> | null = null;
 let bearerStore: SyncStore<StoredBearer> | null = null;
+let fcmStore: SyncStore<StoredFcm> | null = null;
+let receivedStore: SyncStore<string[]> | null = null;
+
+function fcmStoreInstance(): SyncStore<StoredFcm> {
+  if (!fcmStore) {
+    fcmStore = createPluginStateSyncKeyedStore<StoredFcm>(PLUGIN_ID, {
+      namespace: FCM_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<StoredFcm>;
+  }
+  return fcmStore;
+}
+
+function receivedStoreInstance(): SyncStore<string[]> {
+  if (!receivedStore) {
+    receivedStore = createPluginStateSyncKeyedStore<string[]>(PLUGIN_ID, {
+      namespace: RECEIVED_IDS_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<string[]>;
+  }
+  return receivedStore;
+}
 
 function identityStore(): SyncStore<AgentIdentity> {
   if (!idStore) {
@@ -132,4 +184,50 @@ export function loadBearer(connectToken: string): string | undefined {
  */
 export function saveBearer(connectToken: string, bearer: string): void {
   bearerStoreInstance().register(bearerKey(connectToken), { bearer, obtainedAt: Date.now() });
+}
+
+/**
+ * An account's saved FCM credentials, or undefined on first run — and when
+ * they were registered against a different Firebase project than `projectId`.
+ */
+export function loadFcmCredentials(
+  accountId: string,
+  projectId: string,
+): FcmCredentials | undefined {
+  const stored = fcmStoreInstance().lookup(accountId);
+  return stored && stored.project === projectId ? stored.credentials : undefined;
+}
+
+/** Whether the account has credentials saved for some other project. */
+export function hasFcmCredentialsForOtherProject(accountId: string, projectId: string): boolean {
+  const stored = fcmStoreInstance().lookup(accountId);
+  return stored !== undefined && stored.project !== projectId;
+}
+
+/** Persist an account's FCM credentials, tagged with their project. */
+export function saveFcmCredentials(
+  accountId: string,
+  credentials: FcmCredentials,
+  projectId: string,
+): void {
+  fcmStoreInstance().register(accountId, { project: projectId, credentials });
+}
+
+/** The account's processed FCM persistent ids, most recent last. */
+export function loadReceivedIds(accountId: string): string[] {
+  return receivedStoreInstance().lookup(accountId) ?? [];
+}
+
+/**
+ * Record a persistent id as processed. False when it was already there (a
+ * redelivery), true when newly recorded. Keeps a bounded window.
+ */
+export function recordReceivedId(accountId: string, id: string): boolean {
+  if (!id) return false;
+  const current = loadReceivedIds(accountId);
+  if (current.includes(id)) return false;
+  const next = [...current, id];
+  if (next.length > RECEIVED_IDS_MAX) next.splice(0, next.length - RECEIVED_IDS_MAX);
+  receivedStoreInstance().register(accountId, next);
+  return true;
 }

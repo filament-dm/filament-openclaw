@@ -78,3 +78,15 @@ test("resolveToolAccountId: an unbound single-account install gets that account"
   };
   assert.equal(resolveToolAccountId({ agentId: "main", config: two }, undefined, {}), null);
 });
+
+test("resolveAccountSettings: an account inherits the top-level transport, or overrides it", () => {
+  const cfg = {
+    transport: "poll",
+    accounts: {
+      writer: { connectToken: "fmcp_w" },
+      reviewer: { connectToken: "fmcp_r", transport: "fcm" },
+    },
+  };
+  assert.equal(resolveAccountSettings(cfg, "writer", {}).transport, "poll");
+  assert.equal(resolveAccountSettings(cfg, "reviewer", {}).transport, "fcm");
+});

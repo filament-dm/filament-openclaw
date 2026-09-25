@@ -1,4 +1,4 @@
-// Offline end-to-end check (`npm run build && node scripts/gateway-e2e.mjs`) of the gateway control account, against the real
+// Offline end-to-end check (poll transport) (`npm run build && node scripts/gateway-e2e.mjs`) of the gateway control account, against the real
 // compiled plugin (dist/), a fake Filament MCP server and a fake gateway API.
 // State dir is isolated to the scratchpad so the user's ~/.openclaw is untouched.
 import assert from "node:assert/strict";
@@ -94,7 +94,13 @@ let gatewayConfig = {
   plugins: {
     entries: {
       "filament-fcm": {
-        config: { mcpUrl, accounts: { gateway: { connectToken: "bearer-not-fmcp", control: true } } },
+        config: {
+          mcpUrl,
+          // This harness fakes poll_work; the FCM transport has its own offline
+          // suite (src/transports/fcm/index.test.ts).
+          transport: "poll",
+          accounts: { gateway: { connectToken: "bearer-not-fmcp", control: true } },
+        },
       },
     },
   },

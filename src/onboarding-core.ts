@@ -60,3 +60,11 @@ export function classifyGetSelf(result: ToolCallResult): OnboardingDecision {
   }
   return { status: "transient" };
 }
+
+/**
+ * Whether the `initialize` response instructions carry a first-contact directive
+ * (the server asks the agent to greet on connect). Mirrors Hermes' check.
+ */
+export function isFirstContact(instructions: string | null | undefined): boolean {
+  return typeof instructions === "string" && instructions.includes("First contact:");
+}
