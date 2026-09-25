@@ -16,7 +16,7 @@ const PRINCIPAL = "@u_test1:filament-dev.local";
 const CC = "!gwcc:filament-dev.local";
 const NEW_TOKEN = "fmcp_newagenttoken123";
 
-const seen = { tools: [], posts: [], polls: 0 };
+const seen = { tools: [], posts: [], reads: [], polls: 0 };
 let delivered = false;
 
 const server = http.createServer(async (req, res) => {
@@ -60,7 +60,7 @@ const server = http.createServer(async (req, res) => {
             thread_id: null,
             is_backchannel: true,
             messages: [
-              { event_id: "$cmd", sender: PRINCIPAL, body: `/filament connect writer ${NEW_TOKEN}`, ts: 1 },
+              { event_id: "$cmd", sender: PRINCIPAL, body: `/filament connect writer ${NEW_TOKEN} req-e2e`, ts: 1 },
             ],
             reply_with: { tool: "post_message", args: { channel: CC } },
           },
@@ -74,9 +74,13 @@ const server = http.createServer(async (req, res) => {
     await new Promise((r) => setTimeout(r, 200));
     return toolResult({ work: [], cursor: "c:1", next_poll_ms: 1000, truncated: false, acknowledged: 0 });
   }
-  if (name === "post_message") {
+  if (name === "post_message" || name === "reply_in_thread") {
     seen.posts.push(args);
     return toolResult({ event_id: `$r${seen.posts.length}`, timestamp: 1 });
+  }
+  if (name === "mark_read") {
+    seen.reads.push(args);
+    return toolResult({ ok: true });
   }
   return toolResult({ error: `unexpected tool ${name}` });
 });
@@ -151,15 +155,21 @@ await run;
 server.close();
 
 // 1. Inventory reported, with the four allowed keys.
-assert.ok(seen.tools.length >= 1, "inventory was reported");
+assert.ok(seen.tools.length >= 2, "inventory reported at connect and after the command");
 const names = seen.tools[0].map((t) => t.name).sort();
 assert.deepEqual(names, ["coordinator", "writer"]);
 assert.equal(JSON.parse(seen.tools[0].find((t) => t.name === "writer").description).emoji, "✍️");
 
-// 2. Reply first, token never echoed.
-assert.ok(seen.posts.length >= 1, "a reply was posted");
-assert.equal(seen.posts[0].channel, CC);
-assert.ok(!JSON.stringify(seen.posts).includes(NEW_TOKEN), "token must not be echoed");
+// 2. Nothing written to the chat; the command consumed by a read receipt,
+//    and its outcome published as a status entry, without the token.
+assert.equal(seen.posts.length, 0, "the gateway never chats");
+assert.deepEqual(seen.reads, [{ channel: CC, up_to: "$cmd" }]);
+const status = seen.tools
+  .flat()
+  .find((t) => t.origin === "openclaw-gateway-status" && t.name === "status:req-e2e");
+assert.ok(status, "a status entry for the request id");
+assert.equal(JSON.parse(status.description).state, "applied");
+assert.ok(!JSON.stringify(seen.tools).includes(NEW_TOKEN), "token must not be reported");
 
 // 3. Exactly one config write: account + binding, gateway account intact.
 assert.equal(writes.length, 1);
@@ -179,5 +189,5 @@ assert.equal(toolFactories[0].factory({ agentId: "coordinator", config: gatewayC
 // 5. No token in any log line.
 assert.ok(!logs.join("\n").includes(NEW_TOKEN), "token must not be logged");
 
-console.log("gateway e2e OK", { polls: seen.polls, posts: seen.posts.length, writes: writes.length });
+console.log("gateway e2e OK", { polls: seen.polls, reports: seen.tools.length, writes: writes.length });
 console.log(logs.filter((l) => l.includes("gateway")).join("\n"));

@@ -20,7 +20,12 @@ import {
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 } from "./filament-tools.js";
-import { handleGatewayItem, inventoryEntries, listGatewayAgents } from "./gateway.js";
+import {
+  handleGatewayItem,
+  inventoryEntries,
+  listGatewayAgents,
+  MAX_REPORTED_STATUSES
+} from "./gateway.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -74,10 +79,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const accountLog = (message) => log(`[${accountId}] ${message}`);
         const control = isControlAccount(pluginConfig, accountId);
         const liveGatewayConfig = () => api.runtime?.config?.current?.() ?? ctx.cfg;
+        const statuses = [];
         const reportInventory = async () => {
           if (!connection) return;
-          const agents = listGatewayAgents(liveGatewayConfig());
-          const status = await connection.client.reportTools(inventoryEntries(agents), {
+          const agents = listGatewayAgents(liveGatewayConfig(), (id) => loadIdentity(id)?.mxid);
+          const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
             signal: abortSignal
           });
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
@@ -98,14 +104,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               principal: identity2.principal,
               ccRoomId: identity2.ccRoomId,
               gatewayConfig: liveGatewayConfig(),
-              reply: async (markdown) => {
-                const res = await client.replyWith(replyWith, markdown, { signal: abortSignal });
-                return res.ok && (publishSucceeded(res.data) || isAlreadyAnsweredError(res.data));
-              },
-              followUp: async (markdown) => {
+              consume: async (upToEventId) => {
                 await client.callTool(
-                  "post_message",
-                  { channel: item.channel_id, markdown_body: markdown },
+                  "mark_read",
+                  { channel: item.channel_id, up_to: upToEventId },
                   { signal: abortSignal }
                 );
               },
@@ -115,7 +117,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
                   throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
                 await write({ afterWrite: { mode: "auto" }, mutate });
               },
-              reportInventory,
+              report: async (entries) => {
+                statuses.unshift(...[...entries].reverse());
+                statuses.splice(MAX_REPORTED_STATUSES);
+                await reportInventory();
+              },
               log: accountLog
             });
           }
