@@ -130,6 +130,28 @@ connect log line. `OPENCLAW_PLUGIN_SOURCE` overrides the install spec for a
 future ClawHub package. Without `OPENCLAW_AGENT` it keeps the single-agent
 shape (the `default` account).
 
+### Pairing the gateway (what the Filament app does now)
+
+The OpenClaw card in the Filament app shows one command, run once per gateway:
+
+```bash
+curl -fsSL …/install.sh | CONNECT_TOKEN=fmcp_... OPENCLAW_GATEWAY=1 bash
+```
+
+It installs the plugin if missing and connects the token as a **gateway
+control account** (`accounts.gateway`, `control: true`). That account runs no
+agent turns. It reports the gateway's OpenClaw agents to Filament (over the
+tool-inventory side channel, `POST /mcp/agents/tools`), and it obeys
+`/filament connect <agent-id> <fmcp_token>` from its principal in its own
+backchannel by writing that agent's account + binding with
+`api.runtime.config.mutateConfigFile`. So every agent after pairing is
+connected from the app's picker, with no terminal. `/filament agents` in that
+chat re-sends the list. See `src/gateway.ts`.
+
+Trade-off, accepted for the PoC: the connect token for each agent travels as a
+chat message, so it stays in that room's history — single-use, and revoked by
+the server the moment the new account exchanges it.
+
 ### Several Filament agents on one gateway
 
 Each Filament agent is one **channel account**, and each account is bound to
