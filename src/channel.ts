@@ -40,7 +40,13 @@ import {
   setFilamentClient,
   type FilamentToolsApi,
 } from "./filament-tools.js";
-import { handleGatewayItem, inventoryEntries, listGatewayAgents } from "./gateway.js";
+import {
+  type GatewayStatus,
+  handleGatewayItem,
+  inventoryEntries,
+  listGatewayAgents,
+  MAX_REPORTED_STATUSES,
+} from "./gateway.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -151,10 +157,13 @@ export function registerFilamentChannel(
         // A gateway control account (src/gateway.ts): no agent turns, no tools.
         const control = isControlAccount(pluginConfig, accountId);
         const liveGatewayConfig = (): unknown => api.runtime?.config?.current?.() ?? ctx.cfg;
+        // Recent command outcomes, re-sent with every inventory report. Lost on
+        // a reload by design: a config write is what triggers one.
+        const statuses: GatewayStatus[] = [];
         const reportInventory = async (): Promise<void> => {
           if (!connection) return;
-          const agents = listGatewayAgents(liveGatewayConfig());
-          const status = await connection.client.reportTools(inventoryEntries(agents), {
+          const agents = listGatewayAgents(liveGatewayConfig(), (id) => loadIdentity(id)?.mxid);
+          const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
             signal: abortSignal,
           });
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
@@ -179,14 +188,10 @@ export function registerFilamentChannel(
               principal: identity.principal,
               ccRoomId: identity.ccRoomId,
               gatewayConfig: liveGatewayConfig(),
-              reply: async (markdown) => {
-                const res = await client.replyWith(replyWith, markdown, { signal: abortSignal });
-                return res.ok && (publishSucceeded(res.data) || isAlreadyAnsweredError(res.data));
-              },
-              followUp: async (markdown) => {
+              consume: async (upToEventId) => {
                 await client.callTool(
-                  "post_message",
-                  { channel: item.channel_id, markdown_body: markdown },
+                  "mark_read",
+                  { channel: item.channel_id, up_to: upToEventId },
                   { signal: abortSignal },
                 );
               },
@@ -196,7 +201,11 @@ export function registerFilamentChannel(
                   throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
                 await write({ afterWrite: { mode: "auto" }, mutate });
               },
-              reportInventory,
+              report: async (entries) => {
+                statuses.unshift(...[...entries].reverse());
+                statuses.splice(MAX_REPORTED_STATUSES);
+                await reportInventory();
+              },
               log: accountLog,
             });
           }

@@ -140,13 +140,20 @@ curl -fsSL …/install.sh | CONNECT_TOKEN=fmcp_... OPENCLAW_GATEWAY=1 bash
 
 It installs the plugin if missing and connects the token as a **gateway
 control account** (`accounts.gateway`, `control: true`). That account runs no
-agent turns. It reports the gateway's OpenClaw agents to Filament (over the
-tool-inventory side channel, `POST /mcp/agents/tools`), and it obeys
-`/filament connect <agent-id> <fmcp_token>` from its principal in its own
-backchannel by writing that agent's account + binding with
-`api.runtime.config.mutateConfigFile`. So every agent after pairing is
-connected from the app's picker, with no terminal. `/filament agents` in that
-chat re-sends the list. See `src/gateway.ts`.
+agent turns and never writes into the chat (the Filament app hides it and its
+backchannel). It reports the gateway's OpenClaw agents to Filament over the
+tool-inventory side channel (`POST /mcp/agents/tools`), and it obeys commands
+from its principal in its own backchannel:
+
+- `/filament connect <agent-id> <fmcp_token> [<request-id>]`
+- `/filament disconnect <agent-id> [<request-id>]`
+- `/filament unpair [<request-id>]`
+- `/filament agents`
+
+Each command is consumed with a read receipt, applied as one
+`api.runtime.config.mutateConfigFile` write per poll, and its outcome is
+reported as an inventory entry (`origin: "openclaw-gateway-status"`, keyed by
+the request id) that the app's connect popup reads. See `src/gateway.ts`.
 
 Trade-off, accepted for the PoC: the connect token for each agent travels as a
 chat message, so it stays in that room's history — single-use, and revoked by

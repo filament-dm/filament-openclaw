@@ -9,7 +9,7 @@ const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
 const IMPLICIT_AGENT_ID = "main";
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const RESERVED_ACCOUNT_IDS = /* @__PURE__ */ new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
-function listGatewayAgents(gatewayConfig) {
+function listGatewayAgents(gatewayConfig, filamentUserOf = () => void 0) {
   const cfg = asRecord(gatewayConfig);
   const entries = asRecord(asRecord(cfg.agents).entries);
   const ids = Object.keys(entries);
@@ -28,43 +28,64 @@ function listGatewayAgents(gatewayConfig) {
     const name = typeof identity.name === "string" && identity.name.trim() || typeof entry.name === "string" && entry.name.trim() || id;
     const emoji = typeof identity.emoji === "string" && identity.emoji ? identity.emoji : void 0;
     const boundAccount = bound.get(id);
+    const filamentUserId = boundAccount ? filamentUserOf(boundAccount) : void 0;
     return {
       id,
       name,
       ...emoji ? { emoji } : {},
-      ...boundAccount ? { boundAccount } : {}
+      ...boundAccount ? { boundAccount } : {},
+      ...filamentUserId ? { filamentUserId } : {}
     };
   });
 }
-function inventoryEntries(agents) {
-  return agents.map((agent) => ({
-    name: agent.id,
-    description: JSON.stringify(agent),
-    origin: AGENT_INVENTORY_ORIGIN,
-    health: "ok"
-  }));
+function inventoryEntries(agents, statuses = []) {
+  return [
+    ...agents.map((agent) => ({
+      name: agent.id,
+      description: JSON.stringify(agent),
+      origin: AGENT_INVENTORY_ORIGIN,
+      health: "ok"
+    })),
+    ...statuses.map((status) => ({
+      name: `status:${status.requestId}`,
+      description: JSON.stringify(status),
+      origin: STATUS_INVENTORY_ORIGIN,
+      health: "ok"
+    }))
+  ];
 }
-function parseGatewayCommand(body) {
+const STATUS_INVENTORY_ORIGIN = "openclaw-gateway-status";
+const MAX_REPORTED_STATUSES = 10;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+function parseGatewayCommand(body, fallbackRequestId) {
   const words = body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
-  if (words[1] === "agents" && words.length === 2) return { kind: "agents" };
-  if (words[1] === "connect") {
-    const [, , agentId, token, ...rest] = words;
-    if (!agentId || !token || rest.length > 0) {
-      return { kind: "invalid", reason: "usage: /filament connect <agent-id> <connect-token>" };
-    }
-    if (!AGENT_ID_PATTERN.test(agentId) || RESERVED_ACCOUNT_IDS.has(agentId)) {
-      return { kind: "invalid", reason: `"${agentId}" is not a usable agent id` };
-    }
-    if (!token.startsWith("fmcp_")) {
-      return { kind: "invalid", reason: "the connect token must start with fmcp_" };
-    }
-    return { kind: "connect", agentId, token };
+  const verb = words[1];
+  const arity = verb === "connect" ? 2 : verb === "disconnect" ? 1 : 0;
+  const args = words.slice(2);
+  const extra = args.slice(arity);
+  const requestId = extra.length === 1 && REQUEST_ID_PATTERN.test(extra[0]) ? extra[0] : fallbackRequestId;
+  const invalid = (reason) => ({ kind: "invalid", reason, requestId });
+  if (!["connect", "disconnect", "unpair", "agents"].includes(verb ?? "")) {
+    return invalid("commands: agents, connect <agent-id> <token>, disconnect <agent-id>, unpair");
   }
-  return {
-    kind: "invalid",
-    reason: "commands: /filament agents, /filament connect <agent-id> <token>"
-  };
+  if (args.length < arity || extra.length > 1 || extra.length === 1 && requestId !== extra[0]) {
+    return invalid(
+      `usage: /filament ${verb}${arity >= 1 ? " <agent-id>" : ""}${arity === 2 ? " <connect-token>" : ""} [<request-id>]`
+    );
+  }
+  if (verb === "agents") return { kind: "agents", requestId };
+  if (verb === "unpair") return { kind: "unpair", requestId };
+  const agentId = args[0];
+  if (!AGENT_ID_PATTERN.test(agentId) || RESERVED_ACCOUNT_IDS.has(agentId)) {
+    return invalid(`"${agentId}" is not a usable agent id`);
+  }
+  if (verb === "disconnect") return { kind: "disconnect", agentId, requestId };
+  const token = args[1];
+  if (!token.startsWith("fmcp_")) {
+    return invalid("the connect token must start with fmcp_");
+  }
+  return { kind: "connect", agentId, token, requestId };
 }
 function applyAgentConnect(draft, agentId, token) {
   const plugins = ensureRecord(draft, "plugins");
@@ -95,6 +116,32 @@ function applyAgentConnect(draft, agentId, token) {
   accounts[agentId] = { ...asRecord(accounts[agentId]), connectToken: token };
   return { displaced: [...displaced] };
 }
+function applyAgentDisconnect(draft, agentId) {
+  const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
+  const accounts = asRecord(config.accounts);
+  delete accounts[agentId];
+  if (Array.isArray(draft.bindings)) {
+    draft.bindings = draft.bindings.filter((raw) => {
+      const match = asRecord(asRecord(raw).match);
+      return !(match.channel === FILAMENT_CHANNEL_ID && match.accountId === agentId);
+    });
+  }
+}
+function applyUnpair(draft) {
+  const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
+  delete asRecord(config.accounts)[GATEWAY_ACCOUNT_ID];
+}
+function wouldChange(gatewayConfig, mutate) {
+  const cfg = asRecord(gatewayConfig);
+  const slice = (c) => JSON.stringify({
+    config: asRecord(asRecord(asRecord(c.plugins).entries)[PLUGIN_ID]).config ?? null,
+    bindings: c.bindings ?? null
+  });
+  const draft = structuredClone({ plugins: cfg.plugins, bindings: cfg.bindings });
+  const before = slice(draft);
+  mutate(draft);
+  return slice(draft) !== before;
+}
 function ensureRecord(parent, key) {
   const existing = parent[key];
   if (existing && typeof existing === "object" && !Array.isArray(existing)) {
@@ -106,59 +153,85 @@ function ensureRecord(parent, key) {
 }
 async function handleGatewayItem(ctx) {
   const { item, log } = ctx;
-  const answered = (ok) => ok ? { kind: "published" } : { kind: "silent" };
+  const done = { kind: "silent" };
   const fromPrincipal = ctx.principal !== void 0 && item.messages.every((m) => m.sender === ctx.principal);
   if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
     log("filament-gateway: ignoring work outside the principal's backchannel");
-    return { kind: "silent" };
+    return done;
   }
-  const command = [...item.messages].reverse().map((m) => parseGatewayCommand(m.body)).find((parsed) => parsed !== null);
-  if (!command) {
-    return answered(
-      await ctx.reply(
-        "I'm this OpenClaw gateway's link to Filament, not an agent. Connect its agents from the OpenClaw card in Filament."
-      )
+  const commands = item.messages.map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))).filter((parsed) => parsed !== null);
+  const last = item.messages[item.messages.length - 1];
+  await ctx.consume(last.event_id).catch((error) => {
+    log(`filament-gateway: could not mark the commands read: ${String(error)}`);
+  });
+  if (commands.length === 0) return done;
+  const knownAgents = new Set(listGatewayAgents(ctx.gatewayConfig).map((a) => a.id));
+  const statuses = [];
+  const mutations = [];
+  for (const command of commands) {
+    const base = { requestId: command.requestId };
+    if (command.kind === "invalid") {
+      statuses.push({ ...base, command: "invalid", state: "rejected", message: command.reason });
+    } else if (command.kind === "agents") {
+      statuses.push({ ...base, command: "agents", state: "applied" });
+    } else if (command.kind === "connect" && !knownAgents.has(command.agentId)) {
+      statuses.push({
+        ...base,
+        command: "connect",
+        agentId: command.agentId,
+        state: "rejected",
+        message: `This gateway has no OpenClaw agent "${command.agentId}".`
+      });
+    } else if (command.kind === "connect") {
+      mutations.push((draft) => {
+        applyAgentConnect(draft, command.agentId, command.token);
+      });
+      statuses.push({ ...base, command: "connect", agentId: command.agentId, state: "applied" });
+    } else if (command.kind === "disconnect") {
+      mutations.push((draft) => applyAgentDisconnect(draft, command.agentId));
+      statuses.push({ ...base, command: "disconnect", agentId: command.agentId, state: "applied" });
+    } else {
+      mutations.push(applyUnpair);
+      statuses.push({ ...base, command: "unpair", state: "applied" });
+    }
+  }
+  const report = (entries) => ctx.report(entries).catch((error) => {
+    log(`filament-gateway: status report failed: ${String(error)}`);
+  });
+  await report(statuses);
+  const mutate = (draft) => {
+    for (const apply of mutations) apply(draft);
+  };
+  if (mutations.length === 0 || !wouldChange(ctx.gatewayConfig, mutate)) {
+    if (mutations.length > 0) log("filament-gateway: commands change nothing; skipping the write");
+    return done;
+  }
+  try {
+    await ctx.mutateConfig(mutate);
+    log(`filament-gateway: wrote ${commands.map((c) => c.kind).join(", ")}`);
+  } catch (error) {
+    log(`filament-gateway: config write failed: ${String(error)}`);
+    await report(
+      statuses.filter((status) => status.state === "applied" && status.command !== "agents").map((status) => ({
+        ...status,
+        state: "failed",
+        message: `Couldn't save the change on the gateway: ${String(error)}`
+      }))
     );
   }
-  if (command.kind === "invalid") {
-    return answered(await ctx.reply(`\u26A0\uFE0F ${command.reason}`));
-  }
-  if (command.kind === "agents") {
-    await ctx.reportInventory().catch((error) => {
-      log(`filament-gateway: inventory report failed: ${String(error)}`);
-    });
-    return answered(await ctx.reply("Agent list refreshed."));
-  }
-  const agent = listGatewayAgents(ctx.gatewayConfig).find((a) => a.id === command.agentId);
-  if (!agent) {
-    return answered(await ctx.reply(`\u26A0\uFE0F This gateway has no OpenClaw agent "${command.agentId}".`));
-  }
-  const replied = await ctx.reply(
-    `Connecting ${agent.emoji ? `${agent.emoji} ` : ""}**${agent.name}** (\`${agent.id}\`)\u2026`
-  );
-  try {
-    let displaced = [];
-    await ctx.mutateConfig((draft) => {
-      displaced = applyAgentConnect(draft, command.agentId, command.token).displaced;
-    });
-    log(`filament-gateway: wrote account + binding for agent ${command.agentId}`);
-    if (displaced.length > 0) {
-      await ctx.followUp(`Replaced the Filament account this agent had (${displaced.join(", ")}).`).catch(() => {
-      });
-    }
-  } catch (error) {
-    log(`filament-gateway: config write failed for agent ${command.agentId}: ${String(error)}`);
-    await ctx.followUp(`\u26A0\uFE0F Couldn't save the connection on the gateway: ${String(error)}`).catch(() => {
-    });
-  }
-  return answered(replied);
+  return done;
 }
 export {
   AGENT_INVENTORY_ORIGIN,
+  MAX_REPORTED_STATUSES,
+  STATUS_INVENTORY_ORIGIN,
   applyAgentConnect,
+  applyAgentDisconnect,
+  applyUnpair,
   handleGatewayItem,
   inventoryEntries,
   listGatewayAgents,
-  parseGatewayCommand
+  parseGatewayCommand,
+  wouldChange
 };
 //# sourceMappingURL=gateway.js.map

@@ -7,8 +7,12 @@ import {
   handleGatewayItem,
   inventoryEntries,
   listGatewayAgents,
+  applyAgentDisconnect,
+  applyUnpair,
   parseGatewayCommand,
+  wouldChange,
   type GatewayItemContext,
+  type GatewayStatus,
 } from "./gateway.js";
 import type { PollWorkItem } from "./poll-work.js";
 
@@ -39,33 +43,28 @@ function item(body: string, overrides: Partial<PollWorkItem> = {}): PollWorkItem
 }
 
 function harness(body: string, overrides: Partial<PollWorkItem> = {}) {
-  const replies: string[] = [];
-  const followUps: string[] = [];
+  const consumed: string[] = [];
+  const statuses: GatewayStatus[] = [];
   const drafts: Record<string, unknown>[] = [];
-  let reported = 0;
   const ctx: GatewayItemContext = {
     item: item(body, overrides),
     principal: PRINCIPAL,
     ccRoomId: CC_ROOM,
     gatewayConfig,
-    reply: async (markdown) => {
-      replies.push(markdown);
-      return true;
-    },
-    followUp: async (markdown) => {
-      followUps.push(markdown);
+    consume: async (eventId) => {
+      consumed.push(eventId);
     },
     mutateConfig: async (mutate) => {
       const draft: Record<string, unknown> = structuredClone({ bindings: gatewayConfig.bindings });
       mutate(draft);
       drafts.push(draft);
     },
-    reportInventory: async () => {
-      reported += 1;
+    report: async (entries) => {
+      statuses.push(...entries);
     },
     log: () => {},
   };
-  return { ctx, replies, followUps, drafts, reported: () => reported };
+  return { ctx, consumed, statuses, drafts };
 }
 
 // ── inventory ────────────────────────────────────────────────────────────────
@@ -94,21 +93,46 @@ test("inventoryEntries: only the four keys the server's tool inventory accepts, 
 
 // ── commands ─────────────────────────────────────────────────────────────────
 
-test("parseGatewayCommand: connect, agents, and the rejections", () => {
-  assert.deepEqual(parseGatewayCommand(`  /filament connect writer ${TOKEN} `), {
+test("parseGatewayCommand: every verb, the request id, and the rejections", () => {
+  assert.deepEqual(parseGatewayCommand(`  /filament connect writer ${TOKEN} req-1 `, "$e"), {
     kind: "connect",
     agentId: "writer",
     token: TOKEN,
+    requestId: "req-1",
   });
-  assert.deepEqual(parseGatewayCommand("/filament agents"), { kind: "agents" });
-  assert.equal(parseGatewayCommand("hello there"), null);
-  assert.equal(parseGatewayCommand("/filament connect writer")?.kind, "invalid");
-  assert.equal(parseGatewayCommand(`/filament connect Writer ${TOKEN}`)?.kind, "invalid");
-  assert.equal(parseGatewayCommand(`/filament connect gateway ${TOKEN}`)?.kind, "invalid");
-  assert.equal(parseGatewayCommand(`/filament connect default ${TOKEN}`)?.kind, "invalid");
-  assert.equal(parseGatewayCommand("/filament connect writer not-a-token")?.kind, "invalid");
-  assert.equal(parseGatewayCommand(`/filament connect writer ${TOKEN} extra`)?.kind, "invalid");
-  assert.equal(parseGatewayCommand("/filament frobnicate")?.kind, "invalid");
+  assert.deepEqual(parseGatewayCommand(`/filament connect writer ${TOKEN}`, "e1"), {
+    kind: "connect",
+    agentId: "writer",
+    token: TOKEN,
+    requestId: "e1",
+  });
+  assert.deepEqual(parseGatewayCommand("/filament disconnect writer r2", "e"), {
+    kind: "disconnect",
+    agentId: "writer",
+    requestId: "r2",
+  });
+  assert.deepEqual(parseGatewayCommand("/filament unpair r3", "e"), {
+    kind: "unpair",
+    requestId: "r3",
+  });
+  assert.deepEqual(parseGatewayCommand("/filament agents", "e"), {
+    kind: "agents",
+    requestId: "e",
+  });
+  assert.equal(parseGatewayCommand("hello there", "e"), null);
+  for (const bad of [
+    "/filament connect writer",
+    `/filament connect Writer ${TOKEN}`,
+    `/filament connect gateway ${TOKEN}`,
+    `/filament connect default ${TOKEN}`,
+    "/filament connect writer not-a-token",
+    `/filament connect writer ${TOKEN} r1 extra`,
+    "/filament disconnect",
+    "/filament unpair now please",
+    "/filament frobnicate",
+  ]) {
+    assert.equal(parseGatewayCommand(bad, "e")?.kind, "invalid", bad);
+  }
 });
 
 // ── config mutation ──────────────────────────────────────────────────────────
@@ -202,25 +226,91 @@ test("after a connect, the tools of the new agent resolve to its own account, ne
   );
 });
 
+// ── disconnect / unpair ─────────────────────────────────────────────────────
+
+test("applyAgentDisconnect removes the account and its binding, nothing else", () => {
+  const draft: Record<string, unknown> = {};
+  applyAgentConnect(draft, "writer", TOKEN);
+  applyAgentConnect(draft, "reviewer", "fmcp_r");
+  applyAgentDisconnect(draft, "writer");
+  const accounts = (draft.plugins as any).entries["filament-fcm"].config.accounts;
+  assert.deepEqual(Object.keys(accounts), ["reviewer"]);
+  assert.deepEqual(draft.bindings, [
+    { agentId: "reviewer", match: { channel: "filament", accountId: "reviewer" } },
+  ]);
+});
+
+test("applyUnpair removes only the control account", () => {
+  const draft: Record<string, unknown> = {
+    plugins: {
+      entries: {
+        "filament-fcm": {
+          config: {
+            accounts: {
+              gateway: { connectToken: "g", control: true },
+              writer: { connectToken: "w" },
+            },
+          },
+        },
+      },
+    },
+  };
+  applyUnpair(draft);
+  assert.deepEqual(Object.keys((draft.plugins as any).entries["filament-fcm"].config.accounts), [
+    "writer",
+  ]);
+});
+
+test("wouldChange: a repeated connect is a no-op, so it never triggers a reload", () => {
+  const cfg: Record<string, unknown> = {};
+  applyAgentConnect(cfg, "writer", TOKEN);
+  assert.equal(
+    wouldChange(cfg, (d) => applyAgentConnect(d, "writer", TOKEN)),
+    false,
+  );
+  assert.equal(
+    wouldChange(cfg, (d) => applyAgentConnect(d, "writer", "fmcp_other")),
+    true,
+  );
+  assert.equal(
+    wouldChange(cfg, (d) => applyAgentDisconnect(d, "ghost")),
+    false,
+  );
+});
+
 // ── the control handler ──────────────────────────────────────────────────────
 
-test("handleGatewayItem: connect replies first, then writes the account + binding", async () => {
-  const h = harness(`/filament connect writer ${TOKEN}`);
-  const outcome = await handleGatewayItem(h.ctx);
-  assert.deepEqual(outcome, { kind: "published" });
-  assert.equal(h.replies.length, 1);
-  assert.match(h.replies[0]!, /Writer/);
-  assert.ok(!h.replies[0]!.includes(TOKEN), "the token must never be echoed back");
+test("handleGatewayItem: connect consumes, reports applied, then writes — and never chats", async () => {
+  const h = harness(`/filament connect writer ${TOKEN} req-9`);
+  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
+  assert.deepEqual(h.consumed, ["$e1"]);
+  assert.deepEqual(h.statuses, [
+    { requestId: "req-9", command: "connect", agentId: "writer", state: "applied" },
+  ]);
+  assert.ok(!JSON.stringify(h.statuses).includes(TOKEN), "the token must never be reported");
   assert.equal(h.drafts.length, 1);
   const accounts = (h.drafts[0]!.plugins as any).entries["filament-fcm"].config.accounts;
   assert.deepEqual(accounts.writer, { connectToken: TOKEN });
 });
 
-test("handleGatewayItem: an unknown agent is refused without writing config", async () => {
-  const h = harness(`/filament connect ghost ${TOKEN}`);
+test("handleGatewayItem: an unknown agent is rejected with a status, no write", async () => {
+  const h = harness(`/filament connect ghost ${TOKEN} r1`);
   await handleGatewayItem(h.ctx);
   assert.equal(h.drafts.length, 0);
-  assert.match(h.replies[0]!, /no OpenClaw agent "ghost"/);
+  assert.equal(h.statuses[0]!.state, "rejected");
+  assert.match(h.statuses[0]!.message!, /no OpenClaw agent "ghost"/);
+});
+
+test("handleGatewayItem: disconnect and unpair write; agents only reports", async () => {
+  const d = harness("/filament disconnect reviewer r2");
+  await handleGatewayItem(d.ctx);
+  assert.equal(d.drafts.length, 1);
+  assert.deepEqual(d.drafts[0]!.bindings, []);
+
+  const a = harness("/filament agents r4");
+  await handleGatewayItem(a.ctx);
+  assert.equal(a.drafts.length, 0);
+  assert.deepEqual(a.statuses, [{ requestId: "r4", command: "agents", state: "applied" }]);
 });
 
 test("handleGatewayItem: commands from anyone but the principal, or outside the backchannel, are ignored", async () => {
@@ -236,29 +326,67 @@ test("handleGatewayItem: commands from anyone but the principal, or outside the 
     const h = harness(`/filament connect writer ${TOKEN}`, overrides);
     assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
     assert.equal(h.drafts.length, 0);
-    assert.equal(h.replies.length, 0);
+    assert.equal(h.statuses.length, 0);
+    assert.equal(h.consumed.length, 0);
   }
 });
 
-test("handleGatewayItem: a config write failure is reported, and the account never pauses", async () => {
-  const h = harness(`/filament connect writer ${TOKEN}`);
+test("handleGatewayItem: a config write failure is reported as failed, and the account never pauses", async () => {
+  const h = harness(`/filament connect writer ${TOKEN} r5`);
   h.ctx.mutateConfig = async () => {
     throw new Error("disk full");
   };
-  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "published" });
-  assert.match(h.followUps[0]!, /disk full/);
-});
-
-test("handleGatewayItem: a reply that didn't publish acks the item instead of replaying it", async () => {
-  const h = harness("/filament agents");
-  h.ctx.reply = async () => false;
   assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
-  assert.equal(h.reported(), 1);
+  assert.deepEqual(
+    h.statuses.map((s) => s.state),
+    ["applied", "failed"],
+  );
+  assert.match(h.statuses[1]!.message!, /disk full/);
 });
 
-test("handleGatewayItem: plain chatter gets a pointer, never a turn", async () => {
+test("handleGatewayItem: plain chatter is consumed and ignored", async () => {
   const h = harness("hi, who are you?");
-  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "published" });
-  assert.match(h.replies[0]!, /not an agent/);
+  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
+  assert.deepEqual(h.consumed, ["$e1"]);
+  assert.equal(h.statuses.length, 0);
   assert.equal(h.drafts.length, 0);
+});
+
+test("listGatewayAgents: a bound account carries its Filament agent", () => {
+  const agents = listGatewayAgents(gatewayConfig, (id) =>
+    id === "reviewer" ? "@rev:x" : undefined,
+  );
+  assert.equal(agents.find((a) => a.id === "reviewer")?.filamentUserId, "@rev:x");
+  assert.equal(agents.find((a) => a.id === "writer")?.filamentUserId, undefined);
+});
+
+test("inventoryEntries: statuses ride along under their own origin", () => {
+  const entries = inventoryEntries(
+    [],
+    [{ requestId: "r1", command: "connect", agentId: "writer", state: "rejected", message: "x" }],
+  );
+  assert.deepEqual(entries[0]!.name, "status:r1");
+  assert.equal(entries[0]!.origin, "openclaw-gateway-status");
+});
+
+test("handleGatewayItem: several commands in one item are written as one mutation, in order", async () => {
+  const h = harness("");
+  h.ctx.item = item("", {
+    messages: [
+      { event_id: "$a", sender: PRINCIPAL, body: "/filament disconnect reviewer r1", ts: 1 },
+      { event_id: "$b", sender: PRINCIPAL, body: "/filament unpair r2", ts: 2 },
+    ],
+  });
+  await handleGatewayItem(h.ctx);
+  assert.deepEqual(h.consumed, ["$b"]);
+  assert.equal(
+    h.drafts.length,
+    1,
+    "one write, or the reload after the first would drop the second",
+  );
+  assert.deepEqual(h.drafts[0]!.bindings, []);
+  assert.deepEqual(
+    h.statuses.map((s) => `${s.command}:${s.state}`),
+    ["disconnect:applied", "unpair:applied"],
+  );
 });
