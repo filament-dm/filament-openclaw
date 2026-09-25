@@ -23,6 +23,9 @@ export const FILAMENT_CHANNEL_ID = "filament";
 
 export const PLUGIN_ID = "filament-fcm";
 
+/** The gateway control account's id (src/gateway.ts); install.sh writes it. */
+export const GATEWAY_ACCOUNT_ID = "gateway";
+
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -56,6 +59,14 @@ export function listConfiguredAccountIds(
     ids.unshift(DEFAULT_ACCOUNT_ID);
   }
   return ids;
+}
+
+/**
+ * Whether an account is a gateway control account (`control: true`): it runs
+ * no agent turns and owns no tools — see src/gateway.ts.
+ */
+export function isControlAccount(pluginConfig: unknown, accountId: string): boolean {
+  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
 }
 
 /** This plugin's own config inside the full gateway config, or undefined. */
@@ -101,9 +112,9 @@ export function resolveToolAccountId(
     }
   }
   if (ours.length > 0) return null;
-  const configured = listConfiguredAccountIds(
-    pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig,
-    env,
+  const pluginConfig = pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig;
+  const configured = listConfiguredAccountIds(pluginConfig, env).filter(
+    (id) => !isControlAccount(pluginConfig, id),
   );
   return configured.length === 1 ? configured[0]! : null;
 }
