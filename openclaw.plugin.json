@@ -106,6 +106,10 @@
             "mcpUrl": {
               "type": "string",
               "description": "Overrides the top-level mcpUrl for this account."
+            },
+            "control": {
+              "type": "boolean",
+              "description": "A gateway control account (install.sh OPENCLAW_GATEWAY=1): runs no agent turns, reports this gateway's agents to Filament and takes connect commands from its principal."
             }
           }
         }

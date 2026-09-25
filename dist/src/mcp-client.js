@@ -347,6 +347,14 @@ class FilamentMcpClient {
   heartbeat(opts) {
     return this.sideChannelPost("/heartbeat", void 0, opts);
   }
+  /**
+   * Whole-inventory report: POST /tools (ENG-914). The gateway control
+   * account borrows it to publish this gateway's OpenClaw agents — see
+   * src/gateway.ts. Returns the HTTP status.
+   */
+  reportTools(tools, opts) {
+    return this.sideChannelPost("/tools", { tools }, opts);
+  }
 }
 export {
   FilamentMcpClient,

@@ -2,6 +2,7 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
+  isControlAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
   pluginConfigFrom
@@ -19,6 +20,7 @@ import {
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 } from "./filament-tools.js";
+import { handleGatewayItem, inventoryEntries, listGatewayAgents } from "./gateway.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -70,6 +72,16 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message) => log(`[${accountId}] ${message}`);
+        const control = isControlAccount(pluginConfig, accountId);
+        const liveGatewayConfig = () => api.runtime?.config?.current?.() ?? ctx.cfg;
+        const reportInventory = async () => {
+          if (!connection) return;
+          const agents = listGatewayAgents(liveGatewayConfig());
+          const status = await connection.client.reportTools(inventoryEntries(agents), {
+            signal: abortSignal
+          });
+          accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
+        };
         const dispatchItem = async (item) => {
           const replyWith = item.reply_with;
           if (!replyWith) {
@@ -77,6 +89,35 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           }
           if (!connection) {
             return { kind: "error", diagnostic: "item arrived before connect finished" };
+          }
+          if (control) {
+            const client = connection.client;
+            const identity2 = connection.identity;
+            return handleGatewayItem({
+              item,
+              principal: identity2.principal,
+              ccRoomId: identity2.ccRoomId,
+              gatewayConfig: liveGatewayConfig(),
+              reply: async (markdown) => {
+                const res = await client.replyWith(replyWith, markdown, { signal: abortSignal });
+                return res.ok && (publishSucceeded(res.data) || isAlreadyAnsweredError(res.data));
+              },
+              followUp: async (markdown) => {
+                await client.callTool(
+                  "post_message",
+                  { channel: item.channel_id, markdown_body: markdown },
+                  { signal: abortSignal }
+                );
+              },
+              mutateConfig: async (mutate) => {
+                const write = api.runtime?.config?.mutateConfigFile;
+                if (!write)
+                  throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+                await write({ afterWrite: { mode: "auto" }, mutate });
+              },
+              reportInventory,
+              log: accountLog
+            });
           }
           if (!ctx.channelRuntime) {
             return {
@@ -180,11 +221,18 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)"
           );
         }
-        if (connection) {
-          setFilamentClient(connection.client, accountId);
-          void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
-            accountLog(`filament: tool drift check failed: ${String(error)}`);
+        if (connection && control) {
+          await reportInventory().catch((error) => {
+            accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
           });
+        }
+        if (connection) {
+          if (!control) setFilamentClient(connection.client, accountId);
+          if (!control) {
+            void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+              accountLog(`filament: tool drift check failed: ${String(error)}`);
+            });
+          }
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,

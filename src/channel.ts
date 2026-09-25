@@ -20,6 +20,7 @@ import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-i
 import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
+  isControlAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
   pluginConfigFrom,
@@ -39,6 +40,7 @@ import {
   setFilamentClient,
   type FilamentToolsApi,
 } from "./filament-tools.js";
+import { handleGatewayItem, inventoryEntries, listGatewayAgents } from "./gateway.js";
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { type DispatchOutcome, type PollWorkItem, runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
@@ -53,6 +55,16 @@ export interface FilamentChannelApi extends FilamentToolsApi {
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
   registerChannel: (registration: { plugin: ChannelPlugin }) => void;
+  /** `api.runtime.config` — the gateway control account reads and writes config through it. */
+  runtime?: {
+    config?: {
+      current?: () => unknown;
+      mutateConfigFile?: (params: {
+        afterWrite: { mode: "auto" };
+        mutate: (draft: Record<string, unknown>) => void;
+      }) => Promise<unknown>;
+    };
+  };
 }
 
 /** True when a publish result looks like a genuine success (has an event_id, no error). */
@@ -136,6 +148,17 @@ export function registerFilamentChannel(
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
+        // A gateway control account (src/gateway.ts): no agent turns, no tools.
+        const control = isControlAccount(pluginConfig, accountId);
+        const liveGatewayConfig = (): unknown => api.runtime?.config?.current?.() ?? ctx.cfg;
+        const reportInventory = async (): Promise<void> => {
+          if (!connection) return;
+          const agents = listGatewayAgents(liveGatewayConfig());
+          const status = await connection.client.reportTools(inventoryEntries(agents), {
+            signal: abortSignal,
+          });
+          accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
+        };
 
         // Dispatch one work item: run the turn, publish at most once via
         // reply_with, and classify the outcome for the poll loop.
@@ -147,6 +170,35 @@ export function registerFilamentChannel(
           }
           if (!connection) {
             return { kind: "error", diagnostic: "item arrived before connect finished" };
+          }
+          if (control) {
+            const client = connection.client;
+            const identity = connection.identity;
+            return handleGatewayItem({
+              item,
+              principal: identity.principal,
+              ccRoomId: identity.ccRoomId,
+              gatewayConfig: liveGatewayConfig(),
+              reply: async (markdown) => {
+                const res = await client.replyWith(replyWith, markdown, { signal: abortSignal });
+                return res.ok && (publishSucceeded(res.data) || isAlreadyAnsweredError(res.data));
+              },
+              followUp: async (markdown) => {
+                await client.callTool(
+                  "post_message",
+                  { channel: item.channel_id, markdown_body: markdown },
+                  { signal: abortSignal },
+                );
+              },
+              mutateConfig: async (mutate) => {
+                const write = api.runtime?.config?.mutateConfigFile;
+                if (!write)
+                  throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+                await write({ afterWrite: { mode: "auto" }, mutate });
+              },
+              reportInventory,
+              log: accountLog,
+            });
           }
           if (!ctx.channelRuntime) {
             return {
@@ -267,17 +319,26 @@ export function registerFilamentChannel(
           );
         }
 
+        if (connection && control) {
+          await reportInventory().catch((error) => {
+            accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
+          });
+        }
+
         if (connection) {
           // The tool surface is already registered (see registerFilamentChannel
           // above); populate the connection holder so each tool's execute()
           // can reach the live client. Cleared below on the way out, whatever
-          // the exit reason (normal wind-down or fatal).
-          setFilamentClient(connection.client, accountId);
+          // the exit reason (normal wind-down or fatal). A control account
+          // owns no tools, so it never gets one.
+          if (!control) setFilamentClient(connection.client, accountId);
           // Best-effort diagnostic only — see src/filament-tools.ts's
           // checkFilamentToolDrift docstring. Never blocks/aborts connect.
-          void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
-            accountLog(`filament: tool drift check failed: ${String(error)}`);
-          });
+          if (!control) {
+            void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+              accountLog(`filament: tool drift check failed: ${String(error)}`);
+            });
+          }
           const { fatal } = await runPollLoop({
             client: connection.client,
             abortSignal,

@@ -1,6 +1,7 @@
 const DEFAULT_ACCOUNT_ID = "default";
 const FILAMENT_CHANNEL_ID = "filament";
 const PLUGIN_ID = "filament-fcm";
+const GATEWAY_ACCOUNT_ID = "gateway";
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -15,6 +16,9 @@ function listConfiguredAccountIds(pluginConfig, env = process.env) {
     ids.unshift(DEFAULT_ACCOUNT_ID);
   }
   return ids;
+}
+function isControlAccount(pluginConfig, accountId) {
+  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
 }
 function pluginConfigFrom(gatewayConfig) {
   const entry = asRecord(asRecord(asRecord(gatewayConfig).plugins).entries)[PLUGIN_ID];
@@ -35,18 +39,20 @@ function resolveToolAccountId(ctx, fallbackPluginConfig, env = process.env) {
     }
   }
   if (ours.length > 0) return null;
-  const configured = listConfiguredAccountIds(
-    pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig,
-    env
+  const pluginConfig = pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig;
+  const configured = listConfiguredAccountIds(pluginConfig, env).filter(
+    (id) => !isControlAccount(pluginConfig, id)
   );
   return configured.length === 1 ? configured[0] : null;
 }
 export {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
+  GATEWAY_ACCOUNT_ID,
   PLUGIN_ID,
   asRecord,
   hasTokenInput,
+  isControlAccount,
   listConfiguredAccountIds,
   pluginConfigFrom,
   resolveToolAccountId
