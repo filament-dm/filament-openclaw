@@ -23,7 +23,11 @@ function classifyGetSelf(result) {
   }
   return { status: "transient" };
 }
+function isFirstContact(instructions) {
+  return typeof instructions === "string" && instructions.includes("First contact:");
+}
 export {
-  classifyGetSelf
+  classifyGetSelf,
+  isFirstContact
 };
 //# sourceMappingURL=onboarding-core.js.map

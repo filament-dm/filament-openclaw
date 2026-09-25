@@ -47,6 +47,7 @@ import {
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
 import { loadIdentity } from "./token-store.js";
+import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -55,7 +56,7 @@ import type { WorkItem } from "./work-item.js";
 export { FILAMENT_CHANNEL_ID };
 
 const TRANSPORTS: Record<Transport, RunTransport> = {
-  fcm: runPollTransport,
+  fcm: runFcmTransport,
   poll: runPollTransport,
 };
 
@@ -140,6 +141,7 @@ export function registerFilamentChannel(
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
+        accountLog(`filament: transport ${mcp.transport}`);
         // A gateway control account (src/gateway.ts): no agent turns, no tools.
         const control = isControlAccount(pluginConfig, accountId);
         const liveGatewayConfig = (): unknown => api.runtime?.config?.current?.() ?? ctx.cfg;
@@ -257,7 +259,8 @@ export function registerFilamentChannel(
               accountId,
               log: accountLog,
               abortSignal,
-              credential: "exchange",
+              // Poll needs an ENG-893 server anyway; FCM must work without one.
+              credential: mcp.transport === "poll" ? "exchange" : "direct",
             });
             onConnectionChange(connection);
           } catch (error) {
