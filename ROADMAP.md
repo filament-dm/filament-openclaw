@@ -1,32 +1,33 @@
 # Roadmap: OpenClaw ↔ Filament parity
 
-This plugin connects an OpenClaw agent to Filament using `poll_work` as the inbound transport
-(replacing an earlier FCM-based design). This document maps what the current PoC covers, what
-it deliberately defers, and the path toward a robust migration.
+This plugin connects an OpenClaw agent to Filament over one of two transports: **FCM** (the
+default, what production Filament serves) or **`poll_work`** (opt-in, `transport: "poll"`). This
+document maps what the current PoC covers, what it deliberately defers, and the path toward a
+robust migration.
 
-The validation this PoC implements lives in the maintainers' planning notes
-(RFC-007, "OpenClaw as a `poll_work` channel plugin"), outside this repository: the seven findings behind the transport swap, the acceptance
-criteria, and the SDK checkpoint that pinned the target version and resolved the open contract
-questions below.
+The `poll_work` validation lives in the maintainers' planning notes (RFC-007, "OpenClaw as a
+`poll_work` channel plugin"), outside this repository: the seven findings behind the transport,
+the acceptance criteria, and the SDK checkpoint that pinned the target version and resolved the
+open contract questions below.
 
 ## Where we are today (PoC)
 
 Build/lint/typecheck/unit-tests pass; **no live-gateway smoke test on this host** (no OpenClaw
 install, no running Synapse with `poll_work` enabled here — see "Verification still needed").
 
-- **Bootstrap** (`src/connect.ts`): resolves a bearer (exchanging a connect token once via RFC
-  8693 token-exchange and persisting the result, or using an already-issued bearer directly),
-  verifies it with a read-only `initialize` + `get_self`, and starts an independent 20s
-  heartbeat.
-- **Poll loop** (`src/poll-work.ts`): sequential, cancelable `poll_work` long-poll
+- **Layout**: the shared layer in `src/` (settings, connect, turn, tools, gateway) and one
+  directory per transport in `src/transports/`, which never import each other.
+- **Bootstrap** (`src/connect.ts`, `src/credentials.ts`): the bearer — the connect token itself
+  for `fcm`, a one-time persisted RFC 8693 exchange for `poll` — then `initialize` + `get_self`
+  and an independent 20s heartbeat.
+- **FCM** (`src/transports/fcm/`, default): the original plugin's receiver and decoder,
+  per account; a port of Hermes' wake policy, threaded replies per the participation rules, and
+  a one-reply guard in place of the work ledger. Needs nothing beyond develop's agents API.
+- **Poll** (`src/transports/poll/`): sequential, cancelable `poll_work` long-poll
   (`max_items: 1`), backoff with jitter on transient failures, hard stop (no restart) on auth
-  failure or a dispatch/publish error.
-- **Dispatch** (`src/inbound-dispatch.ts`): one turn per item, session isolated per
-  account/channel/thread, only `final` callbacks collected, one publish attempt via
-  `reply_with`.
-- **FCM removed**: no push socket, no `@eneris/push-receiver` dependency, no first-contact
-  greeting. Invite/vouch acceptance is no longer a background sweep — see "Tool surface"
-  below and the README's "Tools exposed to the agent".
+  failure or a dispatch/publish error; one publish attempt via `reply_with`.
+- **Dispatch** (`src/turn.ts`): one turn per item, session isolated per
+  account/channel/thread, only `final` callbacks collected.
 
 ## Tool surface
 
@@ -81,7 +82,7 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
   set one.
 - `OutboundReplyPayload` (the plugin-facing normalized payload) has **no `isError` field** —
   only the lower-level dispatcher's `onError`/`onSkip` hooks and `info.kind` ("tool" | "block" |
-  "final") tell a plugin what happened. This is why `src/inbound-dispatch.ts` composes the
+  "final") tell a plugin what happened. This is why `src/turn.ts` composes the
   low-level `dispatchReplyWithBufferedBlockDispatcher` primitives directly instead of using
   `dispatchInboundDirectDmWithRuntime`: that one-call DM facade forwards every dispatcher
   callback to `deliver` **without** the `kind` info, so a caller can't tell a `final` from an
@@ -138,7 +139,7 @@ No OpenClaw install and no running Synapse with `poll_work` enabled on this host
 following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP client:
 
 - Loading the plugin against a real gateway (`openclaw plugins install --link ...`) and
-  confirming `ctx.channelRuntime`'s real shape matches what `src/inbound-dispatch.ts` assumes
+  confirming `ctx.channelRuntime`'s real shape matches what `src/turn.ts` assumes
   (session/routing/reply sub-objects, `dispatchReplyWithBufferedBlockDispatcher`'s actual
   `info.kind` values in practice).
 - An end-to-end turn against a live agent: multiple `final` callbacks joined correctly, a

@@ -1,7 +1,7 @@
 {
   "id": "filament-fcm",
   "name": "Filament",
-  "description": "Connects an OpenClaw agent to Filament: receives work via a poll_work long-poll and replies through Filament's MCP-over-HTTP agents API.",
+  "description": "Connects an OpenClaw agent to Filament: receives messages as Firebase Cloud Messaging (FCM) pushes — or, opt-in, through a poll_work long-poll — and replies through Filament's MCP-over-HTTP agents API.",
   "version": "0.1.0",
   "activation": {
     "onStartup": true
@@ -66,6 +66,36 @@
             "type": "string"
           }
         }
+      },
+      "transport": {
+        "enum": [
+          "fcm",
+          "poll"
+        ],
+        "description": "How work reaches the account. fcm (default): Firebase Cloud Messaging pushes, what production Filament serves. poll: the poll_work long-poll, which needs a synapse carrying ENG-1392."
+      },
+      "firebase": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "The Firebase project an fcm account registers with; it must be the one the homeserver sends through. Each field defaults to FILAMENT_FIREBASE_* and then to production.",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "apiKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "appId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "messagingSenderId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "properties": {
@@ -110,6 +140,10 @@
             "control": {
               "type": "boolean",
               "description": "A gateway control account (install.sh OPENCLAW_GATEWAY=1): runs no agent turns, reports this gateway's agents to Filament and takes connect commands from its principal."
+            },
+            "transport": {
+              "$ref": "#/$defs/transport",
+              "description": "Overrides the top-level transport for this account."
             }
           }
         }
@@ -117,6 +151,12 @@
       "mcpUrl": {
         "type": "string",
         "description": "Filament MCP agents endpoint (defaults to production; set for staging/local)."
+      },
+      "transport": {
+        "$ref": "#/$defs/transport"
+      },
+      "firebase": {
+        "$ref": "#/$defs/firebase"
       },
       "pollWaitSeconds": {
         "type": "integer",
@@ -131,6 +171,9 @@
       "label": "Connect token",
       "placeholder": "fmcp_…",
       "sensitive": true
+    },
+    "transport": {
+      "label": "Transport"
     }
   }
 }

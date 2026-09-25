@@ -6,26 +6,27 @@ An [OpenClaw](https://docs.openclaw.ai) plugin that connects an agent to [Filame
 
 Same shape as the Hermes plugin — **no Matrix client or Matrix token is involved**. We do not use OpenClaw's Matrix channel plugin.
 
-- **Inbound (receive):** the plugin long-polls Filament's `poll_work` MCP tool
-  (`{cursor, ack, wait_seconds, max_items}`), which blocks server-side until
-  there is work or the wait elapses. Each result item is already grouped by
-  `(channel_id, thread_id)`, carries every unread `messages[]` for that spot,
-  and pre-resolves the reply destination in `reply_with` — there is no push
-  socket and no separate decode step.
-- **Outbound (send/act):** replies go through Filament's **MCP-over-HTTP agents
-  API**, authenticated with a **bearer token** (not a Matrix access token). The
-  poll loop itself attempts exactly one `reply_with` publish per item, using
-  `reply_with.tool` (`post_message` or `reply_in_thread`) with `reply_with.args`
-  verbatim. The agent can also act directly through the registered Filament
-  tools mid-turn (see "Tools exposed to the agent" below) — including posting
-  its own reply, in which case the loop's publish is recognized as a duplicate
-  and skipped rather than treated as a failure.
+Work reaches each account over one of two **transports**, chosen by `transport`
+(top level for every account, or per account):
 
-Earlier revisions of this plugin used Firebase Cloud Messaging (FCM) as the
-inbound transport; that has been replaced by `poll_work` (see "Current
-progress" and `ROADMAP.md` for the migration and its tradeoffs). The plugin id
-(`filament-fcm`) and manifest are unchanged for config/storage compatibility —
-renaming either would need a migration for existing installs.
+| | `fcm` — **default** | `poll` — opt-in |
+|---|---|---|
+| Server needed | any Filament (production, develop) | a synapse carrying ENG-1392 (`poll_work`) and ENG-893 (token exchange) |
+| Inbound | Firebase Cloud Messaging pushes (DirectPusher), one per message | a blocking `poll_work` call returning work items |
+| Credential | the connect token is the bearer | the connect token is exchanged once for a bearer |
+| What wakes the agent | the plugin decides (`src/transports/fcm/wake-policy.ts`, a port of Hermes' policy) | the server decides |
+| Where the reply goes | the plugin decides (`reply-route.ts`, per the participation rules) | the server's `reply_with` |
+| One reply per message | the turn records a reply a tool already sent | the server's work ledger |
+
+Both transports share everything else (`src/`): connecting and presence
+(`connect.ts`), the agent turn (`turn.ts`), the `filament_*` tools
+(`filament-tools.ts`) and the gateway control account (`gateway.ts`). Each lives
+in `src/transports/<name>/` and neither imports the other; `src/channel.ts`
+picks one per account. Outbound always goes through Filament's **MCP-over-HTTP
+agents API**, with a bearer token (not a Matrix access token).
+
+The plugin id (`filament-fcm`) and manifest are unchanged for config/storage
+compatibility — renaming either would need a migration for existing installs.
 
 ## OpenClaw channels
 
@@ -35,7 +36,7 @@ In OpenClaw, a **channel** is a messaging integration that connects a conversati
 - How inbound messages route to a turn and replies route back: <https://docs.openclaw.ai/channels/channel-routing>
 - Writing your own channel as a plugin (the SDK contract): <https://docs.openclaw.ai/plugins/sdk-channel-plugins>
 
-This is the mechanism this plugin uses — **but not by adopting a built-in channel.** We deliberately do **not** use OpenClaw's Matrix channel (no Matrix client or Matrix token is involved). Instead, Filament becomes its *own* custom channel: **inbound** work arrives via a `poll_work` long-poll over MCP (not a Matrix sync, and no longer FCM — see "Architecture" above), and **outbound** replies are sent over Filament's MCP-over-HTTP agents API. Registering as a channel is also the only way a third-party plugin can wake an agent turn on an inbound message — see the next section.
+This is the mechanism this plugin uses — **but not by adopting a built-in channel.** We deliberately do **not** use OpenClaw's Matrix channel (no Matrix client or Matrix token is involved). Instead, Filament becomes its *own* custom channel: **inbound** work arrives as FCM pushes or through a `poll_work` long-poll (not a Matrix sync — see "Architecture" above), and **outbound** replies are sent over Filament's MCP-over-HTTP agents API. Registering as a channel is also the only way a third-party plugin can wake an agent turn on an inbound message — see the next section.
 
 ## Plugin trust and the OpenClaw origin gate
 
@@ -55,7 +56,7 @@ Trust gates *whether a plugin may load and register*; **origin** gates *which ru
 | `registerChannel` — a full inbound→turn→outbound message transport | not origin-gated (only rejects a *disabled workspace* plugin) | ✅ **Yes**, when the plugin is enabled/trusted. |
 | `registerTool` / `registerService` / `registerHttpRoute` / `registerHook` / `registerGatewayMethod` | none (hooks need `opts.name`) | ✅ Yes. |
 
-**Conclusion — the implementation must be an OpenClaw channel plugin.** The lightweight "background service wakes a turn with `scheduleSessionTurn`" path is a dead end for a third-party plugin (bundled-only). The only turn-waking path open to us is `api.registerChannel(...)`: we register Filament as a native messaging channel, and the gateway drives the loop — a `poll_work` item becomes a channel message that wakes an agent turn, and the agent's reply comes back to our channel adapter, which posts it to Filament over MCP via `reply_with`. This is also the closest analog to how the Python `filament-hermes` plugin subclasses a gateway platform adapter. (See `ROADMAP.md` for the SDK checkpoint that pinned the exact contract this relies on.)
+**Conclusion — the implementation must be an OpenClaw channel plugin.** The lightweight "background service wakes a turn with `scheduleSessionTurn`" path is a dead end for a third-party plugin (bundled-only). The only turn-waking path open to us is `api.registerChannel(...)`: we register Filament as a native messaging channel, and the gateway drives the loop — a push or a `poll_work` item becomes a channel message that wakes an agent turn, and the agent's reply comes back to our channel adapter, which posts it to Filament over MCP. This is also the closest analog to how the Python `filament-hermes` plugin subclasses a gateway platform adapter. (See `ROADMAP.md` for the SDK checkpoint that pinned the exact contract this relies on.)
 
 ### Required trust step after install
 
@@ -69,40 +70,32 @@ openclaw config set plugins.allow '["filament-fcm"]'
 
 ## Current Progress
 
-This is a **PoC of the `poll_work` transport** (build/lint/typecheck/unit-tests only — no
-live-gateway smoke test on this host; see `ROADMAP.md`). The plugin registers a Filament
-**channel** whose `startAccount` runs the whole integration:
+A PoC with two transports (see "Architecture"); unit-tested and exercised offline
+(`scripts/gateway-e2e.mjs` for poll, `src/transports/fcm/index.test.ts` for FCM). The plugin
+registers a Filament **channel** whose `startAccount` runs the whole integration:
 
-- **Bootstrap** (`src/connect.ts`) — resolves the configured token to a bearer: a connect
-  token (`fmcp_…`) is exchanged once via the RFC 8693 token-exchange grant and the resulting
-  bearer is persisted (`src/token-store.ts`); a persisted bearer or an already-issued bearer is
-  used directly, skipping the exchange. `initialize` + `get_self` then run as a read-only
-  verification step (learns the agent's identity), and a 20s heartbeat keeps presence.
-- **Poll loop** (`src/poll-work.ts`) — a sequential, cancelable `poll_work` long-poll
-  (`wait_seconds: 60, max_items: 1`): for each item, dispatch one agent turn, publish at most
-  once via `reply_with`, then poll again immediately (no timer). Exponential backoff with
-  jitter on transient poll_work failures (network/5xx/429/protocol); an auth failure stops the
-  loop and leaves the account in a paused/error status rather than hot-looping or silently
-  restarting.
-- **Dispatch** (`src/inbound-dispatch.ts` + `src/channel.ts`) — one turn per item, with all of
-  the item's `messages[]` (sender + event_id preserved) and a session isolated per
-  account/channel/thread (Matrix IDs keep their case). Only `final` dispatcher callbacks are
-  collected and joined; a single publish is attempted only if there is finalized text.
-  `commandAuthorized` is only ever true for `is_backchannel` items.
-- **FCM removed** — no push socket and no first-contact greeting. Joining a loop (previously an
-  opt-in auto-accept sweep) is now the agent's own call: `filament_accept_invite` and
-  `filament_accept_vouch` are exposed as ordinary tools (see "Tools exposed to the agent"
-  below) instead of a background loop guessing when to accept on the agent's behalf. See
-  `ROADMAP.md`'s "Limitations" for what else that trades away.
-- **Tools** (`src/filament-tools.ts`) — the whole Filament MCP tool surface, minus `poll_work`
-  and the two FCM push-token tools, is registered as OpenClaw agent tools, `filament_`-prefixed,
-  synchronously inside `register(api)` from a reviewed schema snapshot
-  (`src/filament-tools.snapshot.json`, regenerated with `npm run snapshot:tools`) — not fetched
-  live at connect time. Per-call authorization still gates writes to Filament-originated turns
-  and Ring-0 tools to the backchannel. See "Tools exposed to the agent" below.
+- **Settings** (`src/settings.ts`) — per account: token, `mcpUrl`, `transport`, `firebase`,
+  `pollWaitSeconds`, each layered over the top-level value.
+- **Connect** (`src/connect.ts`, `src/credentials.ts`) — the bearer (the connect token itself
+  for `fcm`; a one-time, persisted exchange for `poll`), then `initialize` + `get_self` to learn
+  the agent's identity, and a 20s heartbeat for presence.
+- **FCM transport** (`src/transports/fcm/`) — restored from the original FCM plugin: accept
+  pending invites/vouches, register with Firebase, `register_push_token`, greet on first
+  contact. Each push is decoded; pings get a `/pong`, invites and vouches are accepted, and a
+  chat message that passes the wake policy runs one turn, whose reply is posted once where
+  participation allows (a thread off the message in a channel). A failed turn is logged and
+  dropped rather than pausing the account.
+- **Poll transport** (`src/transports/poll/`) — a sequential, cancelable `poll_work` long-poll:
+  one turn per item, published at most once via `reply_with`. Backoff on transient failures;
+  an auth failure or a failed publish pauses the account.
+- **Turn** (`src/turn.ts`) — one turn per work item, session isolated per
+  account/channel/thread; only `final` dispatcher text is collected. `commandAuthorized` is
+  only ever true for the backchannel.
+- **Tools** (`src/filament-tools.ts`) — the Filament MCP tool surface, minus `poll_work` and the
+  two push-token tools, registered as `filament_`-prefixed OpenClaw tools from a reviewed
+  snapshot. See "Tools exposed to the agent" below.
 
-See [`ROADMAP.md`](ROADMAP.md) for status, the acceptance criteria this PoC does and does not
-meet yet, and what's next.
+See [`ROADMAP.md`](ROADMAP.md) for status and what's next.
 
 ## Requirements
 
@@ -178,7 +171,7 @@ bindings: [
 ],
 ```
 
-Every account runs its own poll loop and bearer. The `filament_*` tools are
+Every account runs its own transport and bearer. The `filament_*` tools are
 registered as factories, so each OpenClaw agent's tools call Filament as *its*
 account (found through its binding), and an agent with no Filament account gets
 none. The legacy top-level `connectToken` is still read, as the `default`
@@ -220,7 +213,7 @@ openclaw plugins enable filament-fcm
 openclaw plugins list --enabled
 ```
 
-Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (bearer resolved/exchanged, identity resolved), followed by `filament-poll:` lines once the poll loop starts.
+Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (bearer resolved/exchanged, identity resolved), then `filament: transport fcm` (or `poll`), and `filament-fcm: push token registered` (or `filament-poll:` lines) once the transport is up.
 
 > Replace the repository URL above if you host this somewhere other than
 > `github.com/filament-dm/filament-openclaw`.
@@ -307,18 +300,17 @@ openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --f
 
 | Config key / env var                              | Meaning                                                                 |
 | --------------------------------------------------- | ------------------------------------------------------------------------ |
-| `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | A connect token (`fmcp_…`, exchanged once and the bearer persisted) or an already-issued bearer, used directly. |
+| `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | The connect token (`fmcp_…`). `fcm` uses it as the bearer; `poll` exchanges it once and persists the bearer. |
 | `mcpUrl` (config) / `FILAMENT_MCP_URL` (env)         | Filament's `/mcp/agents` endpoint (defaults to production; set for staging/local). |
-| `pollWaitSeconds` (config)                           | How long (seconds) each `poll_work` long-poll blocks server-side waiting for work. Default **30**, clamped to `[1, 60]`. 30 matches the server's own default and stays clear of ~60s intermediary timeouts (e.g. the `filament-dev.local` nginx dev proxy), which would otherwise race the server's own wait and surface as a spurious `HTTP 504`. |
+| `transport` (config) / `FILAMENT_TRANSPORT` (env)    | `fcm` (default) or `poll`. install.sh writes it from `FILAMENT_TRANSPORT`. |
+| `firebase` (config) / `FILAMENT_FIREBASE_*` (env)    | `{projectId, apiKey, appId, messagingSenderId}` of the Firebase project the homeserver sends through; each field defaults to the env var, then production. Only `fcm` reads it. |
+| `pollWaitSeconds` (config)                           | How long (seconds) each `poll_work` long-poll blocks server-side waiting for work. Default **30**, clamped to `[1, 60]`. 30 matches the server's own default and stays clear of ~60s intermediary timeouts (e.g. the `filament-dev.local` nginx dev proxy), which would otherwise race the server's own wait and surface as a spurious `HTTP 504`. Only `poll` reads it. |
 
-Local setup (against a local Synapse with `poll_work` behind the `agent_poll_work` feature
-flag — see `synapse-local-dev.md` and `filament feature-flag enable agent_poll_work --user
-<agent>` in the workspace root):
-
-```bash
-FILAMENT_MCP_TOKEN=fmcp_... FILAMENT_MCP_URL=http://localhost:8008/mcp/agents \
-  openclaw plugins enable filament-fcm
-```
+A local cluster sends FCM through the dev Firebase project, not production: take its
+`project_id`, `api_key`, `app_id` and `sender_id` from the `hosting.*.firebase` block of the
+inflated `homeserver.yaml` and pass them as `FILAMENT_FIREBASE_*` to install.sh (or set
+`firebase` in the plugin config). With production's project the token registers fine and is
+never delivered to.
 
 ## Tools exposed to the agent
 
@@ -336,12 +328,13 @@ registry before any session can resolve its toolset. After connect, `tools/list`
 once, but only to **log drift** (`filament-tools: server exposes N tool(s) not in the snapshot…`
 / `snapshot has M tool(s) the server no longer serves…`) — never to register anything at
 runtime any more. Real drift needs a human to re-run `npm run snapshot:tools` and review the
-diff. This is on top of, and separate from, the poll loop's own `reply_with` publish (see
-"Architecture" and "Interaction with the poll loop" below).
+diff. This is on top of, and separate from, the transport's own publish of the turn's final
+text (see "Architecture" and "Interaction with the transport's own publish" below).
 
-**Excluded:** `poll_work` (the poll loop owns it exclusively — the agent must never call it) and
-`register_push_token`/`list_push_tokens` (FCM harness plumbing; this plugin uses `poll_work`, not
-FCM, so these tools have nothing to register). Everything else in the reviewed snapshot —
+**Excluded:** `poll_work` (the poll transport owns it exclusively — the agent must never call it)
+and `register_push_token`/`list_push_tokens` (transport plumbing: the FCM transport registers its
+own token, and Filament keeps one per agent, so an agent registering another would steal its
+pushes). Everything else in the reviewed snapshot —
 **including** `post_message`, `reply_in_thread`, `message_principal`, `accept_invite`,
 `accept_vouch` — is registered (`TOOL_SNAPSHOT`/`KNOWN_TOOL_NAMES` in `src/filament-tools.ts`,
 mirrored in `openclaw.plugin.json`'s `contracts.tools` — a unit test asserts the two stay equal)
@@ -363,38 +356,44 @@ reasoning and its documented limitation):
 | --- | --- | --- |
 | **Read** | Always allowed, any turn. | Every tool whose live schema sets `annotations.readOnlyHint: true` — `list_channels`, `list_loop_channels`, `get_channel_details`, `get_recent_messages`, `search_messages`, `get_thread`, `get_user_profile`, `search_members`, `list_mentions`, `list_reactions`, `list_pending_invites`, `list_vouches`, `get_self`, `get_backchannel`. |
 | **Ring 0** (principal-only) | Allowed only during a turn dispatched from the backchannel (`item.is_backchannel === true`). | `set_profile` — Filament's own tool declares this `agent self-configuration, not channel content` (synapse `tools_config.py`), matching `filament-hermes/docs/agent-boundaries.md` §5's "tools that change the agent are Ring 0 and principal-only". A tool whose `readOnlyHint` is missing or malformed also falls here (fail closed). |
-| **Write** | Allowed during any turn this plugin's own poll loop dispatched (backchannel or group) — denied if called with no active Filament turn at all (e.g. from a different channel's turn). | Everything else: `post_message`, `message_principal`, `reply_in_thread`, `react`, `unreact`, `mark_read`, `set_status`, `accept_invite`, `accept_vouch`, `join_channel`, `leave_channel`, `create_channel`, `rechat`, `quote`, `set_channel_notification_level`. |
+| **Write** | Allowed during any turn this plugin's own transport dispatched (backchannel or group) — denied if called with no active Filament turn at all (e.g. from a different channel's turn). | Everything else: `post_message`, `message_principal`, `reply_in_thread`, `react`, `unreact`, `mark_read`, `set_status`, `accept_invite`, `accept_vouch`, `join_channel`, `leave_channel`, `create_channel`, `rechat`, `quote`, `set_channel_notification_level`. |
 
 A denied or failed call throws (OpenClaw's own tool convention — "throw on failure instead of
 encoding errors in content", per its SDK types); calls are logged as
 `filament-tools: filament_<name> ok|denied|failed`, without request/response bodies.
 
-### Interaction with the poll loop's own publish
+### Interaction with the transport's own publish
 
-The poll loop still attempts exactly one `reply_with` publish per item after the turn finishes
-(see "Architecture"). If the model already answered the item itself via a tool call
-(`filament_post_message`/`filament_reply_in_thread`/`filament_message_principal`) during the
-turn, Filament's work ledger rejects the loop's own publish as a duplicate
-(`work_ledger.AlreadyAnswered`, surfaced as `{"error": "You have already answered this
-message…"}` — HTTP 200, no `isError`). `src/channel.ts` recognizes that specific message and
-treats the item as `published` (logging `filament: item already answered by a tool call; skipping
-publish`) rather than as a publish failure.
+Both transports post a turn's final text once, after the turn finishes. If the model already
+answered itself via a tool call (`filament_post_message`/`filament_reply_in_thread`/
+`filament_message_principal`) during the turn:
+
+- **poll:** Filament's work ledger rejects the transport's own publish as a duplicate
+  (`work_ledger.AlreadyAnswered`, surfaced as `{"error": "You have already answered this
+  message…"}` — HTTP 200, no `isError`). `src/transports/poll/index.ts` recognizes that message
+  and treats the item as `published` rather than as a publish failure.
+- **fcm:** there is no ledger, so the turn itself records where its write tools replied
+  (`endFilamentTurn` in `src/filament-tools.ts`), and the transport skips its own post when that
+  conversation was already answered (`filament-fcm: a tool already replied to …`).
 
 ## Local setup and limitations
 
 This PoC needs a live Filament gateway to exercise end to end; nothing here starts one. Known
 limitations (see `ROADMAP.md` for the full detail and the acceptance criteria this maps to):
 
-- **`poll_work` itself carries no invites/vouches.** It only ever returns `m.room.message` work,
-  so an agent that isn't already in a conversation has no way to join one through the poll
-  transport alone. There is no more background sweep for this — `filament_accept_invite` and
-  `filament_accept_vouch` are ordinary tools the agent calls itself (see "Tools exposed to the
-  agent"), so joining a loop is a decision made in the same turn as any other action, not a
-  standing policy switch.
-- **The reachability probe may report `push_path_silent`.** Filament's probe still pings over
-  FCM; a poll-only agent has no FCM registration to answer it, so the probe's health signal is
-  stale for this transport (documented, not fixed here).
-- **Publish recovery is not durable.** A publish that fails or returns an ambiguous result
+- **FCM: the wake policy is the plugin's.** It is the minimum of Hermes' (backchannel, DMs,
+  mentions, replies to the agent, follow-ups in an engaged thread; agents never wake each other
+  without a mention). Engaged threads are kept in memory, so a restart forgets them.
+- **FCM: a failed turn is dropped.** With no ledger to redeliver it, the transport logs it and
+  moves on instead of pausing the account.
+- **FCM: the Firebase project must match the homeserver's.** See "Configuration".
+- **poll: `poll_work` itself carries no invites/vouches.** It only ever returns `m.room.message`
+  work, so a poll account joins loops only through `filament_accept_invite` /
+  `filament_accept_vouch`, which the agent calls itself. The FCM transport accepts them as they
+  arrive, as the original plugin did.
+- **poll: the reachability probe may report `push_path_silent`.** Filament's probe pings over
+  FCM; a poll account has no FCM registration to answer it.
+- **poll: publish recovery is not durable.** A publish that fails or returns an ambiguous result
   pauses the account with a diagnostic rather than guessing whether the reply went through;
   there is no cross-restart/cross-worker exactly-once guarantee (the server-side work ledger is
   per-process and expires after 10 minutes).
