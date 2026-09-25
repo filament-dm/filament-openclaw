@@ -30,6 +30,14 @@
 # token becomes a "gateway" control account the Filament app then drives to
 # connect this gateway's agents with no further terminal step.
 #
+# Transport: FCM pushes by default — what production Filament serves.
+# FILAMENT_TRANSPORT=poll switches this gateway's accounts to the poll_work
+# long-poll instead (needs a synapse carrying ENG-1392); FILAMENT_TRANSPORT=fcm
+# switches them back. Unset leaves whatever the gateway already has. For a
+# homeserver that sends through another Firebase project than production
+# (local/dev), pass its FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID and
+# _SENDER_ID — the same names filament-hermes reads.
+#
 # Optional env: FILAMENT_MCP_URL (staging/local MCP endpoint instead of
 # production), PLUGIN_REF (branch/tag/commit to install, default: main),
 # OPENCLAW_PLUGIN_SOURCE (full override of the install spec),
@@ -72,6 +80,13 @@ elif [ -n "$TARGET_AGENT" ]; then
 else
   ACCOUNT_ID="default"
 fi
+
+TRANSPORT="$(printf '%s' "${FILAMENT_TRANSPORT:-}" | tr '[:upper:]' '[:lower:]')"
+case "$TRANSPORT" in
+  ""|fcm|poll) ;;
+  *) err "FILAMENT_TRANSPORT='$FILAMENT_TRANSPORT' is not a transport (fcm or poll)." ;;
+esac
+export TRANSPORT
 
 # --- Preflight -----------------------------------------------------------------
 command -v openclaw >/dev/null 2>&1 || err \
@@ -236,6 +251,23 @@ else:
     plugin_cfg["accounts"] = {account: {"connectToken": token}}
 if mcp_url:
     plugin_cfg["mcpUrl"] = mcp_url
+# Top level, so every account on this gateway — including the ones the
+# gateway control account adds later — uses the same transport and project.
+transport = os.environ.get("TRANSPORT", "")
+if transport:
+    plugin_cfg["transport"] = transport
+firebase = {
+    key: os.environ[name].strip()
+    for key, name in (
+        ("projectId", "FILAMENT_FIREBASE_PROJECT_ID"),
+        ("apiKey", "FILAMENT_FIREBASE_API_KEY"),
+        ("appId", "FILAMENT_FIREBASE_APP_ID"),
+        ("messagingSenderId", "FILAMENT_FIREBASE_SENDER_ID"),
+    )
+    if os.environ.get(name, "").strip()
+}
+if firebase:
+    plugin_cfg["firebase"] = firebase
 
 patch = {"plugins": {"entries": {plugin_id: {"config": plugin_cfg}}}}
 notes = []
@@ -271,7 +303,7 @@ printf '%s\n' "$PATCH_AND_NOTES" | tail -n +2 | while IFS= read -r note; do
   [ -n "$note" ] && warn "$note"
 done
 
-info "Saving the connect token${TARGET_AGENT:+ and binding agent '$TARGET_AGENT' to Filament account '$ACCOUNT_ID'} ..."
+info "Saving the connect token${TARGET_AGENT:+ and binding agent '$TARGET_AGENT' to Filament account '$ACCOUNT_ID'}${TRANSPORT:+ (transport: $TRANSPORT)} ..."
 REPLACE_ARGS=()
 [ -n "$TARGET_AGENT" ] && REPLACE_ARGS=(--replace-path bindings)
 # ${arr[@]+...}: bash 3.2 (macOS) treats an empty array as unset under set -u.
