@@ -27,9 +27,13 @@
  * backchannel of this account, every message in it is from the principal
  * `get_self` returned, and the room is that principal's `ccRoomId`.
  *
+ * Either transport delivers the commands: poll_work items, or backchannel
+ * pushes over FCM. Consuming is a read receipt (`mark_read`) in both.
+ *
  * Trade-off, accepted for the PoC: the connect token travels as a message
- * body, so it stays in the room's history. It is single-use and the new
- * account exchanges it within seconds, after which the server has revoked it.
+ * body, so it stays in the room's history — and over FCM, in a push payload.
+ * On a poll account it is single-use and exchanged within seconds, after
+ * which the server has revoked it; an FCM account uses it as its bearer.
  * See plans/openclaw/rfc-009-gateway-agent-inventory-and-picker.md, option C.
  */
 import {
@@ -39,7 +43,7 @@ import {
   GATEWAY_ACCOUNT_ID,
   PLUGIN_ID,
 } from "./accounts.js";
-import type { DispatchOutcome, PollWorkItem } from "./poll-work.js";
+import type { DispatchOutcome, WorkItem } from "./work-item.js";
 
 /** Tool-inventory `origin` for one OpenClaw agent entry. The app filters on it. */
 export const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
@@ -310,7 +314,7 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
 
 /** What the control handler needs from its surroundings; all injectable for tests. */
 export interface GatewayItemContext {
-  item: PollWorkItem;
+  item: WorkItem;
   principal: string | undefined;
   ccRoomId: string | undefined;
   /** The live gateway config, to check the agent exists. */

@@ -1,10 +1,11 @@
 /**
- * Work-item → agent-turn dispatch for the Filament channel.
+ * Work-item → agent-turn dispatch for the Filament channel, shared by both
+ * transports.
  *
- * `poll_work` delivers a work item, not a raw channel message: it is already
- * grouped by `(channel_id, thread_id)`, carries every unread `messages[]` for
- * that spot, and pre-resolves the reply destination in `reply_with`. There is
- * no bundled per-kind facade for this shape, so this module composes the same
+ * A work item (src/work-item.ts) is grouped by `(channel_id, thread_id)` and
+ * carries the unread `messages[]` for that spot — poll_work delivers it that
+ * way, and the FCM transport builds one per push. There is no bundled
+ * per-kind facade for this shape, so this module composes the same
  * SDK primitives OpenClaw's own group-channel path uses — route → envelope →
  * context → buffered-block dispatch — for BOTH direct/backchannel and
  * group/channel items, distinguished only by `peerKind`.
@@ -25,7 +26,7 @@ import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
 import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 
-import type { PollWorkMessage } from "./poll-work.js";
+import type { WorkMessage } from "./work-item.js";
 
 export interface DispatchWorkItemParams {
   // The channelRuntime surface + gateway config from the channel's startAccount ctx.
@@ -37,14 +38,13 @@ export interface DispatchWorkItemParams {
   channelLabel: string;
   accountId: string;
   /** `"direct"` collapses to the agent's main session (backchannel/true-DM);
-   * `"group"` gets a per-channel session. poll_work items carry no
-   * conversation-type flag beyond `is_backchannel`, so the caller decides. */
+   * `"group"` gets a per-channel session. The caller decides from the item. */
   peerKind: "direct" | "group";
   /** The room the item belongs to (`item.channel_id`). */
   channelId: string;
   /** `item.thread_id`; when present the session is further scoped per-thread. */
   threadId: string | null;
-  messages: PollWorkMessage[];
+  messages: WorkMessage[];
   recipientAddress: string;
   conversationLabel: string;
   /** Item-level authorization — true only for `is_backchannel` items. */
@@ -64,14 +64,14 @@ export interface DispatchTurnResult {
 }
 
 /** Render one item's messages, sender + event_id preserved, in order. */
-function renderMessages(messages: PollWorkMessage[]): string {
+function renderMessages(messages: WorkMessage[]): string {
   return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
 }
 
 /**
  * Route, envelope, and run one work item's agent turn, collecting only
- * `final` text callbacks (never publishing here — the caller publishes at
- * most once via `reply_with` after this resolves; see src/channel.ts).
+ * `final` text callbacks (never publishing here — the transport publishes
+ * at most once after this resolves; see src/transports/).
  */
 export async function dispatchWorkItemTurn(
   params: DispatchWorkItemParams,

@@ -1,123 +1,33 @@
 /**
- * Filament connect sequence — the client half of onboarding.
+ * Filament connect sequence — the client half of onboarding, shared by both
+ * transports:
  *
- * PoC scope (RFC-007, "OpenClaw as a `poll_work` channel plugin"):
- *   1. Resolve the configured token. If it's a connect token (`fmcp_…`),
- *      exchange it once for a bearer via the token-exchange grant and persist
- *      the result; if a persisted bearer already exists, reuse it and skip
- *      the exchange entirely. If the configured token is already a bearer,
- *      use it directly.
- *   2. initialize + get_self, purely as a read-only verification step (learns
- *      the agent's identity: principal, backchannel room, mxid).
+ *   1. Resolve the bearer (src/credentials.ts): the connect token itself for
+ *      `fcm`, a one-time exchange for `poll`.
+ *   2. initialize + get_self until the agent is finalized; learn its identity
+ *      (principal, backchannel room, mxid) and persist it per account.
  *   3. Presence heartbeat loop (independent 20s interval, cancelled on abort).
  *
- * Removed from the old FCM-based sequence: FCM registration, handing Filament
- * a push token, the initial invite/vouch backlog sweep, and the first-contact
- * greeting side effect. The poll loop (src/poll-work.ts) now owns all inbound
- * dispatch; connect.ts only proves the credential works and learns identity.
+ * Everything transport-specific — registering a push token, the poll loop,
+ * the invite sweep, the first-contact greeting — lives in src/transports/.
  */
-import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
+import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
+import {
+  type BearerPersistence,
+  ConnectAbortedError,
+  type CredentialStrategy,
+  resolveBearer,
+} from "./credentials.js";
 import { sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
-import { loadBearer, saveBearer, saveIdentity } from "./token-store.js";
+import { saveIdentity } from "./token-store.js";
 
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+export { ConnectAbortedError };
+
 const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;
 const HEARTBEAT_INTERVAL_MS = 20_000; // < 30s presence-decay window
-
-const CONNECT_TOKEN_PREFIX = "fmcp_";
-const EXCHANGE_MAX_ATTEMPTS = 40; // mirrors the get_self finalization wait
-const EXCHANGE_INTERVAL_MS = 3_000;
-const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
-const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
-
-/** Bounds for the configurable `pollWaitSeconds`: server max is 60, and a
- *  known intermediary (the filament-dev.local nginx dev proxy) times out
- *  around 60s, so nothing above that is usable end to end. */
-export const MIN_POLL_WAIT_SECONDS = 1;
-export const MAX_POLL_WAIT_SECONDS = 60;
-
-export interface McpSettings {
-  /**
-   * The raw connect-token input: a string, a `${ENV}` shorthand, or a SecretRef
-   * object. Resolved to a concrete token by the caller (which has the gateway
-   * config needed to resolve file/exec refs). Undefined = not configured.
-   */
-  tokenInput?: unknown;
-  mcpUrl: string;
-  /**
-   * The `poll_work` `wait_seconds` to request, already clamped to
-   * [MIN_POLL_WAIT_SECONDS, MAX_POLL_WAIT_SECONDS]. Undefined when not
-   * configured (or not a finite number) — the caller falls back to
-   * poll-work.ts's own default.
-   */
-  pollWaitSeconds?: number;
-}
-
-/** Parse and clamp a configured `pollWaitSeconds` value; undefined if absent/invalid. */
-function clampPollWaitSeconds(raw: unknown): number | undefined {
-  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
-  if (!Number.isFinite(n)) return undefined;
-  return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
-}
-
-/**
- * Settings for one channel account: its own `accounts.<id>` entry layered
- * over the top-level fields (so `mcpUrl`/`pollWaitSeconds` can be set once
- * for every account). The `default` account is the top-level shape itself.
- */
-export function resolveAccountSettings(
-  pluginConfig: unknown,
-  accountId: string,
-  env: NodeJS.ProcessEnv = process.env,
-): McpSettings {
-  const cfg = asRecord(pluginConfig);
-  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
-  if (accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)) {
-    return resolveMcpSettings(cfg, env);
-  }
-  const { accounts: _accounts, connectToken: _legacyToken, ...shared } = cfg;
-  // The env token is the default account's; never let it stand in for another.
-  return resolveMcpSettings({ ...shared, ...entry }, { ...env, FILAMENT_MCP_TOKEN: "" });
-}
-
-/** The config path a secret-input resolver reports for an account's token. */
-export function connectTokenConfigPath(
-  pluginId: string,
-  accountId: string,
-  pluginConfig: unknown,
-): string {
-  const entry = asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]);
-  return accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)
-    ? `plugins.entries.${pluginId}.config.connectToken`
-    : `plugins.entries.${pluginId}.config.accounts.${accountId}.connectToken`;
-}
-
-/**
- * Resolve the MCP endpoint, the connect-token *input*, and the poll wait
- * from plugin config, falling back to env (`FILAMENT_MCP_TOKEN`/
- * `FILAMENT_MCP_URL`) then the prod default. A present token input is the
- * gate that enables connect.
- */
-export function resolveMcpSettings(
-  pluginConfig: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): McpSettings {
-  const cfg =
-    pluginConfig && typeof pluginConfig === "object"
-      ? (pluginConfig as Record<string, unknown>)
-      : {};
-  const cfgToken = cfg.connectToken;
-  const hasCfgToken = hasTokenInput(cfgToken);
-  const envToken = env.FILAMENT_MCP_TOKEN?.trim();
-  const tokenInput = hasCfgToken ? cfgToken : envToken || undefined;
-  const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
-  return { tokenInput, mcpUrl, pollWaitSeconds };
-}
 
 /** A running connection: stop the heartbeat, or use the MCP client for outbound calls. */
 export interface ConnectHandle {
@@ -138,135 +48,8 @@ export interface RunConnectOptions {
   fetchImpl?: typeof fetch;
   /** Overridable for tests (defaults to the real token-store). */
   bearerPersistence?: BearerPersistence;
-}
-
-/** Thrown when connect cannot proceed (auth rejected, or aborted). */
-export class ConnectAbortedError extends Error {
-  constructor() {
-    super("connect aborted");
-    this.name = "ConnectAbortedError";
-  }
-}
-
-/**
- * Exchange a connect token (`fmcp_…`) for a bearer via RFC 8693 token-exchange
- * (see synapse/synapse/plugins/agents_mcp/oauth_token.py `_exchange_connect_token`,
- * ~L339-414). The subject is single-use: on success the server has already
- * revoked it, so the returned bearer is the only usable credential from here
- * on and MUST be persisted before this function returns.
- *
- * Retries only on "authorization_pending" (the agent isn't finalized in the
- * Filament app yet) and on transient HTTP failures. A rejected/already-used
- * subject token is NOT retried — see the module header on ambiguous rotation.
- */
-export async function exchangeConnectToken(
-  mcpUrl: string,
-  connectToken: string,
-  log: (message: string) => void,
-  abortSignal: AbortSignal | undefined,
-  fetchImpl: typeof fetch,
-): Promise<string> {
-  const tokenUrl = `${mcpUrl}/oauth/token`;
-  const body = new URLSearchParams({
-    grant_type: TOKEN_EXCHANGE_GRANT,
-    subject_token: connectToken,
-    subject_token_type: ACCESS_TOKEN_TYPE,
-  }).toString();
-
-  for (let attempt = 1; attempt <= EXCHANGE_MAX_ATTEMPTS; attempt++) {
-    if (abortSignal?.aborted) throw new ConnectAbortedError();
-    let status: number;
-    let json: Record<string, unknown> | null;
-    try {
-      const response = await fetchImpl(tokenUrl, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-        signal: abortSignal,
-      });
-      status = response.status;
-      try {
-        json = (await response.json()) as Record<string, unknown>;
-      } catch {
-        json = null;
-      }
-    } catch (error) {
-      if (abortSignal?.aborted) throw new ConnectAbortedError();
-      log(`filament-connect: token exchange request failed (attempt ${attempt}): ${String(error)}`);
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-
-    if (status === 200 && json && typeof json.access_token === "string") {
-      log("filament-connect: connect token exchanged for a bearer");
-      return json.access_token;
-    }
-
-    const errorCode = typeof json?.error === "string" ? json.error : undefined;
-    if (status === 400 && errorCode === "authorization_pending") {
-      log(
-        `filament-connect: agent not finalized yet (attempt ${attempt}/${EXCHANGE_MAX_ATTEMPTS}); retrying`,
-      );
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-    if (status >= 500 || status === 429) {
-      log(`filament-connect: token exchange transient failure (HTTP ${status}); retrying`);
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-
-    // 401 invalid_grant (already exchanged/expired), 403, or any other
-    // rejection: never blindly retry — the subject may have been consumed by
-    // a previous run that crashed before persisting the result (see the
-    // plan's "ambiguous rotation" note). Surface it and let the operator act.
-    throw new Error(
-      `connect token exchange rejected: HTTP ${status} ${errorCode ?? json?.error_description ?? "unknown error"}`,
-    );
-  }
-  throw new Error("connect token exchange did not complete within the retry window");
-}
-
-export interface BearerPersistence {
-  load: (connectToken: string) => string | undefined;
-  save: (connectToken: string, bearer: string) => void;
-}
-
-const defaultBearerPersistence: BearerPersistence = { load: loadBearer, save: saveBearer };
-
-/**
- * Resolve the bearer to use for MCP calls, exchanging/persisting as needed.
- *
- * Three cases:
- *   - `configuredToken` isn't a connect token (`fmcp_…`) at all: it's already
- *     a bearer, use it directly.
- *   - it is a connect token AND a bearer is already persisted under THIS
- *     token's own key: reuse it, no exchange.
- *   - otherwise (new/unseen connect token): exchange it and persist the
- *     result under its key, so a later run with the same token skips the
- *     exchange but a *different* token never reuses someone else's bearer.
- */
-export async function resolveBearer(
-  mcpUrl: string,
-  configuredToken: string,
-  log: (message: string) => void,
-  abortSignal: AbortSignal | undefined,
-  fetchImpl: typeof fetch,
-  persistence: BearerPersistence = defaultBearerPersistence,
-): Promise<string> {
-  if (!configuredToken.startsWith(CONNECT_TOKEN_PREFIX)) {
-    // Already a bearer.
-    return configuredToken;
-  }
-  const persisted = persistence.load(configuredToken);
-  if (persisted) {
-    log("filament-connect: persisted bearer found for this connect token; skipping exchange");
-    return persisted;
-  }
-  log("filament-connect: new connect token; exchanging");
-  const bearer = await exchangeConnectToken(mcpUrl, configuredToken, log, abortSignal, fetchImpl);
-  persistence.save(configuredToken, bearer);
-  return bearer;
+  /** How the configured token becomes a bearer; see src/credentials.ts. */
+  credential?: CredentialStrategy;
 }
 
 /**
@@ -284,6 +67,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     abortSignal,
     fetchImpl = fetch,
     bearerPersistence,
+    credential = "exchange",
   } = opts;
 
   const bearer = await resolveBearer(
@@ -292,7 +76,8 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     log,
     abortSignal,
     fetchImpl,
-    bearerPersistence ?? defaultBearerPersistence,
+    bearerPersistence,
+    credential,
   );
   if (abortSignal?.aborted) throw new ConnectAbortedError();
 

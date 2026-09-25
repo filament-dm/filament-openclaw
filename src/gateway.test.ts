@@ -14,7 +14,7 @@ import {
   type GatewayItemContext,
   type GatewayStatus,
 } from "./gateway.js";
-import type { PollWorkItem } from "./poll-work.js";
+import type { WorkItem } from "./work-item.js";
 
 const PRINCIPAL = "@u_test1:filament-dev.local";
 const CC_ROOM = "!gateway-cc:filament-dev.local";
@@ -31,18 +31,17 @@ const gatewayConfig = {
   bindings: [{ agentId: "reviewer", match: { channel: "filament", accountId: "reviewer" } }],
 };
 
-function item(body: string, overrides: Partial<PollWorkItem> = {}): PollWorkItem {
+function item(body: string, overrides: Partial<WorkItem> = {}): WorkItem {
   return {
     channel_id: CC_ROOM,
     thread_id: null,
     is_backchannel: true,
     messages: [{ event_id: "$e1", sender: PRINCIPAL, body, ts: 1 }],
-    reply_with: { tool: "post_message", args: { channel: CC_ROOM } },
     ...overrides,
   };
 }
 
-function harness(body: string, overrides: Partial<PollWorkItem> = {}) {
+function harness(body: string, overrides: Partial<WorkItem> = {}) {
   const consumed: string[] = [];
   const statuses: GatewayStatus[] = [];
   const drafts: Record<string, unknown>[] = [];
@@ -322,7 +321,7 @@ test("handleGatewayItem: commands from anyone but the principal, or outside the 
     },
     { is_backchannel: false },
     { channel_id: "!other:x" },
-  ] satisfies Partial<PollWorkItem>[]) {
+  ] satisfies Partial<WorkItem>[]) {
     const h = harness(`/filament connect writer ${TOKEN}`, overrides);
     assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
     assert.equal(h.drafts.length, 0);

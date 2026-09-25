@@ -1,7 +1,7 @@
 /**
- * The `poll_work` long-poll loop: the transport this plugin now uses instead
- * of FCM. Runs inside the channel's `startAccount` (see src/channel.ts),
- * sequential and cancelable via the gateway's `ctx.abortSignal`.
+ * The `poll_work` long-poll loop: the opt-in transport (`transport: "poll"`).
+ * Runs inside the poll transport (./index.ts), sequential and cancelable via
+ * the gateway's `ctx.abortSignal`.
  *
  *   poll_work({cursor, ack, wait_seconds, max_items: 1})
  *     → for each item: dispatch one agent turn → publish once → (loop)
@@ -15,26 +15,24 @@
  * header for why that's an acceptable PoC tradeoff: a restart re-scans from
  * scratch, and already-answered items are skipped server-side regardless.
  */
-import { type CallOptions, type FilamentMcpClient, POLL_TIMEOUT_MARGIN_MS } from "./mcp-client.js";
-import { nextBackoffMs, sleepAbortable } from "./util.js";
+import {
+  type CallOptions,
+  type FilamentMcpClient,
+  POLL_TIMEOUT_MARGIN_MS,
+} from "../../mcp-client.js";
+import { nextBackoffMs, sleepAbortable } from "../../util.js";
+import type { DispatchOutcome, WorkItem, WorkMessage } from "../../work-item.js";
 
-export interface PollWorkMessage {
-  event_id: string;
-  sender: string;
-  body: string;
-  ts: number;
-}
+export type { DispatchOutcome };
+
+export type PollWorkMessage = WorkMessage;
 
 export interface ReplyWithSpec {
   tool: string;
   args: Record<string, unknown>;
 }
 
-export interface PollWorkItem {
-  channel_id: string;
-  thread_id: string | null;
-  is_backchannel: boolean;
-  messages: PollWorkMessage[];
+export interface PollWorkItem extends WorkItem {
   reply_with: ReplyWithSpec | null;
 }
 
@@ -94,13 +92,6 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
     acknowledged: typeof d.acknowledged === "number" ? d.acknowledged : 0,
   };
 }
-
-/** What happened when an item was dispatched. */
-export type DispatchOutcome =
-  | { kind: "published" }
-  | { kind: "silent" } // deliberate silence, evidenced by the SDK: ack it.
-  | { kind: "ambiguous" } // no finals, no explicit skip signal, no error: leave it be (no ack, no pause).
-  | { kind: "error"; diagnostic: string }; // no ack, no publish; the account pauses.
 
 /** Minimal client surface the loop needs (matches FilamentMcpClient). */
 export interface PollClient {

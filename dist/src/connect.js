@@ -1,122 +1,15 @@
-import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
+import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
+import {
+  ConnectAbortedError,
+  resolveBearer
+} from "./credentials.js";
 import { sleepAbortable } from "./util.js";
 import { FilamentMcpClient } from "./mcp-client.js";
 import { classifyGetSelf } from "./onboarding-core.js";
-import { loadBearer, saveBearer, saveIdentity } from "./token-store.js";
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+import { saveIdentity } from "./token-store.js";
 const GETSELF_MAX_ATTEMPTS = 40;
 const GETSELF_INTERVAL_MS = 3e3;
 const HEARTBEAT_INTERVAL_MS = 2e4;
-const CONNECT_TOKEN_PREFIX = "fmcp_";
-const EXCHANGE_MAX_ATTEMPTS = 40;
-const EXCHANGE_INTERVAL_MS = 3e3;
-const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
-const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
-const MIN_POLL_WAIT_SECONDS = 1;
-const MAX_POLL_WAIT_SECONDS = 60;
-function clampPollWaitSeconds(raw) {
-  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
-  if (!Number.isFinite(n)) return void 0;
-  return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
-}
-function resolveAccountSettings(pluginConfig, accountId, env = process.env) {
-  const cfg = asRecord(pluginConfig);
-  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
-  if (accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken)) {
-    return resolveMcpSettings(cfg, env);
-  }
-  const { accounts: _accounts, connectToken: _legacyToken, ...shared } = cfg;
-  return resolveMcpSettings({ ...shared, ...entry }, { ...env, FILAMENT_MCP_TOKEN: "" });
-}
-function connectTokenConfigPath(pluginId, accountId, pluginConfig) {
-  const entry = asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]);
-  return accountId === DEFAULT_ACCOUNT_ID && !hasTokenInput(entry.connectToken) ? `plugins.entries.${pluginId}.config.connectToken` : `plugins.entries.${pluginId}.config.accounts.${accountId}.connectToken`;
-}
-function resolveMcpSettings(pluginConfig, env = process.env) {
-  const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
-  const cfgToken = cfg.connectToken;
-  const hasCfgToken = hasTokenInput(cfgToken);
-  const envToken = env.FILAMENT_MCP_TOKEN?.trim();
-  const tokenInput = hasCfgToken ? cfgToken : envToken || void 0;
-  const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  const pollWaitSeconds = clampPollWaitSeconds(cfg.pollWaitSeconds);
-  return { tokenInput, mcpUrl, pollWaitSeconds };
-}
-class ConnectAbortedError extends Error {
-  constructor() {
-    super("connect aborted");
-    this.name = "ConnectAbortedError";
-  }
-}
-async function exchangeConnectToken(mcpUrl, connectToken, log, abortSignal, fetchImpl) {
-  const tokenUrl = `${mcpUrl}/oauth/token`;
-  const body = new URLSearchParams({
-    grant_type: TOKEN_EXCHANGE_GRANT,
-    subject_token: connectToken,
-    subject_token_type: ACCESS_TOKEN_TYPE
-  }).toString();
-  for (let attempt = 1; attempt <= EXCHANGE_MAX_ATTEMPTS; attempt++) {
-    if (abortSignal?.aborted) throw new ConnectAbortedError();
-    let status;
-    let json;
-    try {
-      const response = await fetchImpl(tokenUrl, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body,
-        signal: abortSignal
-      });
-      status = response.status;
-      try {
-        json = await response.json();
-      } catch {
-        json = null;
-      }
-    } catch (error) {
-      if (abortSignal?.aborted) throw new ConnectAbortedError();
-      log(`filament-connect: token exchange request failed (attempt ${attempt}): ${String(error)}`);
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-    if (status === 200 && json && typeof json.access_token === "string") {
-      log("filament-connect: connect token exchanged for a bearer");
-      return json.access_token;
-    }
-    const errorCode = typeof json?.error === "string" ? json.error : void 0;
-    if (status === 400 && errorCode === "authorization_pending") {
-      log(
-        `filament-connect: agent not finalized yet (attempt ${attempt}/${EXCHANGE_MAX_ATTEMPTS}); retrying`
-      );
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-    if (status >= 500 || status === 429) {
-      log(`filament-connect: token exchange transient failure (HTTP ${status}); retrying`);
-      await sleepAbortable(EXCHANGE_INTERVAL_MS, abortSignal);
-      continue;
-    }
-    throw new Error(
-      `connect token exchange rejected: HTTP ${status} ${errorCode ?? json?.error_description ?? "unknown error"}`
-    );
-  }
-  throw new Error("connect token exchange did not complete within the retry window");
-}
-const defaultBearerPersistence = { load: loadBearer, save: saveBearer };
-async function resolveBearer(mcpUrl, configuredToken, log, abortSignal, fetchImpl, persistence = defaultBearerPersistence) {
-  if (!configuredToken.startsWith(CONNECT_TOKEN_PREFIX)) {
-    return configuredToken;
-  }
-  const persisted = persistence.load(configuredToken);
-  if (persisted) {
-    log("filament-connect: persisted bearer found for this connect token; skipping exchange");
-    return persisted;
-  }
-  log("filament-connect: new connect token; exchanging");
-  const bearer = await exchangeConnectToken(mcpUrl, configuredToken, log, abortSignal, fetchImpl);
-  persistence.save(configuredToken, bearer);
-  return bearer;
-}
 async function runConnect(opts) {
   const {
     mcpUrl,
@@ -126,7 +19,8 @@ async function runConnect(opts) {
     },
     abortSignal,
     fetchImpl = fetch,
-    bearerPersistence
+    bearerPersistence,
+    credential = "exchange"
   } = opts;
   const bearer = await resolveBearer(
     mcpUrl,
@@ -134,7 +28,8 @@ async function runConnect(opts) {
     log,
     abortSignal,
     fetchImpl,
-    bearerPersistence ?? defaultBearerPersistence
+    bearerPersistence,
+    credential
   );
   if (abortSignal?.aborted) throw new ConnectAbortedError();
   const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl);
@@ -196,13 +91,6 @@ async function runConnect(opts) {
 }
 export {
   ConnectAbortedError,
-  MAX_POLL_WAIT_SECONDS,
-  MIN_POLL_WAIT_SECONDS,
-  connectTokenConfigPath,
-  exchangeConnectToken,
-  resolveAccountSettings,
-  resolveBearer,
-  resolveMcpSettings,
   runConnect
 };
 //# sourceMappingURL=connect.js.map

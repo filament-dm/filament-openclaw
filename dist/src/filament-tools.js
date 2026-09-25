@@ -4,9 +4,9 @@ const TOOL_NAME_PREFIX = "filament_";
 const TOOL_SNAPSHOT = rawToolSnapshot;
 const KNOWN_TOOL_NAMES = TOOL_SNAPSHOT.map((t) => t.name);
 const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
-  ["poll_work", "the poll loop owns this call exclusively"],
-  ["register_push_token", "FCM harness plumbing; this transport is poll_work, not FCM"],
-  ["list_push_tokens", "FCM harness plumbing; this transport is poll_work, not FCM"]
+  ["poll_work", "the poll transport owns this call exclusively"],
+  ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
+  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"]
 ]);
 const RING0_TOOL_NAMES = /* @__PURE__ */ new Set(["set_profile"]);
 function classifyToolTier(descriptor) {
@@ -16,12 +16,24 @@ function classifyToolTier(descriptor) {
   if (readOnly === false) return "write";
   return "ring0";
 }
+const REPLIED_UNKNOWN_ROOM = "*";
+const REPLIED_BACKCHANNEL = "backchannel";
+function replyTarget(toolName, params) {
+  if (toolName === "post_message") {
+    return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
+  }
+  if (toolName === "reply_in_thread") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
+  return null;
+}
 const activeFilamentTurns = /* @__PURE__ */ new Map();
 function beginFilamentTurn(isBackchannel, accountId = DEFAULT_ACCOUNT_ID) {
-  activeFilamentTurns.set(accountId, { backchannel: isBackchannel });
+  activeFilamentTurns.set(accountId, { backchannel: isBackchannel, repliedTo: /* @__PURE__ */ new Set() });
 }
 function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID) {
+  const repliedTo = activeFilamentTurns.get(accountId)?.repliedTo ?? /* @__PURE__ */ new Set();
   activeFilamentTurns.delete(accountId);
+  return repliedTo;
 }
 function _getActiveFilamentTurnForTest(accountId = DEFAULT_ACCOUNT_ID) {
   return activeFilamentTurns.get(accountId) ?? null;
@@ -32,7 +44,7 @@ function authorizeToolCall(tier, accountId = DEFAULT_ACCOUNT_ID) {
   if (!activeFilamentTurn) {
     return {
       ok: false,
-      reason: "no active Filament turn (not dispatched by this plugin's poll loop)"
+      reason: "no active Filament turn (not dispatched by this plugin's transport)"
     };
   }
   if (tier === "ring0" && !activeFilamentTurn.backchannel) {
@@ -82,6 +94,8 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
       );
     }
     log(`filament-tools: ${qualifiedName} ok`);
+    const target = replyTarget(toolName, params);
+    if (target) activeFilamentTurns.get(accountId)?.repliedTo.add(target);
     return {
       content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
       details: result.data
@@ -145,6 +159,8 @@ async function checkFilamentToolDrift(client, log) {
 }
 export {
   KNOWN_TOOL_NAMES,
+  REPLIED_BACKCHANNEL,
+  REPLIED_UNKNOWN_ROOM,
   TOOL_NAME_PREFIX,
   TOOL_SNAPSHOT,
   _getActiveFilamentTurnForTest,

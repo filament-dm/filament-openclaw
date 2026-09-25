@@ -16,9 +16,9 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts src/util.ts src/accounts.ts src/gateway.ts src/token-store.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/poll-work.ts src/filament-tools.ts src/channel.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap && node -e \"require('fs').copyFileSync('src/filament-tools.snapshot.json','dist/src/filament-tools.snapshot.json')\"",
+    "build": "esbuild index.ts src/util.ts src/accounts.ts src/gateway.ts src/token-store.ts src/mcp-client.ts src/settings.ts src/credentials.ts src/connect.ts src/work-item.ts src/transports/types.ts src/transports/poll/index.ts src/transports/poll/poll-work.ts src/onboarding-core.ts src/filament-tools.ts src/channel.ts src/turn.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap && node -e \"require('fs').copyFileSync('src/filament-tools.snapshot.json','dist/src/filament-tools.snapshot.json')\"",
     "prepare": "npm run build",
-    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/connect.test.ts src/poll-work.test.ts src/filament-tools.test.ts src/accounts.test.ts src/gateway.test.ts --bundle --external:openclaw --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/connect.test.mjs dist-test/poll-work.test.mjs dist-test/filament-tools.test.mjs dist-test/accounts.test.mjs dist-test/gateway.test.mjs",
+    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/credentials.test.ts src/settings.test.ts src/transports/poll/poll-work.test.ts src/filament-tools.test.ts src/accounts.test.ts src/gateway.test.ts --bundle --external:openclaw --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/credentials.test.mjs dist-test/settings.test.mjs dist-test/transports/poll/poll-work.test.mjs dist-test/filament-tools.test.mjs dist-test/accounts.test.mjs dist-test/gateway.test.mjs",
     "format": "oxfmt index.ts src",
     "format:check": "oxfmt --check index.ts src",
     "lint": "oxlint index.ts src",

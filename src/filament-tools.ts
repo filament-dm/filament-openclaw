@@ -44,15 +44,13 @@
  * ## What gets registered
  *
  * Every tool in the snapshot, which itself already excludes:
- *   - `poll_work` — the poll loop (`src/poll-work.ts`) owns this call
- *     exclusively; the agent must never call it directly.
- *   - `register_push_token` / `list_push_tokens` — harness plumbing for an
- *     FCM-based transport. This plugin uses `poll_work`, not FCM, so these
- *     tools have no push token to register and would just confuse the
- *     model. Hermes excludes the FCM-specific equivalent of these for the
- *     identical reason (see its `BLOCKED_TOOLS`); this is the one place we
- *     depart from a literal "expose everything but poll_work" reading of
- *     the parity goal, and it is a considered call, not an oversight.
+ *   - `poll_work` — the poll transport (`src/transports/poll/`) owns this
+ *     call exclusively; the agent must never call it directly.
+ *   - `register_push_token` / `list_push_tokens` — transport plumbing: the
+ *     FCM transport (`src/transports/fcm/`) registers its own token, and an
+ *     agent registering another would steal its pushes (the server keeps one
+ *     token per agent, ENG-1588). Hermes blocks the same tools for the same
+ *     reason (see its `BLOCKED_TOOLS`).
  *
  * `openclaw.plugin.json`'s `contracts.tools` must list every name the
  * snapshot can register (the manifest doc: "Runtime `api.registerTool(...)`
@@ -76,7 +74,7 @@
  *     Allowed only during a turn dispatched from an `is_backchannel` work
  *     item.
  *   - **write** — everything else with `readOnlyHint !== true`. Allowed
- *     from any turn this plugin's own poll loop dispatched (backchannel or
+ *     from any turn this plugin's own transport dispatched (backchannel or
  *     group), matching Hermes' default posture for its non-Ring-0 tools.
  *
  * A tool whose `readOnlyHint` is missing or not a boolean (a malformed or
@@ -100,7 +98,11 @@
  * identity, so authorization uses a per-account "current turn" slot
  * (`beginFilamentTurn`/`endFilamentTurn`), set/cleared by `src/channel.ts`
  * around each `dispatchWorkItemTurn` call. Two Filament accounts never share
- * a slot, and each account's poll loop is sequential. What remains: if the
+ * a slot, and each account's transport dispatches sequentially. The same slot
+ * records where a write tool already replied (`endFilamentTurn`'s result):
+ * the FCM transport has no server-side work ledger, so that is how it avoids
+ * posting a turn's final text on top of a reply the agent already sent.
+ * What remains: if the
  * *same* OpenClaw agent runs a turn on a different channel (Telegram, …)
  * while its Filament turn is in flight, that turn inherits Filament-turn
  * authorization for the overlap. Accepted for this PoC.
@@ -151,9 +153,9 @@ export const KNOWN_TOOL_NAMES: readonly string[] = TOOL_SNAPSHOT.map((t) => t.na
  *  Also used by `logToolDrift` so these expected exclusions never show up as
  *  "drift" against a live server that (correctly) still advertises them. */
 const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
-  ["poll_work", "the poll loop owns this call exclusively"],
-  ["register_push_token", "FCM harness plumbing; this transport is poll_work, not FCM"],
-  ["list_push_tokens", "FCM harness plumbing; this transport is poll_work, not FCM"],
+  ["poll_work", "the poll transport owns this call exclusively"],
+  ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
+  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
 ]);
 
 /** Ring-0 (principal/backchannel-only) tool names — see module docstring. */
@@ -175,6 +177,23 @@ export function classifyToolTier(descriptor: McpToolDescriptor): ToolTier {
 
 interface FilamentTurnState {
   backchannel: boolean;
+  /** See the module docstring's "turn-tracking limitation". */
+  repliedTo: Set<string>;
+}
+
+/** Marker for a reply whose room the call doesn't name (a thread reply). */
+export const REPLIED_UNKNOWN_ROOM = "*";
+/** Marker for `message_principal`, which always lands in the backchannel. */
+export const REPLIED_BACKCHANNEL = "backchannel";
+
+/** Where a successful write-tool call replied, or null for a tool that doesn't reply. */
+function replyTarget(toolName: string, params: Record<string, unknown>): string | null {
+  if (toolName === "post_message") {
+    return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
+  }
+  if (toolName === "reply_in_thread") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
+  return null;
 }
 
 // One slot per channel account: two Filament agents on one gateway dispatch
@@ -183,12 +202,17 @@ const activeFilamentTurns = new Map<string, FilamentTurnState>();
 
 /** Call before dispatching a Filament work-item turn on `accountId`. */
 export function beginFilamentTurn(isBackchannel: boolean, accountId = DEFAULT_ACCOUNT_ID): void {
-  activeFilamentTurns.set(accountId, { backchannel: isBackchannel });
+  activeFilamentTurns.set(accountId, { backchannel: isBackchannel, repliedTo: new Set() });
 }
 
-/** Call after that account's work-item turn finishes (success or failure). */
-export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): void {
+/**
+ * Call after that account's work-item turn finishes (success or failure).
+ * Returns where the turn's write tools replied (see `replyTarget`).
+ */
+export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): ReadonlySet<string> {
+  const repliedTo = activeFilamentTurns.get(accountId)?.repliedTo ?? new Set<string>();
   activeFilamentTurns.delete(accountId);
+  return repliedTo;
 }
 
 /** Test-only accessor. */
@@ -213,7 +237,7 @@ export function authorizeToolCall(
   if (!activeFilamentTurn) {
     return {
       ok: false,
-      reason: "no active Filament turn (not dispatched by this plugin's poll loop)",
+      reason: "no active Filament turn (not dispatched by this plugin's transport)",
     };
   }
   if (tier === "ring0" && !activeFilamentTurn.backchannel) {
@@ -350,6 +374,8 @@ function makeExecute(
       );
     }
     log(`filament-tools: ${qualifiedName} ok`);
+    const target = replyTarget(toolName, params);
+    if (target) activeFilamentTurns.get(accountId)?.repliedTo.add(target);
     return {
       content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
       details: result.data,
