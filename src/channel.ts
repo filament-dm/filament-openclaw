@@ -53,6 +53,10 @@ import { loadIdentity } from "./token-store.js";
 
 export { FILAMENT_CHANNEL_ID };
 
+// The gateway control account's inventory report, when one is running, so a
+// data account coming up or going down refreshes what the Filament app shows.
+let refreshGatewayInventory: (() => void) | null = null;
+
 // Loose structural view of the plugin API surface the channel touches. The
 // concrete OpenClaw SDK types only resolve inside the gateway, so we keep
 // this minimal and let the runtime provide the real objects.
@@ -162,7 +166,11 @@ export function registerFilamentChannel(
         const statuses: GatewayStatus[] = [];
         const reportInventory = async (): Promise<void> => {
           if (!connection) return;
-          const agents = listGatewayAgents(liveGatewayConfig(), (id) => loadIdentity(id)?.mxid);
+          // Only a live account counts as connected: a bound account whose
+          // bearer was revoked shows as free, and connecting it replaces it.
+          const agents = listGatewayAgents(liveGatewayConfig(), (id) =>
+            getFilamentClient(id) ? loadIdentity(id)?.mxid : undefined,
+          );
           const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
             signal: abortSignal,
           });
@@ -328,10 +336,16 @@ export function registerFilamentChannel(
           );
         }
 
+        const refreshOtherwise = () => {
+          if (!control) refreshGatewayInventory?.();
+        };
         if (connection && control) {
-          await reportInventory().catch((error) => {
-            accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
-          });
+          refreshGatewayInventory = () => {
+            reportInventory().catch((error) => {
+              accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
+            });
+          };
+          refreshGatewayInventory();
         }
 
         if (connection) {
@@ -341,6 +355,7 @@ export function registerFilamentChannel(
           // the exit reason (normal wind-down or fatal). A control account
           // owns no tools, so it never gets one.
           if (!control) setFilamentClient(connection.client, accountId);
+          refreshOtherwise();
           // Best-effort diagnostic only — see src/filament-tools.ts's
           // checkFilamentToolDrift docstring. Never blocks/aborts connect.
           if (!control) {
@@ -384,6 +399,8 @@ export function registerFilamentChannel(
 
         connection?.stop();
         setFilamentClient(null, accountId);
+        if (control) refreshGatewayInventory = null;
+        else refreshOtherwise();
         onConnectionChange(null);
       },
       // oxlint-disable-next-line typescript/no-explicit-any

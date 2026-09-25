@@ -29,6 +29,7 @@ import {
 import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
 import { runPollLoop } from "./poll-work.js";
 import { loadIdentity } from "./token-store.js";
+let refreshGatewayInventory = null;
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
   const d = data;
@@ -82,7 +83,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const statuses = [];
         const reportInventory = async () => {
           if (!connection) return;
-          const agents = listGatewayAgents(liveGatewayConfig(), (id) => loadIdentity(id)?.mxid);
+          const agents = listGatewayAgents(
+            liveGatewayConfig(),
+            (id) => getFilamentClient(id) ? loadIdentity(id)?.mxid : void 0
+          );
           const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
             signal: abortSignal
           });
@@ -227,13 +231,20 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)"
           );
         }
+        const refreshOtherwise = () => {
+          if (!control) refreshGatewayInventory?.();
+        };
         if (connection && control) {
-          await reportInventory().catch((error) => {
-            accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
-          });
+          refreshGatewayInventory = () => {
+            reportInventory().catch((error) => {
+              accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
+            });
+          };
+          refreshGatewayInventory();
         }
         if (connection) {
           if (!control) setFilamentClient(connection.client, accountId);
+          refreshOtherwise();
           if (!control) {
             void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
               accountLog(`filament: tool drift check failed: ${String(error)}`);
@@ -265,6 +276,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         }
         connection?.stop();
         setFilamentClient(null, accountId);
+        if (control) refreshGatewayInventory = null;
+        else refreshOtherwise();
         onConnectionChange(null);
       },
       // oxlint-disable-next-line typescript/no-explicit-any
