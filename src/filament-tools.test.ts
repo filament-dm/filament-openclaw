@@ -243,7 +243,7 @@ test("execute: an upstream tool-call failure surfaces as a thrown error, logged 
 test("beginFilamentTurn/endFilamentTurn: tracks and clears the active turn", () => {
   assert.equal(_getActiveFilamentTurnForTest(), null);
   beginFilamentTurn(true);
-  assert.deepEqual(_getActiveFilamentTurnForTest(), { backchannel: true });
+  assert.deepEqual(_getActiveFilamentTurnForTest(), { backchannel: true, repliedTo: new Set() });
   endFilamentTurn();
   assert.equal(_getActiveFilamentTurnForTest(), null);
 });

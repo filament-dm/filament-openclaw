@@ -1,5 +1,7 @@
-import { POLL_TIMEOUT_MARGIN_MS } from "./mcp-client.js";
-import { nextBackoffMs, sleepAbortable } from "./util.js";
+import {
+  POLL_TIMEOUT_MARGIN_MS
+} from "../../mcp-client.js";
+import { nextBackoffMs, sleepAbortable } from "../../util.js";
 function parsePollWorkResponse(data) {
   if (!data || typeof data !== "object") return null;
   const d = data;

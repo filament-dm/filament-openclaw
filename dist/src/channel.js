@@ -7,11 +7,7 @@ import {
   PLUGIN_ID,
   pluginConfigFrom
 } from "./accounts.js";
-import {
-  connectTokenConfigPath,
-  resolveAccountSettings,
-  runConnect
-} from "./connect.js";
+import { runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -26,21 +22,15 @@ import {
   listGatewayAgents,
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
-import { dispatchWorkItemTurn } from "./inbound-dispatch.js";
-import { runPollLoop } from "./poll-work.js";
+import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { loadIdentity } from "./token-store.js";
+import { runPollTransport } from "./transports/poll/index.js";
+import { dispatchWorkItemTurn } from "./turn.js";
+const TRANSPORTS = {
+  fcm: runPollTransport,
+  poll: runPollTransport
+};
 let refreshGatewayInventory = null;
-function publishSucceeded(data) {
-  if (!data || typeof data !== "object") return false;
-  const d = data;
-  return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === void 0;
-}
-const ALREADY_ANSWERED_PREFIX = "You have already answered this message";
-function isAlreadyAnsweredError(data) {
-  if (!data || typeof data !== "object") return false;
-  const err = data.error;
-  return typeof err === "string" && err.startsWith(ALREADY_ANSWERED_PREFIX);
-}
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
   const log = (message) => {
@@ -56,7 +46,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via the poll_work MCP transport"
+      blurb: "Connects the agent to Filament via FCM push (or poll_work) + MCP"
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
@@ -92,52 +82,43 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
         };
-        const dispatchItem = async (item) => {
-          const replyWith = item.reply_with;
-          if (!replyWith) {
-            return { kind: "ambiguous" };
-          }
-          if (!connection) {
-            return { kind: "error", diagnostic: "item arrived before connect finished" };
-          }
-          if (control) {
-            const client = connection.client;
-            const identity2 = connection.identity;
-            return handleGatewayItem({
-              item,
-              principal: identity2.principal,
-              ccRoomId: identity2.ccRoomId,
-              gatewayConfig: liveGatewayConfig(),
-              consume: async (upToEventId) => {
-                await client.callTool(
-                  "mark_read",
-                  { channel: item.channel_id, up_to: upToEventId },
-                  { signal: abortSignal }
-                );
-              },
-              mutateConfig: async (mutate) => {
-                const write = api.runtime?.config?.mutateConfigFile;
-                if (!write)
-                  throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
-                await write({ afterWrite: { mode: "auto" }, mutate });
-              },
-              report: async (entries) => {
-                statuses.unshift(...[...entries].reverse());
-                statuses.splice(MAX_REPORTED_STATUSES);
-                await reportInventory();
-              },
-              log: accountLog
-            });
-          }
+        const handleControl = async (item) => {
+          if (!connection) return;
+          const client = connection.client;
+          await handleGatewayItem({
+            item,
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            gatewayConfig: liveGatewayConfig(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal }
+              );
+            },
+            mutateConfig: async (mutate) => {
+              const write = api.runtime?.config?.mutateConfigFile;
+              if (!write)
+                throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+              await write({ afterWrite: { mode: "auto" }, mutate });
+            },
+            report: async (entries) => {
+              statuses.unshift(...[...entries].reverse());
+              statuses.splice(MAX_REPORTED_STATUSES);
+              await reportInventory();
+            },
+            log: accountLog
+          });
+        };
+        const runTurn = async (item) => {
           if (!ctx.channelRuntime) {
-            return {
-              kind: "error",
-              diagnostic: "ctx.channelRuntime unavailable; cannot wake a turn"
-            };
+            throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
           const identity = loadIdentity(accountId);
-          let result;
           beginFilamentTurn(item.is_backchannel === true, accountId);
+          let repliedTo = /* @__PURE__ */ new Set();
+          let result;
           try {
             result = await dispatchWorkItemTurn({
               cfg: ctx.cfg,
@@ -145,7 +126,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               channel: FILAMENT_CHANNEL_ID,
               channelLabel: "Filament",
               accountId,
-              peerKind: item.is_backchannel ? "direct" : "group",
+              peerKind: item.is_backchannel || item.is_direct ? "direct" : "group",
               channelId: item.channel_id,
               threadId: item.thread_id,
               messages: item.messages,
@@ -157,44 +138,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               commandAuthorized: item.is_backchannel === true,
               log: accountLog
             });
-          } catch (error) {
-            return { kind: "error", diagnostic: `dispatch threw: ${String(error)}` };
           } finally {
-            endFilamentTurn(accountId);
+            repliedTo = endFilamentTurn(accountId);
           }
-          if (result.sawError) {
-            return {
-              kind: "error",
-              diagnostic: result.errorDetail ?? "dispatch reported an error"
-            };
-          }
-          if (result.sawFinal) {
-            if (abortSignal.aborted) {
-              return { kind: "error", diagnostic: "aborted before publish" };
-            }
-            const publishRes = await connection.client.replyWith(replyWith, result.finalText, {
-              signal: abortSignal
-            });
-            if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
-              accountLog("filament: item already answered by a tool call; skipping publish");
-              return { kind: "published" };
-            }
-            if (!publishRes.ok || !publishSucceeded(publishRes.data)) {
-              return {
-                kind: "error",
-                diagnostic: `publish failed/ambiguous (${publishRes.kind ?? "?"}: ${publishRes.error?.message ?? "no event_id"})`
-              };
-            }
-            accountLog(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
-            return { kind: "published" };
-          }
-          if (result.sawSkip) {
-            return { kind: "silent" };
-          }
-          accountLog(
-            `filament: turn produced no text and no explicit skip signal for ${item.channel_id}; leaving unacknowledged`
-          );
-          return { kind: "ambiguous" };
+          return { ...result, repliedTo };
         };
         let token = "";
         if (mcp.tokenInput !== void 0) {
@@ -219,7 +166,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               token,
               accountId,
               log: accountLog,
-              abortSignal
+              abortSignal,
+              credential: "exchange"
             });
             onConnectionChange(connection);
           } catch (error) {
@@ -250,12 +198,16 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               accountLog(`filament: tool drift check failed: ${String(error)}`);
             });
           }
-          const { fatal } = await runPollLoop({
+          const { fatal } = await TRANSPORTS[mcp.transport]({
+            accountId,
             client: connection.client,
+            identity: connection.identity,
+            settings: mcp,
+            control,
             abortSignal,
             log: accountLog,
-            dispatchItem,
-            waitSeconds: mcp.pollWaitSeconds
+            runTurn,
+            handleControl
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);

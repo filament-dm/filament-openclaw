@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { listConfiguredAccountIds, resolveToolAccountId } from "./accounts.js";
-import { connectTokenConfigPath, resolveAccountSettings } from "./connect.js";
+import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 
 const binding = (agentId: string, accountId: string) => ({
   agentId,
