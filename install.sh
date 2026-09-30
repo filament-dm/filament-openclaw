@@ -1,50 +1,31 @@
 #!/usr/bin/env bash
 #
-# Connect one Filament agent to an OpenClaw agent on this gateway, installing
-# the filament-openclaw plugin (channel id "filament", plugin id
-# "filament-openclaw") the first time. Modeled on filament-hermes/install.sh.
+# Install the Filament plugin into this OpenClaw gateway and connect an agent.
+# Run the command the Filament app shows you:
 #
-#   CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash install.sh
-#
-# The repository is public, so the curl-pipe-bash form works without
-# credentials:
 #   curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-#     | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash
+#     | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=<agent> bash
 #
-# Idempotent, and meant to be run once per Filament agent:
-#   1. installs the plugin only if the gateway doesn't have it (an existing
-#      install — git, npm or a --link dev checkout — is left alone);
-#   2. creates the OpenClaw agent OPENCLAW_AGENT if the gateway lacks it, and
-#      binds it to its own channel account (account id = agent id), holding
-#      this CONNECT_TOKEN under plugins.entries.filament-openclaw.config.accounts;
-#   3. waits for that account to connect, so the Filament app flips to online.
-# Re-running with the same token changes nothing; with a new token it
-# replaces the one this agent had.
+# What it does, safe to re-run:
+#   1. installs the plugin if the gateway doesn't have it (an existing install
+#      is left alone);
+#   2. creates the OpenClaw agent if it's missing and binds it to its own
+#      Filament account, saving the token in the gateway config;
+#   3. waits until that account is connected.
+# One Filament agent per OpenClaw agent: connecting a new one replaces the old.
 #
-# One Filament agent per OpenClaw agent: binding this account to an agent
-# first drops whatever Filament account that agent had, and removes that
-# account's token (an unbound account would silently land on the system
-# agent instead).
-#
-# OPENCLAW_GATEWAY=1 (instead of OPENCLAW_AGENT) pairs the gateway itself: the
-# token becomes a "gateway" control account the Filament app then drives to
-# connect this gateway's agents with no further terminal step.
-#
-# Transport: FCM pushes by default — what production Filament serves.
-# FILAMENT_TRANSPORT=poll switches this gateway's accounts to the poll_work
-# long-poll instead (needs a synapse carrying ENG-1392); FILAMENT_TRANSPORT=fcm
-# switches them back. Unset leaves whatever the gateway already has. For a
-# homeserver that sends through another Firebase project than production
-# (local/dev), pass its FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID and
-# _SENDER_ID — the same names filament-hermes reads.
-#
-# Optional env: FILAMENT_MCP_URL (staging/local MCP endpoint instead of
-# production), PLUGIN_REF (branch/tag/commit to install, default: main),
-# OPENCLAW_PLUGIN_SOURCE (full override of the install spec),
-# FILAMENT_PLUGIN_UPDATE=1 (update an already-installed plugin).
-# Without OPENCLAW_AGENT the script keeps its single-agent behavior: the
-# token becomes the "default" account, bound only when the gateway has
-# several agents (prompting on a tty, or failing without one).
+# Environment:
+#   CONNECT_TOKEN           token from the Filament app (required)
+#   OPENCLAW_AGENT          OpenClaw agent to connect
+#   OPENCLAW_GATEWAY=1      pair the gateway instead; the app then connects its
+#                           agents with no further terminal step
+#   FILAMENT_MCP_URL        a non-production Filament server
+#   FILAMENT_TRANSPORT      fcm (default) or poll
+#   FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID, _SENDER_ID
+#                           Firebase project of a non-production server (fcm)
+#   PLUGIN_REF              branch, tag or commit to install (default: main)
+#   OPENCLAW_PLUGIN_SOURCE  full plugin install spec, overriding PLUGIN_REF
+#   FILAMENT_PLUGIN_UPDATE=1  update an installed plugin
 set -euo pipefail
 
 err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -63,11 +44,9 @@ REPO_HTTPS="git:https://github.com/filament-dm/filament-openclaw.git@${PLUGIN_RE
 # The repo is public: HTTPS needs no key. SSH is tried only as a fallback.
 SPEC="${OPENCLAW_PLUGIN_SOURCE:-$REPO_HTTPS}"
 
-# OpenClaw agent ids are lowercase; the Filament app already sends a slug.
+# OpenClaw agent ids are lowercase.
 TARGET_AGENT="$(printf '%s' "${OPENCLAW_AGENT:-}" | tr '[:upper:]' '[:lower:]')"
-# OPENCLAW_GATEWAY=1 pairs the gateway instead: the token becomes the
-# "gateway" control account, which no OpenClaw agent is bound to and which
-# takes connect commands from the Filament app (src/gateway.ts).
+# The gateway's own account is bound to no OpenClaw agent.
 GATEWAY_MODE=0
 [ "${OPENCLAW_GATEWAY:-}" = "1" ] && GATEWAY_MODE=1
 if [ "$GATEWAY_MODE" = 1 ]; then
@@ -317,7 +296,7 @@ if [ "$PLUGIN_ENABLED" != "1" ]; then
 fi
 
 # --- 3. Verify this account connected -------------------------------------------
-# channel.ts prefixes every account's log line with "[<account id>]".
+# Each account's log lines start with "[<account id>]".
 info "Waiting for Filament account '$ACCOUNT_ID' to connect (up to 90s) ..."
 DEADLINE=$(( $(date +%s) + 90 ))
 CONNECTED=0
