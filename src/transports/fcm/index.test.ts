@@ -72,9 +72,18 @@ function harness(
     turn?: Partial<TurnResult>;
     instructions?: string;
     startFails?: boolean;
+    registerThrows?: boolean;
   } = {},
 ) {
   const { client, calls, pongs } = fakeClient({ instructions: overrides.instructions });
+  if (overrides.registerThrows) {
+    const callTool = client.callTool;
+    client.callTool = async (name, args) => {
+      if (name === "register_push_token") throw new TypeError("fetch failed");
+      return callTool(name, args);
+    };
+  }
+  const receiverStops: number[] = [];
   const controller = new AbortController();
   const turns: WorkItem[] = [];
   const controlItems: WorkItem[] = [];
@@ -109,14 +118,26 @@ function harness(
         deliver = opts.onMessage;
       },
       token: () => "fcm-token",
-      stop: () => {},
+      stop: () => {
+        receiverStops.push(1);
+      },
     }),
   });
   const push = async (env: FcmMessageEnvelope) => {
     await until(() => deliver !== null && calls.some((c) => c.name === "register_push_token"));
     deliver!(env);
   };
-  return { ctx, calls, pongs, turns, controlItems, push, done, stop: () => controller.abort() };
+  return {
+    ctx,
+    calls,
+    pongs,
+    turns,
+    controlItems,
+    push,
+    done,
+    receiverStops,
+    stop: () => controller.abort(),
+  };
 }
 
 test("fcm: registers the receiver's token, then greets on first contact", async () => {
@@ -212,4 +233,11 @@ test("fcm: a receiver that cannot register is fatal", async () => {
   const h = harness({ startFails: true });
   const result = await h.done;
   assert.match(result.fatal ?? "", /PHONE_REGISTRATION_ERROR/);
+});
+
+test("fcm: a register call that throws stops the receiver and is fatal", async () => {
+  const h = harness({ registerThrows: true });
+  const result = await h.done;
+  assert.match(result.fatal ?? "", /register_push_token threw/);
+  assert.equal(h.receiverStops.length, 1);
 });

@@ -4,6 +4,7 @@
  * everything after it too.
  */
 import { acceptPending } from "../../accept-pending.js";
+import type { ToolCallResult } from "../../mcp-client.js";
 import { isFirstContact } from "../../onboarding-core.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
@@ -216,11 +217,18 @@ export async function runFcmTransport(
     receiver.stop();
     return { fatal: "fcm: registered, but no push token to hand Filament" };
   }
-  const registered = await client.callTool(
-    "register_push_token",
-    { token, platform: PUSH_PLATFORM },
-    { signal: abortSignal },
-  );
+  let registered: ToolCallResult;
+  try {
+    registered = await client.callTool(
+      "register_push_token",
+      { token, platform: PUSH_PLATFORM },
+      { signal: abortSignal },
+    );
+  } catch (error) {
+    receiver.stop();
+    if (abortSignal.aborted) return {};
+    return { fatal: `fcm: register_push_token threw (${String(error)})` };
+  }
   if (!registered.ok) {
     receiver.stop();
     if (abortSignal.aborted) return {};
