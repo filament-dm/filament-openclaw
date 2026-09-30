@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { isSystemSender } from "../../wake-rules.js";
 import type { DecodedPush } from "./decode.js";
-import { decideWake, EngagedThreads, isSystemSender } from "./wake-policy.js";
+import { decideWake, EngagedThreads } from "./wake-policy.js";
 
 const SELF = "@a_test1.1:filament-dev.local";
 const CC = "!cc:filament-dev.local";

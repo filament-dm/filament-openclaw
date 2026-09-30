@@ -19,14 +19,19 @@ export interface WorkItem {
   channel_id: string;
   thread_id: string | null;
   is_backchannel: boolean;
-  /** A 1:1 room that is not the backchannel. poll_work never sets it. */
+  /** A room created as a DM, other than the backchannel. */
   is_direct?: boolean;
   messages: WorkMessage[];
 }
+
+/** What the agent sees for a message that carries media and no text. */
+export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";
 
 /** What happened when an item was dispatched. */
 export type DispatchOutcome =
   | { kind: "published" }
   | { kind: "silent" } // deliberate silence, evidenced by the SDK: ack it.
   | { kind: "ambiguous" } // no finals, no explicit skip signal, no error: leave it be (no ack, no pause).
-  | { kind: "error"; diagnostic: string }; // no ack, no publish; the account pauses.
+  | { kind: "dropped"; diagnostic: string } // the turn failed, or the server refused the reply: ack it.
+  | { kind: "retry"; diagnostic: string } // the reply may not have landed (network, 5xx): no ack, back off.
+  | { kind: "fatal"; diagnostic: string }; // the bearer was rejected: no ack; the account stops.

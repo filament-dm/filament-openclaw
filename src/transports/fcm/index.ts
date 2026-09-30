@@ -2,8 +2,8 @@
  * The FCM transport — the default, and what production Filament speaks.
  *
  * Needs nothing beyond develop's agents API: no poll_work, no reply_with, no
- * work ledger, no token exchange. The sequence follows the original FCM
- * plugin (`main`, Jonathan Strickland), per account:
+ * work ledger. The sequence follows the original FCM plugin (`main`, Jonathan
+ * Strickland), per account:
  *
  *   accept pending invites/vouches → register with FCM (./receiver.ts) →
  *   register_push_token → first-contact greeting → hold the socket open
@@ -21,9 +21,9 @@
  * logged and dropped: without a ledger there is nothing to redeliver it, and
  * pausing the account would drop everything after it too.
  */
-import type { FilamentMcpClient } from "../../mcp-client.js";
+import { acceptPending } from "../../accept-pending.js";
 import { isFirstContact } from "../../onboarding-core.js";
-import type { WorkItem } from "../../work-item.js";
+import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import {
   type DecodedPush,
@@ -40,53 +40,6 @@ import { decideWake, EngagedThreads } from "./wake-policy.js";
 const PUSH_PLATFORM = "android";
 const MAX_SEEN_EVENTS = 500;
 
-/** Extract the `loop_id`s from a list_pending_invites / list_vouches result. */
-function loopIds(data: unknown, key: "invites" | "vouches"): string[] {
-  if (!data || typeof data !== "object") return [];
-  const list = (data as Record<string, unknown>)[key];
-  if (!Array.isArray(list)) return [];
-  return list
-    .map((item) =>
-      item && typeof item === "object" ? (item as { loop_id?: unknown }).loop_id : undefined,
-    )
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-}
-
-/** Accept what the agent was invited or vouched into while offline. Never throws. */
-async function acceptPending(
-  client: FilamentMcpClient,
-  log: (message: string) => void,
-  signal: AbortSignal,
-): Promise<void> {
-  const sweep = async (
-    kind: "invites" | "vouches",
-    list: () => ReturnType<FilamentMcpClient["listVouches"]>,
-    accept: (loopId: string) => ReturnType<FilamentMcpClient["acceptVouch"]>,
-  ) => {
-    try {
-      const res = await list();
-      for (const loopId of res.ok ? loopIds(res.data, kind) : []) {
-        const accepted = await accept(loopId);
-        log(
-          `filament-fcm: accept ${kind === "invites" ? "invite" : "vouch"} ${loopId} ${accepted.ok ? "ok" : `failed (${accepted.error?.code ?? "?"})`}`,
-        );
-      }
-    } catch (error) {
-      log(`filament-fcm: pending ${kind} sweep failed (continuing): ${String(error)}`);
-    }
-  };
-  await sweep(
-    "invites",
-    () => client.listPendingInvites({ signal }),
-    (id) => client.acceptInvite(id, { signal }),
-  );
-  await sweep(
-    "vouches",
-    () => client.listVouches({ signal }),
-    (id) => client.acceptVouch(id, { signal }),
-  );
-}
-
 /** One-line summary of a decoded push for observability (never the whole text). */
 function summarize(push: DecodedPush): string {
   const parts = [`type=${push.branchType}`];
@@ -100,7 +53,7 @@ function summarize(push: DecodedPush): string {
 /** The body the agent sees for a push; a media-only message still says what it is. */
 function messageBody(push: DecodedPush): string {
   if (typeof push.text === "string" && push.text) return push.text;
-  return push.hasMedia || push.text === null ? "(an attachment, with no text)" : "";
+  return push.hasMedia || push.text === null ? ATTACHMENT_ONLY_BODY : "";
 }
 
 /** The receiver surface the transport uses; a fake stands in for it in tests. */
