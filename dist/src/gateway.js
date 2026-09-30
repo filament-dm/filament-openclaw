@@ -241,4 +241,3 @@ export {
   parseGatewayCommand,
   wouldChange
 };
-//# sourceMappingURL=gateway.js.map

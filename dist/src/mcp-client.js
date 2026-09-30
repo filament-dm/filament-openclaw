@@ -53,14 +53,9 @@ class FilamentMcpClient {
   sessionId = null;
   nextId = 1;
   initialized = false;
-  /** Server `instructions` from the initialize response (the first-contact directive lives here). */
+  /** From the initialize response; carries the server's first-contact directive. */
   instructions = null;
-  /**
-   * POST a JSON body with a timeout + abort signal. Resolves to the HTTP
-   * status and parsed JSON (or a parse-failure marker) on any response that
-   * reaches us; only rethrows when the call could not complete at all
-   * (network failure, our own timeout, or the caller's abort).
-   */
+  /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   async post(url, body, expectJson, opts) {
     const controller = new AbortController();
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -112,7 +107,6 @@ class FilamentMcpClient {
       opts?.signal?.removeEventListener("abort", onExternalAbort);
     }
   }
-  /** MCP handshake: initialize + notifications/initialized. Idempotent. */
   async initialize(opts) {
     if (this.initialized) return;
     const { json } = await this.post(
@@ -142,11 +136,6 @@ class FilamentMcpClient {
     );
     this.initialized = true;
   }
-  /**
-   * Call an MCP tool, returning a classified result. Never throws on an
-   * error envelope; only throws on a caller-initiated abort (see module
-   * header), so the poll loop can distinguish "stop" from "retry".
-   */
   async callTool(name, args = {}, opts) {
     await this.initialize(opts);
     const { status, json, parseError } = await this.post(
@@ -223,18 +212,6 @@ class FilamentMcpClient {
     }
     return { ok: true, httpStatus: status, data };
   }
-  /**
-   * `tools/list`: the live agent-facing tool catalog (name, description,
-   * inputSchema, annotations) this bearer's server advertises right now.
-   * Used by `src/filament-tools.ts` to register the agent's tools with
-   * server-provided descriptions/schemas instead of a hand-maintained copy.
-   *
-   * Unlike `callTool`, there is no MCP content envelope to unwrap: a
-   * `tools/list` result is `{ tools: [...] }` directly. Classified the same
-   * way as `callTool` (auth/transient/protocol) for a consistent caller
-   * contract; a `tools/list` result never carries `isError`, so there is no
-   * "tool" kind here.
-   */
   async listTools(opts) {
     await this.initialize(opts);
     const { status, json, parseError } = await this.post(
@@ -285,31 +262,22 @@ class FilamentMcpClient {
     }));
     return { ok: true, tools: parsed };
   }
-  /** Fetch the agent's own identity (principal, backchannel, mxid). Read-only. */
   getSelf(opts) {
     return this.callTool("get_self", {}, opts);
   }
-  /** List pending loop invites for this agent. Read-only. */
   listPendingInvites(opts) {
     return this.callTool("list_pending_invites", {}, opts);
   }
-  /** Join a loop the agent was invited into. */
   acceptInvite(loopId, opts) {
     return this.callTool("accept_invite", { loop_id: loopId }, opts);
   }
-  /** List pending vouches (member-initiated) for this agent. Read-only. */
   listVouches(opts) {
     return this.callTool("list_vouches", {}, opts);
   }
-  /** Accept a member's vouch, turning it into a proposal a loop admin approves. */
   acceptVouch(loopId, opts) {
     return this.callTool("accept_vouch", { loop_id: loopId }, opts);
   }
-  /**
-   * Ask for outstanding work: a long-poll that blocks server-side up to
-   * `args.wait_seconds`. The HTTP timeout must exceed that, hence the
-   * caller (src/poll-work.ts) always passes an explicit `timeoutMs`.
-   */
+  /** Blocks server-side up to `wait_seconds`: callers must pass a longer `timeoutMs`. */
   pollWork(args, opts) {
     return this.callTool(
       "poll_work",
@@ -322,13 +290,7 @@ class FilamentMcpClient {
       opts
     );
   }
-  /**
-   * Publish a reply exactly as the server asked for it: `reply_with.tool`
-   * with `reply_with.args` verbatim, plus the generated text. `reply_with`
-   * only ever names `post_message` or `reply_in_thread` — both tools accept
-   * `markdown_body` alongside their pre-resolved args (`channel` /
-   * `message_id`), so this single call covers both.
-   */
+  /** `reply_with` only names `post_message` or `reply_in_thread`; both take `markdown_body`. */
   replyWith(replyWithSpec, markdownBody, opts) {
     return this.callTool(
       replyWithSpec.tool,
@@ -336,27 +298,16 @@ class FilamentMcpClient {
       opts
     );
   }
-  /**
-   * Side-channel POST to `${mcpUrl}${path}` (not JSON-RPC), bearer-authed.
-   * Used by the presence/liveness endpoint.
-   */
   async sideChannelPost(path, body, opts) {
     const { status } = await this.post(`${this.mcpUrl}${path}`, body, false, opts);
     return status;
   }
-  /** Presence keep-alive: POST /heartbeat (keeps the agent online). */
   heartbeat(opts) {
     return this.sideChannelPost("/heartbeat", void 0, opts);
   }
-  /** Answer a liveness ping pushed over FCM: POST /pong with its nonce. */
   pong(nonce, opts) {
     return this.sideChannelPost("/pong", { nonce }, opts);
   }
-  /**
-   * Whole-inventory report: POST /tools (ENG-914). The gateway control
-   * account borrows it to publish this gateway's OpenClaw agents — see
-   * src/gateway.ts. Returns the HTTP status.
-   */
   reportTools(tools, opts) {
     return this.sideChannelPost("/tools", { tools }, opts);
   }
@@ -367,4 +318,3 @@ export {
   POLL_TIMEOUT_MARGIN_MS,
   parseToolResult
 };
-//# sourceMappingURL=mcp-client.js.map

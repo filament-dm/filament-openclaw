@@ -174,4 +174,3 @@ export {
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 };
-//# sourceMappingURL=filament-tools.js.map

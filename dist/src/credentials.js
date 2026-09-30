@@ -10,4 +10,3 @@ function resolveBearer(configuredToken, log, loadPersisted = loadBearer) {
 export {
   resolveBearer
 };
-//# sourceMappingURL=credentials.js.map

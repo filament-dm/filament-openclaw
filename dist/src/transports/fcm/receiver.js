@@ -23,14 +23,12 @@ class FcmReceiver {
     this.opts = opts;
   }
   receiver = null;
-  /** The account's current FCM registration token, once registered. */
   token() {
     const { accountId, firebase } = this.opts;
     const live = this.receiver?.fcmToken;
     if (live) return live;
     return loadFcmCredentials(accountId, firebase.projectId)?.fcm?.token ?? null;
   }
-  /** Register (reusing saved credentials if any) and connect, with retry. */
   async start() {
     const { accountId, firebase, log, onMessage, abortSignal } = this.opts;
     const saved = loadFcmCredentials(accountId, firebase.projectId);
@@ -46,7 +44,6 @@ class FcmReceiver {
         appId: firebase.appId,
         messagingSenderId: firebase.messagingSenderId
       },
-      // eneris Credentials is a superset; we persist/reload it opaquely.
       credentials: saved ?? null,
       // Seed already-processed ids so Google doesn't redeliver them on reconnect.
       persistentIds: loadReceivedIds(accountId)
@@ -94,7 +91,6 @@ class FcmReceiver {
     }
     throw new Error(`FCM connect failed after ${attempts} attempts: ${String(lastError)}`);
   }
-  /** Tear down the receiver socket. */
   stop() {
     this.receiver?.destroy?.();
     this.receiver = null;
@@ -103,4 +99,3 @@ class FcmReceiver {
 export {
   FcmReceiver
 };
-//# sourceMappingURL=receiver.js.map

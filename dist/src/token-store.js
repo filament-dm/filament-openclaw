@@ -44,7 +44,7 @@ function bearerStoreInstance() {
   if (!bearerStore) {
     bearerStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
       namespace: BEARER_NAMESPACE,
-      // Read only now, but the options must not change: see BEARER_NAMESPACE.
+      // Read only, but the options must not change: see FCM_NAMESPACE.
       maxEntries: 16,
       overflowPolicy: "evict-oldest"
     });
@@ -96,4 +96,3 @@ export {
   saveFcmCredentials,
   saveIdentity
 };
-//# sourceMappingURL=token-store.js.map

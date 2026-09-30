@@ -83,8 +83,7 @@ async function dispatchWorkItemTurn(params) {
       cfg: params.cfg,
       dispatcherOptions: {
         ...replyPipeline,
-        // `info.kind` is "tool" | "block" | "final" — only "final" text is
-        // ever collected. Never publish here; just buffer.
+        // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
         deliver: async (payload, info) => {
           if (info?.kind !== "final") return;
           const normalized = payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
@@ -115,4 +114,3 @@ async function dispatchWorkItemTurn(params) {
 export {
   dispatchWorkItemTurn
 };
-//# sourceMappingURL=turn.js.map

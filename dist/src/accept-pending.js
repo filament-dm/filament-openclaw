@@ -35,4 +35,3 @@ export {
   acceptPending,
   loopIds
 };
-//# sourceMappingURL=accept-pending.js.map

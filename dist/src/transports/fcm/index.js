@@ -204,4 +204,3 @@ async function runFcmTransport(ctx, deps = {}) {
 export {
   runFcmTransport
 };
-//# sourceMappingURL=index.js.map

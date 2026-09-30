@@ -11,4 +11,3 @@ var index_default = definePluginEntry({
 export {
   index_default as default
 };
-//# sourceMappingURL=index.js.map

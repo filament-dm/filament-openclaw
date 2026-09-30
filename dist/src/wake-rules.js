@@ -22,4 +22,3 @@ export {
   decideWakeBeforeAddressing,
   isSystemSender
 };
-//# sourceMappingURL=wake-rules.js.map

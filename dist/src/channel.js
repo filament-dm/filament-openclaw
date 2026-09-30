@@ -51,8 +51,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
-      // One account per Filament agent: `config.accounts.<id>`, plus the
-      // legacy top-level token as `default` (src/accounts.ts).
       // oxlint-disable-next-line typescript/no-explicit-any
       listAccountIds: (cfg) => listConfiguredAccountIds(pluginConfigOf(cfg)),
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -134,9 +132,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               messages: item.messages,
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: item.channel_id,
-              // Filament (not OpenClaw) decides who can reach the agent; this
-              // only ever authorizes the backchannel/control-plane item, never
-              // an arbitrary conversation (see the plan's item 5).
+              // Filament, not OpenClaw, decides who can reach the agent; only the
+              // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,
               log: accountLog
             });
@@ -254,4 +251,3 @@ export {
   FILAMENT_CHANNEL_ID,
   registerFilamentChannel
 };
-//# sourceMappingURL=channel.js.map

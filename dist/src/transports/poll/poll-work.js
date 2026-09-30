@@ -189,4 +189,3 @@ export {
   parsePollWorkResponse,
   runPollLoop
 };
-//# sourceMappingURL=poll-work.js.map

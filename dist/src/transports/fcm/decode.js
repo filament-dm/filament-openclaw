@@ -70,4 +70,3 @@ export {
   isInvite,
   isVouch
 };
-//# sourceMappingURL=decode.js.map

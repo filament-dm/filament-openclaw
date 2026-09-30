@@ -5,7 +5,6 @@ class EngagedThreads {
   key(roomId, threadRoot) {
     return `${roomId}\0${threadRoot}`;
   }
-  /** Remember (or refresh) a thread; `threadRoot` is the thread's root event id. */
   record(roomId, threadRoot) {
     const key = this.key(roomId, threadRoot);
     this.keys.delete(key);
@@ -26,6 +25,7 @@ function decideWake(push, ctx) {
       senderId: push.senderId,
       isBackchannel: !!ctx.ccRoomId && push.roomId === ctx.ccRoomId,
       isDirect: push.branchType === "direct_message",
+      // Not `isEveryoneMention`: one broadcast must not wake every agent at once.
       isMention: push.isMentionOfRecipient === true,
       text: push.text,
       senderIsAgent: push.senderIsAgent === true
@@ -43,4 +43,3 @@ export {
   EngagedThreads,
   decideWake
 };
-//# sourceMappingURL=wake-policy.js.map
