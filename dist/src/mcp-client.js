@@ -109,7 +109,7 @@ class FilamentMcpClient {
   }
   async initialize(opts) {
     if (this.initialized) return;
-    const { json } = await this.post(
+    const { status, json } = await this.post(
       this.mcpUrl,
       {
         jsonrpc: "2.0",
@@ -124,6 +124,7 @@ class FilamentMcpClient {
       true,
       opts
     );
+    if (status !== 200 || !json?.result) return;
     const bodySid = json?.result && typeof json.result === "object" ? json.result._sessionId : void 0;
     if (typeof bodySid === "string" && bodySid) this.sessionId = bodySid;
     const instr = json?.result && typeof json.result === "object" ? json.result.instructions : void 0;

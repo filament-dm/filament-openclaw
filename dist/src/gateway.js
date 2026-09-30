@@ -161,6 +161,7 @@ function ensureRecord(parent, key) {
 async function handleGatewayItem(ctx) {
   const { item, log } = ctx;
   const done = { kind: "silent" };
+  if (item.messages.length === 0) return done;
   const fromPrincipal = ctx.principal !== void 0 && item.messages.every((m) => m.sender === ctx.principal);
   if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
     log("filament-gateway: ignoring work outside the principal's backchannel");

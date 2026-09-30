@@ -173,11 +173,18 @@ async function runFcmTransport(ctx, deps = {}) {
     receiver.stop();
     return { fatal: "fcm: registered, but no push token to hand Filament" };
   }
-  const registered = await client.callTool(
-    "register_push_token",
-    { token, platform: PUSH_PLATFORM },
-    { signal: abortSignal }
-  );
+  let registered;
+  try {
+    registered = await client.callTool(
+      "register_push_token",
+      { token, platform: PUSH_PLATFORM },
+      { signal: abortSignal }
+    );
+  } catch (error) {
+    receiver.stop();
+    if (abortSignal.aborted) return {};
+    return { fatal: `fcm: register_push_token threw (${String(error)})` };
+  }
   if (!registered.ok) {
     receiver.stop();
     if (abortSignal.aborted) return {};
