@@ -7,7 +7,7 @@ import {
   PLUGIN_ID,
   pluginConfigFrom
 } from "./accounts.js";
-import { runConnect } from "./connect.js";
+import { retryConnect, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -163,15 +163,16 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         }
         if (token) {
           try {
-            connection = await runConnect({
-              mcpUrl: mcp.mcpUrl,
-              token,
-              accountId,
-              log: accountLog,
-              abortSignal,
-              // Poll needs an ENG-893 server anyway; FCM must work without one.
-              credential: mcp.transport === "poll" ? "exchange" : "direct"
-            });
+            connection = await retryConnect(
+              () => runConnect({
+                mcpUrl: mcp.mcpUrl,
+                token,
+                accountId,
+                log: accountLog,
+                abortSignal
+              }),
+              { log: accountLog, abortSignal }
+            );
             onConnectionChange(connection);
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);

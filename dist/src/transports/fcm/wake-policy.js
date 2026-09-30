@@ -1,3 +1,4 @@
+import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 const MAX_ENGAGED_THREADS = 500;
 class EngagedThreads {
   keys = /* @__PURE__ */ new Set();
@@ -18,27 +19,20 @@ class EngagedThreads {
     return !!threadId && this.keys.has(this.key(roomId, threadId));
   }
 }
-function serverOf(mxid) {
-  const colon = mxid.indexOf(":");
-  return colon === -1 ? "" : mxid.slice(colon + 1);
-}
-function isSystemSender(senderId, selfMxid) {
-  const server = serverOf(selfMxid);
-  return !!server && senderId === `@filament_god:${server}`;
-}
 function decideWake(push, ctx) {
   if (!push.roomId) return { wake: false, reason: "no room" };
-  if (push.senderId && push.senderId === ctx.selfMxid) {
-    return { wake: false, reason: "own message" };
-  }
-  if (isSystemSender(push.senderId, ctx.selfMxid)) {
-    return { wake: false, reason: "system notice" };
-  }
-  if (ctx.ccRoomId && push.roomId === ctx.ccRoomId) return { wake: true, reason: "backchannel" };
-  if (push.branchType === "direct_message") return { wake: true, reason: "direct message" };
-  const mentioned = push.isMentionOfRecipient === true || !!ctx.selfMxid && typeof push.text === "string" && push.text.includes(ctx.selfMxid);
-  if (mentioned) return { wake: true, reason: "mention" };
-  if (push.senderIsAgent === true) return { wake: false, reason: "agent sender, no mention" };
+  const shared = decideWakeBeforeAddressing(
+    {
+      senderId: push.senderId,
+      isBackchannel: !!ctx.ccRoomId && push.roomId === ctx.ccRoomId,
+      isDirect: push.branchType === "direct_message",
+      isMention: push.isMentionOfRecipient === true,
+      text: push.text,
+      senderIsAgent: push.senderIsAgent === true
+    },
+    ctx.selfMxid
+  );
+  if (shared) return shared;
   if (push.isReplyToRecipient === true) return { wake: true, reason: "reply to the agent" };
   if (ctx.engaged.isEngaged(push.roomId, push.threadId)) {
     return { wake: true, reason: "follow-up in an engaged thread" };
@@ -47,7 +41,6 @@ function decideWake(push, ctx) {
 }
 export {
   EngagedThreads,
-  decideWake,
-  isSystemSender
+  decideWake
 };
 //# sourceMappingURL=wake-policy.js.map

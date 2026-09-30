@@ -44,9 +44,7 @@ function bearerStoreInstance() {
   if (!bearerStore) {
     bearerStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
       namespace: BEARER_NAMESPACE,
-      // Keyed per connect token now (see module header), so more than one
-      // entry is the normal case across a token rotation, not an anomaly —
-      // evict the oldest rather than rejecting a legitimate new exchange.
+      // Read only now, but the options must not change: see BEARER_NAMESPACE.
       maxEntries: 16,
       overflowPolicy: "evict-oldest"
     });
@@ -64,9 +62,6 @@ function saveIdentity(accountId, identity) {
 }
 function loadBearer(connectToken) {
   return bearerStoreInstance().lookup(bearerKey(connectToken))?.bearer;
-}
-function saveBearer(connectToken, bearer) {
-  bearerStoreInstance().register(bearerKey(connectToken), { bearer, obtainedAt: Date.now() });
 }
 function loadFcmCredentials(accountId, projectId) {
   const stored = fcmStoreInstance().lookup(accountId);
@@ -98,7 +93,6 @@ export {
   loadIdentity,
   loadReceivedIds,
   recordReceivedId,
-  saveBearer,
   saveFcmCredentials,
   saveIdentity
 };

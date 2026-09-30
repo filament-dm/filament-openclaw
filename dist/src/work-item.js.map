@@ -1,7 +1,7 @@
 {
   "version": 3,
-  "sources": [],
-  "sourcesContent": [],
-  "mappings": "",
+  "sources": ["../../src/work-item.ts"],
+  "sourcesContent": ["/**\n * The unit of inbound work both transports hand to the shared layer.\n *\n * The shape is `poll_work`'s own item minus `reply_with`, in its wire\n * (snake_case) spelling: the poll transport passes items through untouched,\n * and the FCM transport builds one from each push. Where the reply goes is\n * each transport's business \u2014 `reply_with` for poll, src/transports/fcm/\n * reply-route.ts for FCM \u2014 so it is not part of the shared item.\n */\n\nexport interface WorkMessage {\n  event_id: string;\n  sender: string;\n  body: string;\n  ts: number;\n}\n\nexport interface WorkItem {\n  channel_id: string;\n  thread_id: string | null;\n  is_backchannel: boolean;\n  /** A room created as a DM, other than the backchannel. */\n  is_direct?: boolean;\n  messages: WorkMessage[];\n}\n\n/** What the agent sees for a message that carries media and no text. */\nexport const ATTACHMENT_ONLY_BODY = \"(an attachment, with no text)\";\n\n/** What happened when an item was dispatched. */\nexport type DispatchOutcome =\n  | { kind: \"published\" }\n  | { kind: \"silent\" } // deliberate silence, evidenced by the SDK: ack it.\n  | { kind: \"ambiguous\" } // no finals, no explicit skip signal, no error: leave it be (no ack, no pause).\n  | { kind: \"dropped\"; diagnostic: string } // the turn failed, or the server refused the reply: ack it.\n  | { kind: \"retry\"; diagnostic: string } // the reply may not have landed (network, 5xx): no ack, back off.\n  | { kind: \"fatal\"; diagnostic: string }; // the bearer was rejected: no ack; the account stops.\n"],
+  "mappings": "AA2BO,MAAM,uBAAuB;",
   "names": []
 }

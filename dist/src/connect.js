@@ -1,15 +1,47 @@
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
-import {
-  ConnectAbortedError,
-  resolveBearer
-} from "./credentials.js";
-import { sleepAbortable } from "./util.js";
+import { resolveBearer } from "./credentials.js";
+import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient } from "./mcp-client.js";
 import { classifyGetSelf } from "./onboarding-core.js";
 import { saveIdentity } from "./token-store.js";
 const GETSELF_MAX_ATTEMPTS = 40;
 const GETSELF_INTERVAL_MS = 3e3;
 const HEARTBEAT_INTERVAL_MS = 2e4;
+class ConnectAbortedError extends Error {
+  constructor() {
+    super("connect aborted");
+    this.name = "ConnectAbortedError";
+  }
+}
+class BearerRejectedError extends Error {
+  constructor() {
+    super("bearer rejected");
+    this.name = "BearerRejectedError";
+  }
+}
+async function retryConnect(connect, opts = {}) {
+  const {
+    log = () => {
+    },
+    abortSignal,
+    sleep = sleepAbortable,
+    backoff = (attempt) => nextBackoffMs(attempt)
+  } = opts;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } catch (error) {
+      if (abortSignal?.aborted || error instanceof ConnectAbortedError) {
+        throw error instanceof ConnectAbortedError ? error : new ConnectAbortedError();
+      }
+      if (error instanceof BearerRejectedError) throw error;
+      const wait = backoff(attempt);
+      log(`filament: connect failed: ${String(error)}; retrying in ${wait}ms`);
+      await sleep(wait, abortSignal);
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
+    }
+  }
+}
 async function runConnect(opts) {
   const {
     mcpUrl,
@@ -18,19 +50,9 @@ async function runConnect(opts) {
     log = () => {
     },
     abortSignal,
-    fetchImpl = fetch,
-    bearerPersistence,
-    credential = "exchange"
+    fetchImpl = fetch
   } = opts;
-  const bearer = await resolveBearer(
-    mcpUrl,
-    token,
-    log,
-    abortSignal,
-    fetchImpl,
-    bearerPersistence,
-    credential
-  );
+  const bearer = resolveBearer(token, log);
   if (abortSignal?.aborted) throw new ConnectAbortedError();
   const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl);
   let heartbeatTimer = null;
@@ -61,7 +83,7 @@ async function runConnect(opts) {
     if (decision.status === "auth_failed") {
       log("filament-connect: bearer rejected (auth failed)");
       stop();
-      throw new Error("bearer rejected");
+      throw new BearerRejectedError();
     }
     log(`filament-connect: not finalized yet (attempt ${attempt}/${GETSELF_MAX_ATTEMPTS})`);
     await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);
@@ -90,7 +112,9 @@ async function runConnect(opts) {
   return { stop, client, identity };
 }
 export {
+  BearerRejectedError,
   ConnectAbortedError,
+  retryConnect,
   runConnect
 };
 //# sourceMappingURL=connect.js.map

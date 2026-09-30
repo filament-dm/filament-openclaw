@@ -30,7 +30,8 @@ function isAbortError(error) {
   return error instanceof Error && error.name === "AbortError" || typeof error === "object" && error !== null && error.name === "AbortError";
 }
 function classifyJsonRpcError(error) {
-  if (error.code === -32001 || error.code === -32003) return "auth";
+  if (error.code === -32001) return "auth";
+  if (error.code <= -32003 && error.code >= -32006 || error.code === -32602) return "tool";
   if (error.code === -32601) return "tool";
   const message = error.message?.toLowerCase() ?? "";
   if (message.includes("revoked") || message.includes("unauthorized") || message.includes("invalid_grant")) {

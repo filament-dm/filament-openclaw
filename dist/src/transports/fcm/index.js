@@ -1,4 +1,6 @@
+import { acceptPending } from "../../accept-pending.js";
 import { isFirstContact } from "../../onboarding-core.js";
+import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
   decodeDirectPusher,
   isChatMessage,
@@ -10,39 +12,6 @@ import { alreadyAnswered, routeReply } from "./reply-route.js";
 import { decideWake, EngagedThreads } from "./wake-policy.js";
 const PUSH_PLATFORM = "android";
 const MAX_SEEN_EVENTS = 500;
-function loopIds(data, key) {
-  if (!data || typeof data !== "object") return [];
-  const list = data[key];
-  if (!Array.isArray(list)) return [];
-  return list.map(
-    (item) => item && typeof item === "object" ? item.loop_id : void 0
-  ).filter((id) => typeof id === "string" && id.length > 0);
-}
-async function acceptPending(client, log, signal) {
-  const sweep = async (kind, list, accept) => {
-    try {
-      const res = await list();
-      for (const loopId of res.ok ? loopIds(res.data, kind) : []) {
-        const accepted = await accept(loopId);
-        log(
-          `filament-fcm: accept ${kind === "invites" ? "invite" : "vouch"} ${loopId} ${accepted.ok ? "ok" : `failed (${accepted.error?.code ?? "?"})`}`
-        );
-      }
-    } catch (error) {
-      log(`filament-fcm: pending ${kind} sweep failed (continuing): ${String(error)}`);
-    }
-  };
-  await sweep(
-    "invites",
-    () => client.listPendingInvites({ signal }),
-    (id) => client.acceptInvite(id, { signal })
-  );
-  await sweep(
-    "vouches",
-    () => client.listVouches({ signal }),
-    (id) => client.acceptVouch(id, { signal })
-  );
-}
 function summarize(push) {
   const parts = [`type=${push.branchType}`];
   if (push.roomId) parts.push(`room=${push.roomId}`);
@@ -53,7 +22,7 @@ function summarize(push) {
 }
 function messageBody(push) {
   if (typeof push.text === "string" && push.text) return push.text;
-  return push.hasMedia || push.text === null ? "(an attachment, with no text)" : "";
+  return push.hasMedia || push.text === null ? ATTACHMENT_ONLY_BODY : "";
 }
 async function runFcmTransport(ctx, deps = {}) {
   const { client, identity, accountId, abortSignal, log, settings } = ctx;
