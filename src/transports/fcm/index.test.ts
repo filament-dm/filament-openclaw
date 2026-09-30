@@ -165,6 +165,34 @@ test("fcm: a mention in a channel runs one turn and threads the reply off it", a
   h.stop();
 });
 
+test("fcm: a turn shows a reading status where the reply goes, and clears it after", async () => {
+  const h = harness();
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.calls.some((c) => c.name === "reply_in_thread"));
+  const names = h.calls.map((c) => c.name).filter((n) => n !== "register_push_token");
+  assert.deepEqual(names.slice(-3), ["set_status", "set_status", "reply_in_thread"]);
+  const [open, clear] = h.calls.filter((c) => c.name === "set_status");
+  assert.deepEqual(open!.args, {
+    channel: ROOM,
+    thread_id: "$m1",
+    status_text: "reading a new message",
+    about_message_id: "$m1",
+    timeout_ms: 60_000,
+  });
+  assert.deepEqual(clear!.args, { channel: ROOM, thread_id: "$m1" });
+  h.stop();
+});
+
+test("fcm: the backchannel status is on the main timeline", async () => {
+  const h = harness();
+  await h.push(chat({ event_id: "$b1", sender_id: PRINCIPAL, content: { text: "status?" } }, CC));
+  await until(() => h.calls.some((c) => c.name === "message_principal"));
+  const open = h.calls.find((c) => c.name === "set_status")!;
+  assert.equal(open.args.channel, CC);
+  assert.equal(open.args.thread_id, null);
+  h.stop();
+});
+
 test("fcm: an unaddressed channel message wakes nothing", async () => {
   const h = harness();
   await h.push(chat({ event_id: "$quiet", content: { text: "just chatting" } }));

@@ -22,6 +22,10 @@ import { decideWake, EngagedThreads } from "./wake-policy.js";
 /** The server's platform name for an FCM (not APNs) token. */
 const PUSH_PLATFORM = "android";
 const MAX_SEEN_EVENTS = 500;
+// The same opening status the server publishes for a poll_work item.
+const OPENING_STATUS = "reading a new message";
+// Nothing refreshes it, so a turn that dies leaves no status behind.
+const STATUS_TIMEOUT_MS = 60_000;
 
 /** For logs: never includes the message text. */
 function summarize(push: DecodedPush): string {
@@ -110,12 +114,33 @@ export async function runFcmTransport(
     }
     log(`filament-fcm: waking for ${eventId} in ${roomId} (${decision.reason})`);
 
+    const routable: RoutablePush = {
+      roomId,
+      eventId,
+      threadId: push.threadId ?? null,
+      isBackchannel,
+      isDirect: push.branchType === "direct_message",
+    };
+    const route = routeReply(routable);
+    const statusScope = {
+      channel: roomId,
+      thread_id: route.tool === "reply_in_thread" ? route.args.message_id : null,
+    };
+    await setStatus({
+      ...statusScope,
+      status_text: OPENING_STATUS,
+      about_message_id: eventId,
+      timeout_ms: STATUS_TIMEOUT_MS,
+    });
+
     let result;
     try {
       result = await ctx.runTurn(item);
     } catch (error) {
       log(`filament-fcm: turn for ${eventId} threw; dropping it: ${String(error)}`);
       return;
+    } finally {
+      await setStatus(statusScope);
     }
     if (result.sawError) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
@@ -126,19 +151,11 @@ export async function runFcmTransport(
       return;
     }
 
-    const routable: RoutablePush = {
-      roomId,
-      eventId,
-      threadId: push.threadId ?? null,
-      isBackchannel,
-      isDirect: push.branchType === "direct_message",
-    };
     if (alreadyAnswered(routable, result.repliedTo)) {
       log(`filament-fcm: a tool already replied to ${eventId}; not posting the final text`);
       return;
     }
     if (abortSignal.aborted) return;
-    const route = routeReply(routable);
     const res = await client.callTool(
       route.tool,
       { ...route.args, markdown_body: result.finalText },
@@ -151,6 +168,16 @@ export async function runFcmTransport(
       const why =
         res.error?.message ?? (typeof data?.error === "string" ? data.error : "no event_id");
       log(`filament-fcm: reply to ${eventId} via ${route.tool} failed: ${why}`);
+    }
+  };
+
+  // Best effort: a paused agent may not publish a status outside its backchannel.
+  const setStatus = async (args: Record<string, unknown>) => {
+    try {
+      const res = await client.callTool("set_status", args, { signal: abortSignal });
+      if (!res.ok) log(`filament-fcm: status not published (${res.kind ?? "?"})`);
+    } catch {
+      // aborted with the transport
     }
   };
 
