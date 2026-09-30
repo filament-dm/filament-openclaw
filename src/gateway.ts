@@ -32,8 +32,8 @@
  *
  * Trade-off, accepted for the PoC: the connect token travels as a message
  * body, so it stays in the room's history — and over FCM, in a push payload.
- * On a poll account it is single-use and exchanged within seconds, after
- * which the server has revoked it; an FCM account uses it as its bearer.
+ * It is the new account's bearer, so it stays valid there for as long as the
+ * agent exists.
  * See plans/openclaw/rfc-009-gateway-agent-inventory-and-picker.md, option C.
  */
 import {

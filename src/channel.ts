@@ -259,8 +259,6 @@ export function registerFilamentChannel(
               accountId,
               log: accountLog,
               abortSignal,
-              // Poll needs an ENG-893 server anyway; FCM must work without one.
-              credential: mcp.transport === "poll" ? "exchange" : "direct",
             });
             onConnectionChange(connection);
           } catch (error) {

@@ -8,19 +8,16 @@
  *   - for an `fcm` account, its FCM registration (so a restart keeps the
  *     same push token) and a bounded window of processed push ids (so Google
  *     does not redeliver them) — both keyed by account id.
- *   - the bearer token used for MCP calls, once a connect token (`fmcp_…`) has
- *     been exchanged for it (see src/connect.ts). The exchange is one-time
- *     (the connect token is single-use and gets revoked by the server on
- *     exchange), so persisting the resulting bearer lets a restart skip the
- *     exchange and reuse it directly.
+ *   - read only: a bearer an earlier connect token was exchanged for, when
+ *     the server still offered that exchange (see src/credentials.ts). The
+ *     exchange revoked the connect token, so that bearer is the only
+ *     credential such an account has left. Nothing writes new entries.
  *
- * The bearer is keyed by the *configured connect token*, not by a single
- * fixed key: `loadBearer`/`saveBearer` derive the store key from a truncated
- * sha256 of the connect token (the token itself is never stored or logged).
- * That way, swapping `plugins.entries.filament-fcm.config.connectToken` to a
- * new `fmcp_…` token always misses the store and triggers a fresh exchange,
- * instead of silently reusing a bearer — and thus the identity — left behind
- * by a previous token.
+ * The bearer is keyed by the *configured connect token*: `loadBearer` derives
+ * the store key from a truncated sha256 of the connect token (the token
+ * itself is never stored or logged). A new `fmcp_…` token always misses the
+ * store, so it never reuses a bearer — and thus the identity — left behind by
+ * a previous token.
  *
  * The poll cursor is deliberately NOT persisted here: it is kept in memory
  * only (see src/poll-work.ts). A restart without a cursor re-scans from the
@@ -142,9 +139,7 @@ function bearerStoreInstance(): SyncStore<StoredBearer> {
   if (!bearerStore) {
     bearerStore = createPluginStateSyncKeyedStore<StoredBearer>(PLUGIN_ID, {
       namespace: BEARER_NAMESPACE,
-      // Keyed per connect token now (see module header), so more than one
-      // entry is the normal case across a token rotation, not an anomaly —
-      // evict the oldest rather than rejecting a legitimate new exchange.
+      // Read only now, but the options must not change: see BEARER_NAMESPACE.
       maxEntries: 16,
       overflowPolicy: "evict-oldest",
     }) as SyncStore<StoredBearer>;
@@ -170,20 +165,9 @@ export function saveIdentity(accountId: string, identity: AgentIdentity): void {
   identityStore().register(accountId, identity);
 }
 
-/**
- * Load the bearer persisted for this connect token, or undefined if it was
- * never exchanged (or was exchanged for a different token).
- */
+/** Load the bearer persisted for this connect token, or undefined if there is none. */
 export function loadBearer(connectToken: string): string | undefined {
   return bearerStoreInstance().lookup(bearerKey(connectToken))?.bearer;
-}
-
-/**
- * Persist a bearer obtained from exchanging this connect token. Never logs
- * the token or the bearer.
- */
-export function saveBearer(connectToken: string, bearer: string): void {
-  bearerStoreInstance().register(bearerKey(connectToken), { bearer, obtainedAt: Date.now() });
 }
 
 /**

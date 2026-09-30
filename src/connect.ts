@@ -2,8 +2,7 @@
  * Filament connect sequence — the client half of onboarding, shared by both
  * transports:
  *
- *   1. Resolve the bearer (src/credentials.ts): the connect token itself for
- *      `fcm`, a one-time exchange for `poll`.
+ *   1. Resolve the bearer (src/credentials.ts): the connect token itself.
  *   2. initialize + get_self until the agent is finalized; learn its identity
  *      (principal, backchannel room, mxid) and persist it per account.
  *   3. Presence heartbeat loop (independent 20s interval, cancelled on abort).
@@ -12,22 +11,23 @@
  * the invite sweep, the first-contact greeting — lives in src/transports/.
  */
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
-import {
-  type BearerPersistence,
-  ConnectAbortedError,
-  type CredentialStrategy,
-  resolveBearer,
-} from "./credentials.js";
+import { resolveBearer } from "./credentials.js";
 import { sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
 import { saveIdentity } from "./token-store.js";
 
-export { ConnectAbortedError };
-
 const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;
 const HEARTBEAT_INTERVAL_MS = 20_000; // < 30s presence-decay window
+
+/** Thrown when connect is aborted before it finishes. */
+export class ConnectAbortedError extends Error {
+  constructor() {
+    super("connect aborted");
+    this.name = "ConnectAbortedError";
+  }
+}
 
 /** A running connection: stop the heartbeat, or use the MCP client for outbound calls. */
 export interface ConnectHandle {
@@ -46,10 +46,6 @@ export interface RunConnectOptions {
   abortSignal?: AbortSignal;
   /** Overridable for tests. */
   fetchImpl?: typeof fetch;
-  /** Overridable for tests (defaults to the real token-store). */
-  bearerPersistence?: BearerPersistence;
-  /** How the configured token becomes a bearer; see src/credentials.ts. */
-  credential?: CredentialStrategy;
 }
 
 /**
@@ -66,19 +62,9 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     log = () => {},
     abortSignal,
     fetchImpl = fetch,
-    bearerPersistence,
-    credential = "exchange",
   } = opts;
 
-  const bearer = await resolveBearer(
-    mcpUrl,
-    token,
-    log,
-    abortSignal,
-    fetchImpl,
-    bearerPersistence,
-    credential,
-  );
+  const bearer = resolveBearer(token, log);
   if (abortSignal?.aborted) throw new ConnectAbortedError();
 
   const client = new FilamentMcpClient(mcpUrl, bearer, undefined, fetchImpl);
