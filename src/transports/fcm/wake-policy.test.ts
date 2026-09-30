@@ -55,6 +55,12 @@ test("wake: another agent needs an explicit mention", () => {
   assert.equal(decide(push({ senderIsAgent: true, isMentionOfRecipient: true })).wake, true);
 });
 
+test("wake: a DM from another agent needs an explicit mention too", () => {
+  const dm = { branchType: "direct_message", senderIsAgent: true } as const;
+  assert.equal(decide(push(dm)).wake, false);
+  assert.equal(decide(push({ ...dm, isMentionOfRecipient: true })).wake, true);
+});
+
 test("wake: never its own messages or the system user's", () => {
   assert.equal(decide(push({ senderId: SELF, roomId: CC })).wake, false);
   assert.equal(decide(push({ senderId: "@filament_god:example.test", roomId: CC })).wake, false);

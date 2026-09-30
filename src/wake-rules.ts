@@ -36,7 +36,7 @@ export function decideWakeBeforeAddressing(
   }
   if (isSystemSender(facts.senderId, selfMxid)) return { wake: false, reason: "system notice" };
   if (facts.isBackchannel) return { wake: true, reason: "backchannel" };
-  if (facts.isDirect) return { wake: true, reason: "direct message" };
+  if (facts.isDirect && !facts.senderIsAgent) return { wake: true, reason: "direct message" };
   const mentioned =
     facts.isMention ||
     (!!selfMxid && typeof facts.text === "string" && facts.text.includes(selfMxid));

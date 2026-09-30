@@ -185,10 +185,16 @@ test("poll: an item with a human and an agent message runs a turn", async () => 
   assert.equal(h.turns.length, 1);
 });
 
-test("poll: a DM from another agent runs a turn, flagged as direct", async () => {
+test("poll: a DM from another agent without a mention is ack'd without a turn", async () => {
   const h = await run([
     offer(item({ is_direct: true, messages: [msg({ sender: BOT, sender_is_agent: true })] })),
   ]);
+  assert.equal(h.turns.length, 0);
+  assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
+});
+
+test("poll: a DM from a person runs a turn, flagged as direct", async () => {
+  const h = await run([offer(item({ is_direct: true, messages: [msg()] }))]);
   assert.equal(h.turns.length, 1);
   assert.equal(h.turns[0]!.is_direct, true);
 });
