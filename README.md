@@ -11,10 +11,10 @@ Work reaches each account over one of two **transports**, chosen by `transport`
 
 | | `fcm` — **default** | `poll` — opt-in |
 |---|---|---|
-| Server needed | any Filament (production, develop) | a synapse carrying ENG-1392 (`poll_work`) and ENG-893 (token exchange) |
+| Server needed | any Filament (production, develop) | a synapse carrying ENG-1392 (`poll_work`) |
 | Inbound | Firebase Cloud Messaging pushes (DirectPusher), one per message | a blocking `poll_work` call returning work items |
-| Credential | the connect token is the bearer | the connect token is exchanged once for a bearer |
-| What wakes the agent | the plugin decides (`src/transports/fcm/wake-policy.ts`, a port of Hermes' policy) | the server decides |
+| Credential | the connect token is the bearer | the connect token is the bearer |
+| What wakes the agent | the plugin decides (`src/transports/fcm/wake-policy.ts`, a port of Hermes' policy) | the server decides; the plugin still skips the agent's own, the system user's and other agents' un-mentioned messages (`src/wake-rules.ts`, shared) |
 | Where the reply goes | the plugin decides (`reply-route.ts`, per the participation rules) | the server's `reply_with` |
 | One reply per message | the turn records a reply a tool already sent | the server's work ledger |
 
@@ -76,9 +76,9 @@ registers a Filament **channel** whose `startAccount` runs the whole integration
 
 - **Settings** (`src/settings.ts`) — per account: token, `mcpUrl`, `transport`, `firebase`,
   `pollWaitSeconds`, each layered over the top-level value.
-- **Connect** (`src/connect.ts`, `src/credentials.ts`) — the bearer (the connect token itself
-  for `fcm`; a one-time, persisted exchange for `poll`), then `initialize` + `get_self` to learn
-  the agent's identity, and a 20s heartbeat for presence.
+- **Connect** (`src/connect.ts`, `src/credentials.ts`) — the bearer (the connect token itself,
+  or the bearer an account persisted when its token was once exchanged), then `initialize` +
+  `get_self` to learn the agent's identity, and a 20s heartbeat for presence.
 - **FCM transport** (`src/transports/fcm/`) — restored from the original FCM plugin: accept
   pending invites/vouches, register with Firebase, `register_push_token`, greet on first
   contact. Each push is decoded; pings get a `/pong`, invites and vouches are accepted, and a
@@ -86,8 +86,12 @@ registers a Filament **channel** whose `startAccount` runs the whole integration
   participation allows (a thread off the message in a channel). A failed turn is logged and
   dropped rather than pausing the account.
 - **Poll transport** (`src/transports/poll/`) — a sequential, cancelable `poll_work` long-poll:
-  one turn per item, published at most once via `reply_with`. Backoff on transient failures;
-  an auth failure or a failed publish pauses the account.
+  one turn per item, published at most once via `reply_with`. Pending invites and vouches are
+  accepted at start, on each `invites` hint in a poll result, and every 10 minutes. An item
+  made only of the agent's own, the system user's or another agent's un-mentioned messages is
+  acknowledged without a turn. A failed turn or a refused reply is logged and acknowledged; a
+  reply that may not have landed is retried on the next offer (three attempts, with backoff).
+  Only an auth failure pauses the account.
 - **Turn** (`src/turn.ts`) — one turn per work item, session isolated per
   account/channel/thread; only `final` dispatcher text is collected. `commandAuthorized` is
   only ever true for the backchannel.
@@ -105,8 +109,8 @@ See [`ROADMAP.md`](ROADMAP.md) for status and what's next.
 ## Install (from this private git repository)
 
 **One-line install** (what the Filament app's "Connect your OpenClaw agent"
-dialog shows; the token is the single-use `fmcp_…` connect token, exchanged
-once by the plugin for a persistent bearer):
+dialog shows; the token is the `fmcp_…` connect token, which the plugin uses as
+its bearer):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash
@@ -149,8 +153,8 @@ reported as an inventory entry (`origin: "openclaw-gateway-status"`, keyed by
 the request id) that the app's connect popup reads. See `src/gateway.ts`.
 
 Trade-off, accepted for the PoC: the connect token for each agent travels as a
-chat message, so it stays in that room's history — single-use, and revoked by
-the server the moment the new account exchanges it.
+chat message, so it stays in that room's history, and it is the new account's
+bearer for as long as the agent exists.
 
 ### Several Filament agents on one gateway
 
@@ -213,7 +217,7 @@ openclaw plugins enable filament-fcm
 openclaw plugins list --enabled
 ```
 
-Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (bearer resolved/exchanged, identity resolved), then `filament: transport fcm` (or `poll`), and `filament-fcm: push token registered` (or `filament-poll:` lines) once the transport is up.
+Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (identity resolved), then `filament: transport fcm` (or `poll`), and `filament-fcm: push token registered` (or `filament-poll:` lines) once the transport is up.
 
 > Replace the repository URL above if you host this somewhere other than
 > `github.com/filament-dm/filament-openclaw`.
@@ -300,7 +304,7 @@ openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --f
 
 | Config key / env var                              | Meaning                                                                 |
 | --------------------------------------------------- | ------------------------------------------------------------------------ |
-| `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | The connect token (`fmcp_…`). `fcm` uses it as the bearer; `poll` exchanges it once and persists the bearer. |
+| `connectToken` (config) / `FILAMENT_MCP_TOKEN` (env) | The connect token (`fmcp_…`), used as the bearer by both transports. |
 | `mcpUrl` (config) / `FILAMENT_MCP_URL` (env)         | Filament's `/mcp/agents` endpoint (defaults to production; set for staging/local). |
 | `transport` (config) / `FILAMENT_TRANSPORT` (env)    | `fcm` (default) or `poll`. install.sh writes it from `FILAMENT_TRANSPORT`. |
 | `firebase` (config) / `FILAMENT_FIREBASE_*` (env)    | `{projectId, apiKey, appId, messagingSenderId}` of the Firebase project the homeserver sends through; each field defaults to the env var, then production. Only `fcm` reads it. |
@@ -387,13 +391,13 @@ limitations (see `ROADMAP.md` for the full detail and the acceptance criteria th
 - **FCM: a failed turn is dropped.** With no ledger to redeliver it, the transport logs it and
   moves on instead of pausing the account.
 - **FCM: the Firebase project must match the homeserver's.** See "Configuration".
-- **poll: `poll_work` itself carries no invites/vouches.** It only ever returns `m.room.message`
-  work, so a poll account joins loops only through `filament_accept_invite` /
-  `filament_accept_vouch`, which the agent calls itself. The FCM transport accepts them as they
-  arrive, as the original plugin did.
+- **poll: vouches are found by the backstop sweep.** `poll_work` hints at pending invites
+  (`invites`), which triggers a sweep, but never at vouches: a poll account accepts those at
+  start and on the 10-minute sweep, where the FCM transport accepts each as it is pushed.
 - **poll: the reachability probe may report `push_path_silent`.** Filament's probe pings over
   FCM; a poll account has no FCM registration to answer it.
-- **poll: publish recovery is not durable.** A publish that fails or returns an ambiguous result
-  pauses the account with a diagnostic rather than guessing whether the reply went through;
-  there is no cross-restart/cross-worker exactly-once guarantee (the server-side work ledger is
-  per-process and expires after 10 minutes).
+- **poll: publish recovery is not durable.** A publish that may not have landed (network, 5xx,
+  no `event_id`) is left unacknowledged, so the server re-offers the item and a fresh turn
+  runs; after three attempts it is acknowledged without a reply. Retry counts are in memory,
+  and there is no cross-restart/cross-worker exactly-once guarantee (the server-side work
+  ledger is per-process and expires after 10 minutes).

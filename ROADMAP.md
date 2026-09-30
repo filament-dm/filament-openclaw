@@ -18,14 +18,21 @@ install, no running Synapse with `poll_work` enabled here — see "Verification 
 - **Layout**: the shared layer in `src/` (settings, connect, turn, tools, gateway) and one
   directory per transport in `src/transports/`, which never import each other.
 - **Bootstrap** (`src/connect.ts`, `src/credentials.ts`): the bearer — the connect token itself
-  for `fcm`, a one-time persisted RFC 8693 exchange for `poll` — then `initialize` + `get_self`
-  and an independent 20s heartbeat.
+  for both transports, or the bearer an account persisted when its token was once exchanged
+  (RFC 8693, since withdrawn server-side) — then `initialize` + `get_self` and an independent
+  20s heartbeat.
 - **FCM** (`src/transports/fcm/`, default): the original plugin's receiver and decoder,
   per account; a port of Hermes' wake policy, threaded replies per the participation rules, and
   a one-reply guard in place of the work ledger. Needs nothing beyond develop's agents API.
 - **Poll** (`src/transports/poll/`): sequential, cancelable `poll_work` long-poll
-  (`max_items: 1`), backoff with jitter on transient failures, hard stop (no restart) on auth
-  failure or a dispatch/publish error; one publish attempt via `reply_with`.
+  (`max_items: 1`), backoff with jitter on transient failures, a wait of `next_poll_ms` when the
+  server is `busy`, hard stop (no restart) only on an auth failure. One publish per offer via
+  `reply_with`: a failed turn or a refused reply is logged and acknowledged, as over FCM; a
+  reply that may not have landed is retried on the next offer, three attempts at most. The
+  wake rules both transports share (`src/wake-rules.ts`) skip items made only of the agent's
+  own, the system user's or other agents' un-mentioned messages. Pending invites and vouches
+  are accepted at start, on an `invites` hint, and every 10 minutes (`src/accept-pending.ts`,
+  shared with FCM).
 - **Dispatch** (`src/turn.ts`): one turn per item, session isolated per
   account/channel/thread, only `final` callbacks collected.
 
@@ -97,7 +104,7 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
 - Returning from `startAccount` without waiting for `ctx.abortSignal` triggers the gateway's own
   recovery/auto-restart (it logs "channel exited without an error" and restarts on a backoff).
   That is the right behavior for the idle/no-token case, but wrong for a fatal
-  auth/dispatch failure — restarting would just hit the same failure again. So on a fatal
+  auth failure — restarting would just hit the same failure again. So on a fatal
   condition, `src/channel.ts` sets an error status via `ctx.setStatus` **and keeps holding the
   account open** (awaiting abort) rather than returning, so the gateway never auto-restarts a
   poll loop that just told us to stop. This is a judgment call under an unverified assumption
@@ -106,20 +113,19 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
 
 ## Limitations (explicit, not silently dropped)
 
-- **`poll_work` itself carries no invites/vouches.** `poll_work` only surfaces `m.room.message`
-  work (see `tools_poll.py:261`); it doesn't deliver `add_to_channel`/`add_to_space`/
-  `knock_invite_received`/reactions/the `io.filament.ping` liveness ping. An agent that isn't
-  already in a conversation has no way to join one through the poll transport alone. This is now
-  covered by the tool surface itself: `filament_list_pending_invites`/`filament_accept_invite`/
-  `filament_list_vouches`/`filament_accept_vouch` are ordinary registered tools (see
-  `src/filament-tools.ts`) the agent calls when asked, rather than a standing background
-  reconciliation loop.
+- **`poll_work` hints at invites, never at vouches.** Work is only `m.room.message`; pending
+  invites the scan saw come back as an `invites` hint (not work), which triggers the same
+  accept sweep FCM runs at start. Vouches are pushed out of band and never appear there, so a
+  poll account picks them up at start and on a 10-minute backstop sweep — up to ten minutes
+  later than an FCM account, which accepts each as it is pushed. Reactions and the
+  `io.filament.ping` liveness ping are still not delivered.
 - **The reachability probe may report `push_path_silent`.** `probe.py` still pings over FCM;
   a poll-only agent has no FCM registration to answer, so its "reachable" signal is stale for
   this transport. The heartbeat loop keeps presence working independently of the probe.
-- **Publish recovery is not durable across restarts/workers.** The MCP client only ever
-  attempts one publish per item; a failed or ambiguous result (no HTTP success + `event_id`)
-  pauses the account with a diagnostic instead of guessing. Separately, the *server's* write
+- **Publish recovery is not durable across restarts/workers.** Each offer gets one publish; a
+  result that may not have landed (network, 5xx, no `event_id`) leaves the item
+  unacknowledged, so the server re-offers it and a fresh turn runs, and after three attempts
+  it is acknowledged without a reply. The attempt count is in memory only. Separately, the *server's* write
   path claims an item (`record_issued`/`claim_reply`) before confirming the send — a send
   failure after the claim can strand the item outside future polls with that cursor. Fixing
   that is server-side work (`work_ledger.py`/`tools_write.py`), tracked separately and not
@@ -128,10 +134,10 @@ Verified by installing `openclaw@2026.7.1-2` as an exact devDependency and readi
   header). A restart re-scans from the start of unread work; this is safe (already-answered
   items are skipped server-side) but means a redelivered item runs a fresh agent turn rather
   than resuming a partial one.
-- **DM classification beyond the backchannel is deferred.** `poll_work` items carry
-  `is_backchannel` but no general conversation-type flag, so every non-backchannel item is
-  routed through the per-channel/group session path, even a true 1:1 DM outside the
-  backchannel. `commandAuthorized` is only ever true for `is_backchannel` items regardless.
+- **DMs follow the server's `is_direct`.** A room created as a DM takes the direct session
+  path, as over FCM; a server that predates the flag sends none, and its DMs take the
+  per-channel/group path. `commandAuthorized` is only ever true for `is_backchannel` items
+  regardless.
 
 ## Verification still needed
 
@@ -145,9 +151,10 @@ following are unverified beyond build/lint/typecheck/unit-tests with a fake MCP 
 - An end-to-end turn against a live agent: multiple `final` callbacks joined correctly, a
   thread reply (`reply_in_thread`) landing on the right anchor, and the fatal-status behavior
   on an auth failure actually preventing the gateway from restarting the account.
-- The token-exchange call against a real Synapse (`oauth_token.py`'s
-  `_exchange_connect_token`), including the `authorization_pending` retry path while an agent
-  finishes onboarding in the Filament app.
+- The `poll_work` fields the poll transport reads beyond `work`/`cursor` — `is_direct`, the
+  per-message `is_mention`/`sender_is_agent`/`has_media`, `invites`, `busy` — against a synapse
+  that serves them. They are coded against the agreed contract and exercised only with a fake
+  client; an older server omits them, which reads as all flags false and no hint.
 - **Resolved against a live gateway (`2026.9.5`):** `api.registerTool()` calls made late (from
   `startAccount`, after `register(api)` returns) *are* honored by the process-wide registry, but
   a harness can resolve its toolset before that late write lands — see
@@ -182,5 +189,6 @@ README's "Tools exposed to the agent" for the full list and the authorization ru
 
 - **How much of Hermes' framing to keep** (e.g. wake-policy prompts, control-vs-reactive
   planes): still the biggest parity judgment call, unaffected by the transport change.
-- **Media** (images/attachments) is not addressed by `poll_work`'s `messages[]` shape
-  (`body` is text only); parity here is a separate, later piece of work.
+- **Media** (images/attachments): `poll_work`'s `messages[]` only flags it (`has_media`), and a
+  media-only message reads as "(an attachment, with no text)", as over FCM. Fetching the media
+  itself is a separate, later piece of work.
