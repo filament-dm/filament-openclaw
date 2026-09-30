@@ -74,7 +74,7 @@ test("callTool: invalid JSON body classifies as protocol", async () => {
   assert.equal(res.kind, "protocol");
 });
 
-test("callTool: JSON-RPC top-level error classifies by code (auth / tool / protocol)", async () => {
+test("callTool: JSON-RPC top-level error classifies by code (auth / refusal as tool / protocol)", async () => {
   const rpcError = (code: number) => () =>
     new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, error: { code, message: "x" } }), {
       status: 200,
@@ -96,6 +96,11 @@ test("callTool: JSON-RPC top-level error classifies by code (auth / tool / proto
       ),
   ]);
   assert.equal((await revoked.callTool("get_self", {})).kind, "auth");
+
+  for (const code of [-32003, -32004, -32005, -32006, -32602]) {
+    const refused = client([rpcError(code)]);
+    assert.equal((await refused.callTool("post_message", {})).kind, "tool", `code ${code}`);
+  }
 
   const missingTool = client([rpcError(-32601)]);
   assert.equal((await missingTool.callTool("nonexistent_tool", {})).kind, "tool");

@@ -12,8 +12,9 @@
  *   - "transient" — 429/5xx, a network failure, or our own call timeout.
  *                   Safe to retry with backoff.
  *   - "tool"      — the call reached the server and got a well-formed
- *                   response, but the tool itself reported failure
- *                   (`result.isError === true`, or "unknown tool").
+ *                   response, but the tool refused it (`result.isError ===
+ *                   true`, "unknown tool", a policy refusal such as a
+ *                   paused agent, or rejected arguments).
  *   - "protocol"  — invalid JSON, a malformed envelope, or any other
  *                   JSON-RPC-level error we can't otherwise classify.
  *
@@ -133,9 +134,12 @@ function isAbortError(error: unknown): boolean {
 
 /** Classify a JSON-RPC top-level `error` object. */
 function classifyJsonRpcError(error: McpError): ClientErrorKind {
-  // -32001 is this server's convention for an auth failure (see onboarding-core.ts);
-  // -32003 covers a revoked/expired token seen from the token-exchange surface.
-  if (error.code === -32001 || error.code === -32003) return "auth";
+  // -32001 is this server's convention for an auth failure (see onboarding-core.ts).
+  if (error.code === -32001) return "auth";
+  // The call was understood and turned down: a policy refusal (-32003
+  // participation, -32004 paused, -32005 principal colocation, -32006
+  // capability) or rejected arguments (-32602). Retrying it as is won't help.
+  if ((error.code <= -32003 && error.code >= -32006) || error.code === -32602) return "tool";
   // -32601 (method not found) means the tool itself is missing/unregistered.
   if (error.code === -32601) return "tool";
   const message = error.message?.toLowerCase() ?? "";
