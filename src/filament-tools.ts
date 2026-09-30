@@ -71,7 +71,8 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
   if (toolName === "post_message") {
     return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
   }
-  if (toolName === "reply_in_thread") return REPLIED_UNKNOWN_ROOM;
+  // Both name only a message: the room they answered in is unknown.
+  if (toolName === "reply_in_thread" || toolName === "quote") return REPLIED_UNKNOWN_ROOM;
   if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
   return null;
 }
@@ -194,7 +195,7 @@ function makeExecute(
   log: (message: string) => void,
 ): FilamentAgentTool["execute"] {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
-  return async (_toolCallId, params) => {
+  return async (_toolCallId, params, signal) => {
     const authz = authorizeToolCall(tier, accountId);
     if (!authz.ok) {
       log(`filament-tools: ${qualifiedName} denied (account ${accountId})`);
@@ -207,7 +208,7 @@ function makeExecute(
     }
     let result: ToolCallResult;
     try {
-      result = await client.callTool(toolName, params);
+      result = await client.callTool(toolName, params, { signal });
     } catch (error) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: call failed — ${String(error)}`);

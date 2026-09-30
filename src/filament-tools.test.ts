@@ -13,6 +13,7 @@ import {
   KNOWN_TOOL_NAMES,
   logToolDrift,
   registerFilamentToolsFromSnapshot,
+  REPLIED_UNKNOWN_ROOM,
   setFilamentClient,
   TOOL_NAME_PREFIX,
   TOOL_SNAPSHOT,
@@ -347,4 +348,38 @@ test("an agent with no Filament account gets no filament_* tools", () => {
   registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
   assert.equal(factories.size, TOOL_SNAPSHOT.length);
   assert.equal(tools.size, 0);
+});
+
+test("execute: the turn's abort signal reaches the call", async () => {
+  const { api, tools } = fakeApi();
+  const { log } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const tool = tools.get(`${TOOL_NAME_PREFIX}list_channels`)!;
+  let seen: AbortSignal | undefined;
+  setFilamentClient({
+    callTool: async (_name, _args, opts) => {
+      seen = opts?.signal;
+      return okResult({ channels: [] });
+    },
+  });
+  const controller = new AbortController();
+  await tool.execute("call-1", {}, controller.signal, undefined, {});
+  assert.equal(seen, controller.signal);
+});
+
+test("a quote counts as the turn's reply", async () => {
+  const { api, tools } = fakeApi();
+  const { log } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const tool = tools.get(`${TOOL_NAME_PREFIX}quote`)!;
+  setFilamentClient({ callTool: async () => okResult({ event_id: "$q" }) });
+  beginFilamentTurn(false);
+  await tool.execute(
+    "call-1",
+    { message_id: "$m", markdown_body: "this" },
+    undefined,
+    undefined,
+    {},
+  );
+  assert.ok(endFilamentTurn().has(REPLIED_UNKNOWN_ROOM));
 });
