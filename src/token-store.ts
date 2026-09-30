@@ -63,7 +63,7 @@ interface StoredFcm {
   credentials: FcmCredentials;
 }
 
-const PLUGIN_ID = "filament-fcm";
+const PLUGIN_ID = "filament-openclaw";
 // Per-account FCM state. Not the single-account "fcm" / "received-ids"
 // namespaces the pre-multi-account plugin used (fixed keys, maxEntries 4):
 // reopening a namespace with different options throws on a hot reload.

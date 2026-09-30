@@ -1,5 +1,5 @@
 {
-  "name": "@filament/openclaw-filament-fcm",
+  "name": "@filament/filament-openclaw",
   "version": "0.1.0",
   "description": "OpenClaw plugin that connects an agent to Filament via Firebase Cloud Messaging (FCM) pushes — or, opt-in, a poll_work long-poll — and the Filament MCP-over-HTTP agents API.",
   "private": true,

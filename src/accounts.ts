@@ -3,7 +3,7 @@
  *
  * A Filament connect token belongs to exactly one Filament agent, so each
  * token is its own OpenClaw channel account
- * (`plugins.entries.filament-fcm.config.accounts.<id>.connectToken`), and
+ * (`plugins.entries.filament-openclaw.config.accounts.<id>.connectToken`), and
  * OpenClaw's own `bindings` route that account to an OpenClaw agent:
  *
  *   { agentId: "researcher", match: { channel: "filament", accountId: "researcher" } }
@@ -21,7 +21,7 @@ export const DEFAULT_ACCOUNT_ID = "default";
 
 export const FILAMENT_CHANNEL_ID = "filament";
 
-export const PLUGIN_ID = "filament-fcm";
+export const PLUGIN_ID = "filament-openclaw";
 
 /** The gateway control account's id (src/gateway.ts); install.sh writes it. */
 export const GATEWAY_ACCOUNT_ID = "gateway";

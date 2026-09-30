@@ -2,7 +2,7 @@
 #
 # Connect one Filament agent to an OpenClaw agent on this gateway, installing
 # the filament-openclaw plugin (channel id "filament", plugin id
-# "filament-fcm") the first time. Modeled on filament-hermes/install.sh.
+# "filament-openclaw") the first time. Modeled on filament-hermes/install.sh.
 #
 #   CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=researcher bash install.sh
 #
@@ -16,7 +16,7 @@
 #      install — git, npm or a --link dev checkout — is left alone);
 #   2. creates the OpenClaw agent OPENCLAW_AGENT if the gateway lacks it, and
 #      binds it to its own channel account (account id = agent id), holding
-#      this CONNECT_TOKEN under plugins.entries.filament-fcm.config.accounts;
+#      this CONNECT_TOKEN under plugins.entries.filament-openclaw.config.accounts;
 #   3. waits for that account to connect, so the Filament app flips to online.
 # Re-running with the same token changes nothing; with a new token it
 # replaces the one this agent had.
@@ -56,7 +56,7 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
   "CONNECT_TOKEN is not set. Use the connect command shown in the Filament app."
 export CONNECT_TOKEN
 
-PLUGIN_ID="filament-fcm"
+PLUGIN_ID="filament-openclaw"
 PLUGIN_REF="${PLUGIN_REF:-main}"
 REPO_SSH="git:git@github.com:filament-dm/filament-openclaw.git@${PLUGIN_REF}"
 REPO_HTTPS="git:https://github.com/filament-dm/filament-openclaw.git@${PLUGIN_REF}"

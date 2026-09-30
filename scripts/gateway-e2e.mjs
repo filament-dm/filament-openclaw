@@ -93,7 +93,7 @@ let gatewayConfig = {
   bindings: [],
   plugins: {
     entries: {
-      "filament-fcm": {
+      "filament-openclaw": {
         config: {
           mcpUrl,
           // This harness fakes poll_work; the FCM transport has its own offline
@@ -110,7 +110,7 @@ let registeredPlugin;
 const toolFactories = [];
 const api = {
   config: gatewayConfig,
-  pluginConfig: gatewayConfig.plugins.entries["filament-fcm"].config,
+  pluginConfig: gatewayConfig.plugins.entries["filament-openclaw"].config,
   logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
   registerChannel: ({ plugin }) => {
     registeredPlugin = plugin;
@@ -180,7 +180,7 @@ assert.ok(!JSON.stringify(seen.tools).includes(NEW_TOKEN), "token must not be re
 // 3. Exactly one config write: account + binding, gateway account intact.
 assert.equal(writes.length, 1);
 assert.deepEqual(writes[0].afterWrite, { mode: "auto" });
-const cfg = writes[0].draft.plugins.entries["filament-fcm"].config;
+const cfg = writes[0].draft.plugins.entries["filament-openclaw"].config;
 assert.deepEqual(cfg.accounts.writer, { connectToken: NEW_TOKEN });
 assert.deepEqual(cfg.accounts.gateway, { connectToken: "bearer-not-fmcp", control: true });
 assert.deepEqual(writes[0].draft.bindings, [

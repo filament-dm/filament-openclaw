@@ -40,12 +40,12 @@ test("resolveAccountSettings: an account's token, the shared mcpUrl, never the e
 
 test("connectTokenConfigPath: legacy default vs per-account path", () => {
   assert.equal(
-    connectTokenConfigPath("filament-fcm", "default", { connectToken: "x" }),
-    "plugins.entries.filament-fcm.config.connectToken",
+    connectTokenConfigPath("filament-openclaw", "default", { connectToken: "x" }),
+    "plugins.entries.filament-openclaw.config.connectToken",
   );
   assert.equal(
-    connectTokenConfigPath("filament-fcm", "writer", {}),
-    "plugins.entries.filament-fcm.config.accounts.writer.connectToken",
+    connectTokenConfigPath("filament-openclaw", "writer", {}),
+    "plugins.entries.filament-openclaw.config.accounts.writer.connectToken",
   );
 });
 
@@ -64,13 +64,13 @@ test("resolveToolAccountId: other turns follow the agent's binding", () => {
 
 test("resolveToolAccountId: an unbound single-account install gets that account", () => {
   const config = {
-    plugins: { entries: { "filament-fcm": { config: { connectToken: "fmcp_x" } } } },
+    plugins: { entries: { "filament-openclaw": { config: { connectToken: "fmcp_x" } } } },
   };
   assert.equal(resolveToolAccountId({ agentId: "main", config }, undefined, {}), "default");
   const two = {
     plugins: {
       entries: {
-        "filament-fcm": {
+        "filament-openclaw": {
           config: { accounts: { a: { connectToken: "x" }, b: { connectToken: "y" } } },
         },
       },

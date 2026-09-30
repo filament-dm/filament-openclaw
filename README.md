@@ -25,8 +25,8 @@ in `src/transports/<name>/` and neither imports the other; `src/channel.ts`
 picks one per account. Outbound always goes through Filament's **MCP-over-HTTP
 agents API**, with a bearer token (not a Matrix access token).
 
-The plugin id (`filament-fcm`) and manifest are unchanged for config/storage
-compatibility — renaming either would need a migration for existing installs.
+The plugin id is `filament-openclaw`. Installs made under the earlier id
+`filament-openclaw` are not migrated: uninstall that id and pair again.
 
 ## OpenClaw channels
 
@@ -63,9 +63,9 @@ Trust gates *whether a plugin may load and register*; **origin** gates *which ru
 Because channel registration requires the plugin to be **enabled/trusted**, installation is not complete until you enable it (this is also what silences the gateway's `plugins.allow is empty … non-bundled plugins may auto-load` warning):
 
 ```bash
-openclaw plugins enable filament-fcm          # sets plugins.entries.filament-fcm.enabled = true
+openclaw plugins enable filament-openclaw          # sets plugins.entries.filament-openclaw.enabled = true
 # equivalently / additionally, add it to the trust allow-list:
-openclaw config set plugins.allow '["filament-fcm"]'
+openclaw config set plugins.allow '["filament-openclaw"]'
 ```
 
 ## Current Progress
@@ -162,7 +162,7 @@ Each Filament agent is one **channel account**, and each account is bound to
 its own OpenClaw agent:
 
 ```json5
-plugins: { entries: { "filament-fcm": { config: {
+plugins: { entries: { "filament-openclaw": { config: {
   mcpUrl: "…/mcp/agents",                       // shared by every account
   accounts: {
     researcher: { connectToken: "fmcp_…" },
@@ -202,22 +202,22 @@ Rules of the installer that matter here:
   works too if the host has a key.
 - `dist/` must be committed on the ref you install (see below). A branch whose
   `dist/` is stale or missing fails with the "compiled runtime output" error.
-- `--force` is only needed when the id `filament-fcm` is already installed and
+- `--force` is only needed when the id `filament-openclaw` is already installed and
   you are switching source or ref; a first install does not need it.
   `--force` cannot be combined with `--link`.
 - `--pin` is npm-only. For `git:` the ref in the spec is the pin.
 - To pick up a new commit on the same branch: push, then
-  `openclaw plugins update filament-fcm` re-resolves the recorded ref. To change
+  `openclaw plugins update filament-openclaw` re-resolves the recorded ref. To change
   branch, reinstall with `--force` and the new spec.
 
 Then enable it and restart the gateway so the new code loads (managed gateways auto-restart):
 
 ```bash
-openclaw plugins enable filament-fcm
+openclaw plugins enable filament-openclaw
 openclaw plugins list --enabled
 ```
 
-Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (identity resolved), then `filament: transport fcm` (or `poll`), and `filament-fcm: push token registered` (or `filament-poll:` lines) once the transport is up.
+Verify it loaded by checking the gateway log for `filament: registered channel 'filament'` and the `filament-connect:` startup lines (identity resolved), then `filament: transport fcm` (or `poll`), and `filament-openclaw: push token registered` (or `filament-poll:` lines) once the transport is up.
 
 > Replace the repository URL above if you host this somewhere other than
 > `github.com/filament-dm/filament-openclaw`.
@@ -229,7 +229,7 @@ If you want to immediately evaluate your changes while editing the package, link
 ```bash
 npm install # installs deps and builds dist/ (via the prepare script)
 openclaw plugins install --link ./filament-openclaw --force
-openclaw plugins enable filament-fcm
+openclaw plugins enable filament-openclaw
 ```
 
 Scripts:
@@ -297,7 +297,7 @@ gh release download v0.1.0 --pattern '*.tgz'
 To test the tarball locally without publishing to NPM or ClawHub:
 
 ```bash
-openclaw plugins install npm-pack:./filament-openclaw-filament-fcm-0.1.0.tgz --force
+openclaw plugins install npm-pack:./filament-filament-openclaw-0.1.0.tgz --force
 ```
 
 ## Configuration

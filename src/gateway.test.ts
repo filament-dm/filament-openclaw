@@ -142,7 +142,9 @@ test("applyAgentConnect: creates the account and binding on an empty draft", () 
   assert.deepEqual(displaced, []);
   assert.deepEqual(draft, {
     plugins: {
-      entries: { "filament-fcm": { config: { accounts: { writer: { connectToken: TOKEN } } } } },
+      entries: {
+        "filament-openclaw": { config: { accounts: { writer: { connectToken: TOKEN } } } },
+      },
     },
     bindings: [{ agentId: "writer", match: { channel: "filament", accountId: "writer" } }],
   });
@@ -152,7 +154,7 @@ test("applyAgentConnect: keeps other channels and accounts, the gateway account 
   const draft: Record<string, unknown> = {
     plugins: {
       entries: {
-        "filament-fcm": {
+        "filament-openclaw": {
           enabled: true,
           config: {
             mcpUrl: "http://x/mcp/agents",
@@ -170,7 +172,7 @@ test("applyAgentConnect: keeps other channels and accounts, the gateway account 
     ],
   };
   applyAgentConnect(draft, "writer", TOKEN);
-  const config = (draft.plugins as any).entries["filament-fcm"].config;
+  const config = (draft.plugins as any).entries["filament-openclaw"].config;
   assert.equal(config.mcpUrl, "http://x/mcp/agents");
   assert.deepEqual(config.accounts.gateway, { connectToken: "fmcp_g", control: true });
   assert.deepEqual(config.accounts.reviewer, { connectToken: "fmcp_r" });
@@ -181,13 +183,13 @@ test("applyAgentConnect: keeps other channels and accounts, the gateway account 
 test("applyAgentConnect: one Filament account per agent — the displaced one is removed", () => {
   const draft: Record<string, unknown> = {
     plugins: {
-      entries: { "filament-fcm": { config: { connectToken: "fmcp_legacy", accounts: {} } } },
+      entries: { "filament-openclaw": { config: { connectToken: "fmcp_legacy", accounts: {} } } },
     },
     bindings: [{ agentId: "researcher", match: { channel: "filament", accountId: "default" } }],
   };
   const { displaced } = applyAgentConnect(draft, "researcher", TOKEN);
   assert.deepEqual(displaced, ["default"]);
-  const config = (draft.plugins as any).entries["filament-fcm"].config;
+  const config = (draft.plugins as any).entries["filament-openclaw"].config;
   assert.equal(config.connectToken, undefined);
   assert.deepEqual(draft.bindings, [
     { agentId: "researcher", match: { channel: "filament", accountId: "researcher" } },
@@ -206,7 +208,7 @@ test("after a connect, the tools of the new agent resolve to its own account, ne
   const draft: Record<string, unknown> = {
     plugins: {
       entries: {
-        "filament-fcm": {
+        "filament-openclaw": {
           config: { accounts: { gateway: { connectToken: "fmcp_g", control: true } } },
         },
       },
@@ -232,7 +234,7 @@ test("applyAgentDisconnect removes the account and its binding, nothing else", (
   applyAgentConnect(draft, "writer", TOKEN);
   applyAgentConnect(draft, "reviewer", "fmcp_r");
   applyAgentDisconnect(draft, "writer");
-  const accounts = (draft.plugins as any).entries["filament-fcm"].config.accounts;
+  const accounts = (draft.plugins as any).entries["filament-openclaw"].config.accounts;
   assert.deepEqual(Object.keys(accounts), ["reviewer"]);
   assert.deepEqual(draft.bindings, [
     { agentId: "reviewer", match: { channel: "filament", accountId: "reviewer" } },
@@ -243,7 +245,7 @@ test("applyUnpair removes only the control account", () => {
   const draft: Record<string, unknown> = {
     plugins: {
       entries: {
-        "filament-fcm": {
+        "filament-openclaw": {
           config: {
             accounts: {
               gateway: { connectToken: "g", control: true },
@@ -255,9 +257,10 @@ test("applyUnpair removes only the control account", () => {
     },
   };
   applyUnpair(draft);
-  assert.deepEqual(Object.keys((draft.plugins as any).entries["filament-fcm"].config.accounts), [
-    "writer",
-  ]);
+  assert.deepEqual(
+    Object.keys((draft.plugins as any).entries["filament-openclaw"].config.accounts),
+    ["writer"],
+  );
 });
 
 test("wouldChange: a repeated connect is a no-op, so it never triggers a reload", () => {
@@ -288,7 +291,7 @@ test("handleGatewayItem: connect consumes, reports applied, then writes — and 
   ]);
   assert.ok(!JSON.stringify(h.statuses).includes(TOKEN), "the token must never be reported");
   assert.equal(h.drafts.length, 1);
-  const accounts = (h.drafts[0]!.plugins as any).entries["filament-fcm"].config.accounts;
+  const accounts = (h.drafts[0]!.plugins as any).entries["filament-openclaw"].config.accounts;
   assert.deepEqual(accounts.writer, { connectToken: TOKEN });
 });
 
@@ -394,7 +397,7 @@ test("applyAgentDisconnect: unbinds by agent, deleting whatever account it point
   const draft: Record<string, unknown> = {
     plugins: {
       entries: {
-        "filament-fcm": {
+        "filament-openclaw": {
           config: { connectToken: "fmcp_legacy", accounts: { writer: { connectToken: "w" } } },
         },
       },
@@ -406,7 +409,7 @@ test("applyAgentDisconnect: unbinds by agent, deleting whatever account it point
     ],
   };
   applyAgentDisconnect(draft, "researcher");
-  const config = (draft.plugins as any).entries["filament-fcm"].config;
+  const config = (draft.plugins as any).entries["filament-openclaw"].config;
   assert.equal(config.connectToken, undefined, "the legacy default account goes with its binding");
   assert.deepEqual(Object.keys(config.accounts), ["writer"]);
   assert.deepEqual(
