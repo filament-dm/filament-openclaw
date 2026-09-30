@@ -407,3 +407,10 @@ test("applyAgentDisconnect: unbinds by agent, deleting whatever account it point
     ["writer:filament", "researcher:telegram"],
   );
 });
+
+test("handleGatewayItem: an item with no messages is ignored", async () => {
+  const h = harness("", { messages: [] });
+  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
+  assert.deepEqual(h.consumed, []);
+  assert.equal(h.drafts.length, 0);
+});

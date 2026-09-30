@@ -275,6 +275,7 @@ export interface GatewayItemContext {
 export async function handleGatewayItem(ctx: GatewayItemContext): Promise<DispatchOutcome> {
   const { item, log } = ctx;
   const done: DispatchOutcome = { kind: "silent" };
+  if (item.messages.length === 0) return done;
   const fromPrincipal =
     ctx.principal !== undefined && item.messages.every((m) => m.sender === ctx.principal);
   if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
