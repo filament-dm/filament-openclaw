@@ -37,9 +37,9 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   const reply = (result) => send({ jsonrpc: "2.0", id: json.id, result });
-  const toolResult = (data) =>
-    reply({ content: [{ type: "text", text: JSON.stringify(data) }] });
-  if (json.method === "initialize") return reply({ protocolVersion: "2025-03-26", capabilities: {} });
+  const toolResult = (data) => reply({ content: [{ type: "text", text: JSON.stringify(data) }] });
+  if (json.method === "initialize")
+    return reply({ protocolVersion: "2025-03-26", capabilities: {} });
   if (json.method?.startsWith("notifications/")) {
     res.writeHead(202);
     return res.end();
@@ -47,7 +47,11 @@ const server = http.createServer(async (req, res) => {
   if (json.method === "tools/list") return reply({ tools: [] });
   const { name, arguments: args } = json.params;
   if (name === "get_self") {
-    return toolResult({ user_id: "@gw:example.test", owner: { user_id: PRINCIPAL }, cc_room_id: CC });
+    return toolResult({
+      user_id: "@gw:example.test",
+      owner: { user_id: PRINCIPAL },
+      cc_room_id: CC,
+    });
   }
   if (name === "poll_work") {
     seen.polls += 1;
@@ -60,7 +64,12 @@ const server = http.createServer(async (req, res) => {
             thread_id: null,
             is_backchannel: true,
             messages: [
-              { event_id: "$cmd", sender: PRINCIPAL, body: `/filament connect writer ${NEW_TOKEN} req-e2e`, ts: 1 },
+              {
+                event_id: "$cmd",
+                sender: PRINCIPAL,
+                body: `/filament connect writer ${NEW_TOKEN} req-e2e`,
+                ts: 1,
+              },
             ],
             reply_with: { tool: "post_message", args: { channel: CC } },
           },
@@ -72,7 +81,13 @@ const server = http.createServer(async (req, res) => {
       });
     }
     await new Promise((r) => setTimeout(r, 200));
-    return toolResult({ work: [], cursor: "c:1", next_poll_ms: 1000, truncated: false, acknowledged: 0 });
+    return toolResult({
+      work: [],
+      cursor: "c:1",
+      next_poll_ms: 1000,
+      truncated: false,
+      acknowledged: 0,
+    });
   }
   if (name === "post_message" || name === "reply_in_thread") {
     seen.posts.push(args);
@@ -195,5 +210,9 @@ assert.equal(toolFactories[0].factory({ agentId: "coordinator", config: gatewayC
 // 5. No token in any log line.
 assert.ok(!logs.join("\n").includes(NEW_TOKEN), "token must not be logged");
 
-console.log("gateway e2e OK", { polls: seen.polls, reports: seen.tools.length, writes: writes.length });
+console.log("gateway e2e OK", {
+  polls: seen.polls,
+  reports: seen.tools.length,
+  writes: writes.length,
+});
 console.log(logs.filter((l) => l.includes("gateway")).join("\n"));

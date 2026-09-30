@@ -13,9 +13,7 @@ const MCP_PROTOCOL_VERSION = "2025-03-26";
 // Same list as EXCLUDED_TOOLS in src/filament-tools.ts.
 const EXCLUDED_TOOLS = new Set(["poll_work", "register_push_token", "list_push_tokens"]);
 
-const OUTPUT_PATH = fileURLToPath(
-  new URL("../src/filament-tools.snapshot.json", import.meta.url),
-);
+const OUTPUT_PATH = fileURLToPath(new URL("../src/filament-tools.snapshot.json", import.meta.url));
 
 async function postJsonRpc(url, bearer, sessionIdRef, body, expectJson) {
   const response = await fetch(url, {
@@ -39,9 +37,7 @@ async function main() {
   const mcpUrl = process.env.FILAMENT_MCP_URL;
   const bearer = process.env.FILAMENT_MCP_BEARER;
   if (!mcpUrl || !bearer) {
-    console.error(
-      "snapshot-tools: FILAMENT_MCP_URL and FILAMENT_MCP_BEARER must both be set.",
-    );
+    console.error("snapshot-tools: FILAMENT_MCP_URL and FILAMENT_MCP_BEARER must both be set.");
     process.exitCode = 1;
     return;
   }
