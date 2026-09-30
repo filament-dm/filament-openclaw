@@ -204,3 +204,42 @@ test("pollWork sends cursor/ack/wait_seconds/max_items and replyWith merges args
   assert.equal(replyBody.params.name, "reply_in_thread");
   assert.deepEqual(replyBody.params.arguments, { message_id: "$root", markdown_body: "hello" });
 });
+
+test("initialize: a failed handshake is not remembered; the next call runs it again", async () => {
+  const methods: string[] = [];
+  const record =
+    (handler: Handler): Handler =>
+    (url, init) => {
+      methods.push(JSON.parse(String(init?.body ?? "{}")).method);
+      return handler(url, init);
+    };
+  const c = new FilamentMcpClient(
+    "https://example.test/mcp/agents",
+    "fmcp_test",
+    undefined,
+    makeFetch([
+      record(() => new Response("upstream down", { status: 502 })),
+      record(initHandler),
+      record(notifiedHandler),
+      record(
+        () =>
+          new Response(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 3,
+              result: { content: [{ type: "text", text: "{}" }] },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    ]),
+  );
+  await c.initialize();
+  await c.callTool("get_self");
+  assert.deepEqual(methods, [
+    "initialize",
+    "initialize",
+    "notifications/initialized",
+    "tools/call",
+  ]);
+});

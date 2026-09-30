@@ -195,7 +195,7 @@ export class FilamentMcpClient {
 
   async initialize(opts?: CallOptions): Promise<void> {
     if (this.initialized) return;
-    const { json } = await this.post(
+    const { status, json } = await this.post(
       this.mcpUrl,
       {
         jsonrpc: "2.0",
@@ -210,6 +210,8 @@ export class FilamentMcpClient {
       true,
       opts,
     );
+    // Not initialized: the next call runs the handshake again.
+    if (status !== 200 || !json?.result) return;
     // Some servers carry the session id in the body rather than a header.
     const bodySid =
       json?.result && typeof json.result === "object"
