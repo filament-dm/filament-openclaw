@@ -5,16 +5,16 @@ import { isSystemSender } from "../../wake-rules.js";
 import type { DecodedPush } from "./decode.js";
 import { decideWake, EngagedThreads } from "./wake-policy.js";
 
-const SELF = "@a_test1.1:filament-dev.local";
-const CC = "!cc:filament-dev.local";
-const ROOM = "!general:filament-dev.local";
+const SELF = "@a_test1.1:example.test";
+const CC = "!cc:example.test";
+const ROOM = "!general:example.test";
 
 function push(overrides: Partial<DecodedPush> = {}): DecodedPush {
   return {
     branchType: "channel_message",
     eventId: "$e1",
     roomId: ROOM,
-    senderId: "@u_test2:filament-dev.local",
+    senderId: "@u_test2:example.test",
     text: "hello everyone",
     threadId: null,
     raw: {},
@@ -57,10 +57,7 @@ test("wake: another agent needs an explicit mention", () => {
 
 test("wake: never its own messages or the system user's", () => {
   assert.equal(decide(push({ senderId: SELF, roomId: CC })).wake, false);
-  assert.equal(
-    decide(push({ senderId: "@filament_god:filament-dev.local", roomId: CC })).wake,
-    false,
-  );
+  assert.equal(decide(push({ senderId: "@filament_god:example.test", roomId: CC })).wake, false);
   assert.equal(isSystemSender("@filament_god:elsewhere.example", SELF), false);
 });
 

@@ -1,31 +1,21 @@
 /**
- * Per-account settings: where Filament is, which token to use, and how work
- * reaches this account.
- *
- * Transport: `fcm` (the default — what production Filament speaks) or `poll`
- * (the `poll_work` long-poll, which only a synapse carrying ENG-1392 serves).
- * Set once for every account at the top of the plugin config, or per account;
- * install.sh writes the top-level value from `FILAMENT_TRANSPORT`.
- *
- * Firebase: the project an `fcm` account registers with. It must be the
- * project the homeserver sends through, or the token registers fine and is
- * never delivered to; defaults to production.
+ * Per-account settings. An `fcm` account must register with the Firebase project the server sends
+ * through: a token from another project registers fine and is never delivered to.
  */
 import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 
 const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
 
-/** Bounds for the configurable `pollWaitSeconds`: server max is 60, and a
- *  known intermediary (the filament-dev.local nginx dev proxy) times out
- *  around 60s, so nothing above that is usable end to end. */
+// The server caps `wait_seconds` at 60, and an intermediary proxy can time out around 60s.
 export const MIN_POLL_WAIT_SECONDS = 1;
 export const MAX_POLL_WAIT_SECONDS = 60;
 
+// `poll` needs a server that supports `poll_work`.
 export type Transport = "fcm" | "poll";
 
 export const DEFAULT_TRANSPORT: Transport = "fcm";
 
-/** The Firebase project an `fcm` account registers with (public identifiers, not secrets). */
+/** Public client identifiers, not secrets. */
 export interface FirebaseSettings {
   projectId: string;
   apiKey: string;
@@ -33,9 +23,7 @@ export interface FirebaseSettings {
   messagingSenderId: string;
 }
 
-// Filament's production Firebase project — the same values the Electron
-// desktop client ships (apps/electron/src/fcm-push-receiver.ts) and the
-// filament-hermes plugin defaults to.
+// Filament's production Firebase project (public client config).
 const PRODUCTION_FIREBASE: FirebaseSettings = {
   projectId: "filament-8ce44",
   apiKey: "AIzaSyBtYzzP3IRpmIZ57dp1PMS4Y8RPjTB0snk",
@@ -44,42 +32,27 @@ const PRODUCTION_FIREBASE: FirebaseSettings = {
 };
 
 export interface McpSettings {
-  /**
-   * The raw connect-token input: a string, a `${ENV}` shorthand, or a SecretRef
-   * object. Resolved to a concrete token by the caller (which has the gateway
-   * config needed to resolve file/exec refs). Undefined = not configured.
-   */
+  /** A string, `${ENV}` shorthand, or SecretRef; file/exec refs need the gateway config. */
   tokenInput?: unknown;
   mcpUrl: string;
   transport: Transport;
   firebase: FirebaseSettings;
-  /**
-   * The `poll_work` `wait_seconds` to request, already clamped to
-   * [MIN_POLL_WAIT_SECONDS, MAX_POLL_WAIT_SECONDS]. Undefined when not
-   * configured (or not a finite number) — the caller falls back to
-   * poll-work.ts's own default.
-   */
   pollWaitSeconds?: number;
 }
 
-/** Parse and clamp a configured `pollWaitSeconds` value; undefined if absent/invalid. */
 function clampPollWaitSeconds(raw: unknown): number | undefined {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return undefined;
   return Math.min(MAX_POLL_WAIT_SECONDS, Math.max(MIN_POLL_WAIT_SECONDS, Math.trunc(n)));
 }
 
-/** `poll` only when asked for by name; anything else is the default. */
 export function parseTransport(raw: unknown): Transport | undefined {
   if (typeof raw !== "string") return undefined;
   const value = raw.trim().toLowerCase();
   return value === "poll" || value === "fcm" ? value : undefined;
 }
 
-/**
- * The Firebase project: config fields win, then `FILAMENT_FIREBASE_*` (the
- * names filament-hermes reads), then production — field by field.
- */
+/** Field by field: config, then `FILAMENT_FIREBASE_*`, then production. */
 function resolveFirebase(raw: unknown, env: NodeJS.ProcessEnv): FirebaseSettings {
   const cfg = asRecord(raw);
   const pick = (key: keyof FirebaseSettings, envName: string): string => {
@@ -95,12 +68,7 @@ function resolveFirebase(raw: unknown, env: NodeJS.ProcessEnv): FirebaseSettings
   };
 }
 
-/**
- * Settings for one channel account: its own `accounts.<id>` entry layered
- * over the top-level fields (so `mcpUrl`/`transport`/`firebase`/
- * `pollWaitSeconds` can be set once for every account). The `default`
- * account is the top-level shape itself.
- */
+/** An `accounts.<id>` entry over the top-level fields; `default` is the top level itself. */
 export function resolveAccountSettings(
   pluginConfig: unknown,
   accountId: string,
@@ -116,7 +84,6 @@ export function resolveAccountSettings(
   return resolveMcpSettings({ ...shared, ...entry }, { ...env, FILAMENT_MCP_TOKEN: "" });
 }
 
-/** The config path a secret-input resolver reports for an account's token. */
 export function connectTokenConfigPath(
   pluginId: string,
   accountId: string,
@@ -128,12 +95,7 @@ export function connectTokenConfigPath(
     : `plugins.entries.${pluginId}.config.accounts.${accountId}.connectToken`;
 }
 
-/**
- * Resolve the MCP endpoint, the connect-token *input*, the transport and its
- * knobs from plugin config, falling back to env (`FILAMENT_MCP_TOKEN`/
- * `FILAMENT_MCP_URL`/`FILAMENT_TRANSPORT`/`FILAMENT_FIREBASE_*`) then the
- * production defaults. A present token input is the gate that enables connect.
- */
+/** Config, then env, then production defaults. A present token input is what enables connect. */
 export function resolveMcpSettings(
   pluginConfig: unknown,
   env: NodeJS.ProcessEnv = process.env,

@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import { resolveBearer } from "./credentials.js";
 
-/** Fake persistence keyed by connect token, mirroring token-store.ts's real keying. */
 function memoryPersistence(initial?: Record<string, string>) {
   const stored = new Map<string, string>(Object.entries(initial ?? {}));
   return (connectToken: string) => stored.get(connectToken);

@@ -1,11 +1,6 @@
 /**
- * The unit of inbound work both transports hand to the shared layer.
- *
- * The shape is `poll_work`'s own item minus `reply_with`, in its wire
- * (snake_case) spelling: the poll transport passes items through untouched,
- * and the FCM transport builds one from each push. Where the reply goes is
- * each transport's business — `reply_with` for poll, src/transports/fcm/
- * reply-route.ts for FCM — so it is not part of the shared item.
+ * The unit of inbound work both transports share: `poll_work`'s item minus `reply_with`, in its
+ * wire (snake_case) spelling, so the poll transport passes items through untouched.
  */
 
 export interface WorkMessage {
@@ -24,10 +19,8 @@ export interface WorkItem {
   messages: WorkMessage[];
 }
 
-/** What the agent sees for a message that carries media and no text. */
 export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";
 
-/** What happened when an item was dispatched. */
 export type DispatchOutcome =
   | { kind: "published" }
   | { kind: "silent" } // deliberate silence, evidenced by the SDK: ack it.

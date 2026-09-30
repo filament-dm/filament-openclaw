@@ -31,7 +31,6 @@ function itemFixture(overrides: Partial<PollWorkItem> = {}): PollWorkItem {
   };
 }
 
-/** A fake client whose pollWork responses are supplied one call at a time. */
 function fakeClient(
   responses: Array<ToolCallResult | ((signal: AbortSignal | undefined) => Promise<ToolCallResult>)>,
 ): { client: PollClient; calls: unknown[] } {

@@ -72,12 +72,12 @@
           "fcm",
           "poll"
         ],
-        "description": "How work reaches the account. fcm (default): Firebase Cloud Messaging pushes, what production Filament serves. poll: the poll_work long-poll, which needs a synapse carrying ENG-1392."
+        "description": "How work reaches the account. fcm (default): Firebase Cloud Messaging pushes, what production Filament serves. poll: the poll_work long-poll (requires a server that supports it)."
       },
       "firebase": {
         "type": "object",
         "additionalProperties": false,
-        "description": "The Firebase project an fcm account registers with; it must be the one the homeserver sends through. Each field defaults to FILAMENT_FIREBASE_* and then to production.",
+        "description": "The Firebase project an fcm account registers with; it must be the one the Filament server sends through. Each field defaults to FILAMENT_FIREBASE_* and then to production.",
         "properties": {
           "projectId": {
             "type": "string",
@@ -162,7 +162,7 @@
         "type": "integer",
         "minimum": 1,
         "maximum": 60,
-        "description": "How long (seconds) each poll_work long-poll blocks server-side waiting for work (default 30, matching the server default; clamped to 1-60, the server's own max). Kept at or below 60 so an intermediary with a ~60s timeout (e.g. an nginx dev proxy) doesn't cut the connection before the server's own wait completes."
+        "description": "How long (seconds) each poll_work long-poll blocks server-side waiting for work (default 30, matching the server default; clamped to 1-60, the server's own max). Kept at or below 60 so an intermediary proxy with a ~60s timeout doesn't cut the connection before the server's own wait completes."
       }
     }
   },

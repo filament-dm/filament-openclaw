@@ -5,7 +5,6 @@ import { FilamentMcpClient } from "./mcp-client.js";
 
 type Handler = (url: string, init: RequestInit | undefined) => Response | Promise<Response>;
 
-/** Build a fake `fetch` that serves one handler per call, in order. */
 function makeFetch(handlers: Handler[]): typeof fetch {
   let i = 0;
   return (async (url: unknown, init?: RequestInit) => {

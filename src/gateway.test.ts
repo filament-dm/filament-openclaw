@@ -16,8 +16,8 @@ import {
 } from "./gateway.js";
 import type { WorkItem } from "./work-item.js";
 
-const PRINCIPAL = "@u_test1:filament-dev.local";
-const CC_ROOM = "!gateway-cc:filament-dev.local";
+const PRINCIPAL = "@u_test1:example.test";
+const CC_ROOM = "!gateway-cc:example.test";
 const TOKEN = "fmcp_abc123";
 
 const gatewayConfig = {
@@ -66,8 +66,6 @@ function harness(body: string, overrides: Partial<WorkItem> = {}) {
   return { ctx, consumed, statuses, drafts };
 }
 
-// ── inventory ────────────────────────────────────────────────────────────────
-
 test("listGatewayAgents: identity name/emoji, falls back to entry name then id, marks bound", () => {
   assert.deepEqual(listGatewayAgents(gatewayConfig), [
     { id: "coordinator", name: "Chief of Staff" },
@@ -89,8 +87,6 @@ test("inventoryEntries: only the four keys the server's tool inventory accepts, 
     assert.equal(JSON.parse(entry.description).id, entry.name);
   }
 });
-
-// ── commands ─────────────────────────────────────────────────────────────────
 
 test("parseGatewayCommand: every verb, the request id, and the rejections", () => {
   assert.deepEqual(parseGatewayCommand(`  /filament connect writer ${TOKEN} req-1 `, "$e"), {
@@ -133,8 +129,6 @@ test("parseGatewayCommand: every verb, the request id, and the rejections", () =
     assert.equal(parseGatewayCommand(bad, "e")?.kind, "invalid", bad);
   }
 });
-
-// ── config mutation ──────────────────────────────────────────────────────────
 
 test("applyAgentConnect: creates the account and binding on an empty draft", () => {
   const draft: Record<string, unknown> = {};
@@ -227,8 +221,6 @@ test("after a connect, the tools of the new agent resolve to its own account, ne
   );
 });
 
-// ── disconnect / unpair ─────────────────────────────────────────────────────
-
 test("applyAgentDisconnect removes the account and its binding, nothing else", () => {
   const draft: Record<string, unknown> = {};
   applyAgentConnect(draft, "writer", TOKEN);
@@ -279,8 +271,6 @@ test("wouldChange: a repeated connect is a no-op, so it never triggers a reload"
     false,
   );
 });
-
-// ── the control handler ──────────────────────────────────────────────────────
 
 test("handleGatewayItem: connect consumes, reports applied, then writes — and never chats", async () => {
   const h = harness(`/filament connect writer ${TOKEN} req-9`);

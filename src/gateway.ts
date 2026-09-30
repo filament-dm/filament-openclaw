@@ -1,40 +1,14 @@
 /**
- * The gateway control account: Filament drives this OpenClaw gateway through
- * one Filament agent's backchannel, with no terminal after pairing.
+ * The gateway control account: a Filament agent (`control: true`) that never runs an agent turn.
+ * It publishes this gateway's OpenClaw agents in its tool inventory and obeys `/filament` commands
+ * from its principal by editing the gateway config, whose reload starts or stops the affected
+ * account. Outcomes go to the inventory as status entries, never into the chat.
  *
- * Pairing is an ordinary connect (install.sh with OPENCLAW_GATEWAY=1): a
- * Filament agent whose account is marked `control: true`. That account never
- * runs an agent turn. Instead it
+ * A command counts only in this account's backchannel, with every message from the `get_self`
+ * principal, in that principal's `ccRoomId`.
  *
- *   - reports this gateway's OpenClaw agents to Filament, over the existing
- *     tool-inventory side channel (POST /mcp/agents/tools), one entry per
- *     agent with origin "openclaw-agent" — the Filament app reads it back with
- *     GET /_filament/agents/{id}/tools and shows it as a picker;
- *   - obeys commands from its principal in its own backchannel —
- *     `/filament connect <agent-id> <fmcp_token> [<request-id>]`,
- *     `/filament disconnect <agent-id> [<request-id>]`,
- *     `/filament unpair [<request-id>]`, `/filament agents` — by writing the
- *     gateway config with `api.runtime.config.mutateConfigFile`; the
- *     gateway's reload then starts or stops the affected account.
- *
- * It never writes into the chat: the Filament app hides this agent and its
- * backchannel. A command is consumed with a read receipt, and its outcome is
- * published as a status entry in the same inventory (origin
- * "openclaw-gateway-status", keyed by the request id), which the app's
- * connect popup reads.
- *
- * Authority is the backchannel's: a command counts only when the item is the
- * backchannel of this account, every message in it is from the principal
- * `get_self` returned, and the room is that principal's `ccRoomId`.
- *
- * Either transport delivers the commands: poll_work items, or backchannel
- * pushes over FCM. Consuming is a read receipt (`mark_read`) in both.
- *
- * Trade-off, accepted for the PoC: the connect token travels as a message
- * body, so it stays in the room's history — and over FCM, in a push payload.
- * It is the new account's bearer, so it stays valid there for as long as the
- * agent exists.
- * See plans/openclaw/rfc-009-gateway-agent-inventory-and-picker.md, option C.
+ * Security: the connect token travels as a message body, so it stays in the room's history (and,
+ * over FCM, in a push payload). It is the new account's bearer, valid while the agent exists.
  */
 import {
   asRecord,
@@ -45,31 +19,22 @@ import {
 } from "./accounts.js";
 import type { DispatchOutcome, WorkItem } from "./work-item.js";
 
-/** Tool-inventory `origin` for one OpenClaw agent entry. The app filters on it. */
 export const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
 
-/** OpenClaw's implicit agent when `agents.entries` is empty (`BOOTSTRAP_AGENT_ID`). */
+/** OpenClaw's implicit agent when `agents.entries` is empty. */
 const IMPLICIT_AGENT_ID = "main";
 
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const RESERVED_ACCOUNT_IDS: ReadonlySet<string> = new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
 
-/** One OpenClaw agent, as the picker shows it. */
 export interface GatewayAgent {
   id: string;
   name: string;
   emoji?: string;
-  /** The Filament channel account bound to this agent, if any. */
   boundAccount?: string;
-  /** That account's Filament agent (its mxid), once it has connected. */
   filamentUserId?: string;
 }
 
-/**
- * The gateway's OpenClaw agents, read from the live gateway config.
- * `filamentUserOf` maps a bound account to the Filament agent it connected
- * as, so the app can tell which OpenClaw agent a Filament agent is.
- */
 export function listGatewayAgents(
   gatewayConfig: unknown,
   filamentUserOf: (accountId: string) => string | undefined = () => undefined,
@@ -106,7 +71,7 @@ export function listGatewayAgents(
   });
 }
 
-/** One tool-inventory entry: the server allows only these four string keys. */
+/** The server accepts only these four string keys in an inventory entry. */
 export interface InventoryEntry {
   name: string;
   description: string;
@@ -114,11 +79,7 @@ export interface InventoryEntry {
   health: "ok";
 }
 
-/**
- * The agents as tool-inventory entries. `name` is the agent id; the picker's
- * fields ride in `description` as JSON, the one free-text key the inventory
- * accepts. A borrowed shape, flagged: fine for the PoC, a real endpoint later.
- */
+/** An agent's fields ride in `description` as JSON, the one free-text key. */
 export function inventoryEntries(
   agents: GatewayAgent[],
   statuses: readonly GatewayStatus[] = [],
@@ -139,16 +100,13 @@ export function inventoryEntries(
   ];
 }
 
-/** Tool-inventory `origin` for a command's outcome. The connect popup reads it. */
 export const STATUS_INVENTORY_ORIGIN = "openclaw-gateway-status";
 
-/** How many recent outcomes ride along in each inventory report. */
 export const MAX_REPORTED_STATUSES = 10;
 
 /**
- * The outcome of one command, as the app sees it. "applied" is reported
- * before the config write (which reloads the plugin and clears this list);
- * the app confirms a connect by the new agent coming online.
+ * "applied" is reported before the config write, which reloads the plugin and clears this list; a
+ * connect is confirmed by the new agent coming online.
  */
 export interface GatewayStatus {
   requestId: string;
@@ -168,11 +126,7 @@ export type GatewayCommand = { requestId: string } & (
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-/**
- * Parse one message body; null when it isn't a `/filament` command at all.
- * A trailing request id (from the app) keys the command's reported outcome;
- * a hand-typed command without one gets the event id.
- */
+/** A trailing request id keys the reported outcome; a hand-typed command gets the event id. */
 export function parseGatewayCommand(
   body: string,
   fallbackRequestId: string,
@@ -209,12 +163,8 @@ export function parseGatewayCommand(
 }
 
 /**
- * Point `agentId` at a new Filament account holding `token`, in place on a
- * mutable config draft. Account id = agent id. One Filament account per
- * OpenClaw agent: any other account bound to this agent is removed, as is
- * any binding of this account to another agent — an unbound account would
- * land on the system agent (install.sh enforces the same invariant).
- * Returns what it displaced, for the reply.
+ * One Filament account per OpenClaw agent, with account id = agent id. Other bindings of either are
+ * removed: an unbound account would land on the system agent.
  */
 export function applyAgentConnect(
   draft: Record<string, unknown>,
@@ -252,11 +202,7 @@ export function applyAgentConnect(
   return { displaced: [...displaced] };
 }
 
-/**
- * Unbind the OpenClaw agent `agentId` from Filament: drop its binding and
- * delete the account that binding pointed at — whatever its id, including the
- * legacy `default` (the top-level token). Idempotent.
- */
+/** Deletes whichever account the binding pointed at, including `default` (the top-level token). */
 export function applyAgentDisconnect(draft: Record<string, unknown>, agentId: string): void {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   const accounts = asRecord(config.accounts);
@@ -276,13 +222,11 @@ export function applyAgentDisconnect(draft: Record<string, unknown>, agentId: st
   }
 }
 
-/** Remove the gateway control account itself: the gateway stops taking commands. */
 export function applyUnpair(draft: Record<string, unknown>): void {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   delete asRecord(config.accounts)[GATEWAY_ACCOUNT_ID];
 }
 
-/** Whether `mutate` would change the plugin config or bindings of `gatewayConfig`. */
 export function wouldChange(
   gatewayConfig: unknown,
   mutate: (draft: Record<string, unknown>) => void,
@@ -312,32 +256,21 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
   return created;
 }
 
-/** What the control handler needs from its surroundings; all injectable for tests. */
 export interface GatewayItemContext {
   item: WorkItem;
   principal: string | undefined;
   ccRoomId: string | undefined;
-  /** The live gateway config, to check the agent exists. */
   gatewayConfig: unknown;
-  /** Consume the item's messages with a read receipt, before any config write. */
   consume: (upToEventId: string) => Promise<void>;
-  /** Persist a config mutation through the gateway (mutateConfigFile). */
   mutateConfig: (mutate: (draft: Record<string, unknown>) => void) => Promise<void>;
-  /** Record outcomes and re-send the inventory carrying them. */
   report: (statuses: GatewayStatus[]) => Promise<void>;
   log: (message: string) => void;
 }
 
 /**
- * Handle one work item on the control account. Never runs an agent turn,
- * never writes into the chat, and never returns "error" — that would pause
- * the account, and the gateway account must stay up to take the next
- * command. Every path acks the item ("silent").
- *
- * An item can carry several commands (the app sends a disconnect and an
- * unpair back to back): they are applied in order and written as ONE config
- * mutation, because the first write reloads the plugin and would cut the
- * rest off.
+ * Never returns "error": that would pause the account, which must stay up for the next command.
+ * Several commands in one item are written as ONE config mutation, because the first write reloads
+ * the plugin and would cut the rest off.
  */
 export async function handleGatewayItem(ctx: GatewayItemContext): Promise<DispatchOutcome> {
   const { item, log } = ctx;

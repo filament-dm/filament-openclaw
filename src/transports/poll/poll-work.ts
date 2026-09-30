@@ -1,24 +1,10 @@
 /**
- * The `poll_work` long-poll loop: the opt-in transport (`transport: "poll"`).
- * Runs inside the poll transport (./index.ts), sequential and cancelable via
- * the gateway's `ctx.abortSignal`.
+ * The `poll_work` long-poll loop. The next call goes out as soon as the previous one resolves
+ * (`wait_seconds` blocks server-side); it waits only after a failure, a reply that may not have
+ * landed, or a `busy` answer. The cursor is in memory only: a restart re-scans unread work.
  *
- *   poll_work({cursor, ack, wait_seconds, max_items: 1})
- *     → for each item: dispatch one agent turn → publish once → (loop)
- *
- * The next call is issued as soon as the previous one resolves
- * (`wait_seconds` provides the blocking wait server-side). The loop waits
- * only after a failed poll_work call (backoff), after a reply that may not
- * have landed (backoff, the item is re-offered), and when the server says it
- * is `busy` (its `next_poll_ms`) — never on ordinary empty results.
- *
- * Pending invites and vouches are accepted at start, whenever a poll carries
- * an `invites` hint, and every `PENDING_SWEEP_INTERVAL_MS` regardless: a
- * vouch never shows up in `invites`.
- *
- * The cursor is kept in memory only (not persisted) — see token-store.ts's
- * header for why that's an acceptable PoC tradeoff: a restart re-scans from
- * scratch, and already-answered items are skipped server-side regardless.
+ * Pending invites and vouches are swept at start, on an `invites` hint, and every
+ * `PENDING_SWEEP_INTERVAL_MS`: a vouch never shows up in `invites`.
  */
 import {
   type CallOptions,
@@ -65,7 +51,6 @@ interface ParsedPollWorkResponse {
   busy: boolean;
 }
 
-/** Defensively validate the poll_work response shape before trusting it. */
 export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -131,7 +116,6 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
   };
 }
 
-/** Minimal client surface the loop needs (matches FilamentMcpClient). */
 export interface PollClient {
   pollWork(
     args: { cursor?: string | null; ack?: string[]; wait_seconds: number; max_items: number },
@@ -146,28 +130,21 @@ export interface PollLoopOptions {
   dispatchItem: (item: PollWorkItem) => Promise<DispatchOutcome>;
   waitSeconds?: number;
   maxItems?: number;
-  /** Accept pending invites and vouches (never throws). Absent: no sweeps. */
+  /** Never throws. Absent: no sweeps. */
   sweepPending?: () => Promise<void>;
-  /** Overridable for tests (defaults to exponential backoff with jitter). */
   backoffMs?: (attempt: number) => number;
-  /** Overridable for tests. */
   now?: () => number;
 }
 
 export interface PollLoopResult {
-  /** Present when the loop stopped for a reason the account should surface
-   * (the bearer was rejected). Absent on a clean abort. */
   fatal?: string;
 }
 
 export const PENDING_SWEEP_INTERVAL_MS = 10 * 60_000;
-/** How many times an item's reply is tried before it is acknowledged without one. */
 export const MAX_REPLY_ATTEMPTS = 3;
 const BUSY_DEFAULT_WAIT_MS = 1_000;
 
-// Matches the server's own default (max 60s). A longer wait risks losing the
-// race against an intermediary's own timeout (e.g. the filament-dev.local
-// nginx dev proxy times out around 60s) before the server's response lands.
+// The server's default. Waits near 60s can lose the race against an intermediary proxy's timeout.
 const DEFAULT_WAIT_SECONDS = 30;
 
 function itemKey(item: PollWorkItem): string {
@@ -186,10 +163,8 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
   let cursor: string | undefined;
   let pendingAck: string[] = [];
   let failureStreak = 0;
-  // Keyed by place + event_ids. The server re-offers an unanswered, un-ack'd
-  // item on the very next poll (its cursor never advances past delivered
-  // work), so without these a turn that keeps producing nothing, or a reply
-  // that keeps failing, would re-run the model on every poll.
+  // The server re-offers an unanswered, unacked item on the next poll, so without these a turn that
+  // keeps producing nothing, or a reply that keeps failing, would re-run the model on every poll.
   const ambiguousSeen = new Set<string>();
   const replyAttempts = new Map<string, number>();
 
@@ -216,7 +191,6 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
         { signal: abortSignal, timeoutMs: waitSeconds * 1000 + POLL_TIMEOUT_MARGIN_MS },
       );
     } catch (error) {
-      // Caller-initiated abort (see mcp-client.ts's post()): exit quietly.
       if (abortSignal.aborted) break;
       failureStreak += 1;
       const backoff = backoffMs(failureStreak);
@@ -264,8 +238,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
       if (!item.reply_with) {
-        // The server already marked this read (_consume_unanswerable) —
-        // nothing the agent could do would consume it.
+        // The server already marked this read: nothing the agent could do would consume it.
         log(`filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`);
         continue;
       }
@@ -300,10 +273,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
         }
       }
       if (outcome.kind === "ambiguous") {
-        // First time: leave it unacknowledged so it is re-offered once more
-        // rather than silently counted as done. Second time for the same
-        // messages: ack it and say so, instead of re-running the model on
-        // every poll for an item that keeps yielding nothing.
+        // Re-offered once more, then acked: no silent success, and no model run on every poll.
         if (ambiguousSeen.has(key)) {
           ambiguousSeen.delete(key);
           log(
@@ -314,7 +284,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ambiguousSeen.add(key);
         }
       }
-      // "published": the write tool already marked it answered — no ack.
+      // "published": replying already acknowledged it.
     }
   }
   return {};

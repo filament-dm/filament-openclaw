@@ -1,9 +1,4 @@
-/** Small abort-aware helpers shared by connect.ts and poll-work.ts. */
-
-/**
- * Sleep for `ms`, resolving early (without throwing) when `signal` aborts.
- * Callers must check `signal.aborted` afterward to tell the two apart.
- */
+/** Resolves early, without throwing, on abort: callers check `signal.aborted` afterward. */
 export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve) => {
@@ -28,10 +23,7 @@ export interface BackoffOptions {
   capMs?: number;
 }
 
-/**
- * Exponential backoff with full jitter, capped. `attempt` is 1-based (the
- * count of consecutive failures so far).
- */
+/** Exponential backoff with full jitter; `attempt` is 1-based. */
 export function nextBackoffMs(attempt: number, opts: BackoffOptions = {}): number {
   const base = opts.baseMs ?? 1_000;
   const cap = opts.capMs ?? 60_000;

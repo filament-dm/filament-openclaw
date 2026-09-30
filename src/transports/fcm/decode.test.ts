@@ -117,7 +117,7 @@ test("decodes a vouch (knock_invite_received) — loop_id is on the branch", () 
   assert.equal(isChatMessage(decoded.branchType), false);
 });
 
-test("decodes the branch fields DirectPusher added after the first plugin", () => {
+test("decodes branch event id, thread, reply-to-recipient, agent sender and media", () => {
   const decoded = decodeDirectPusher(
     envelope({
       body: JSON.stringify({

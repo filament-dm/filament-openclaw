@@ -1,25 +1,7 @@
 /**
- * The FCM transport — the default, and what production Filament speaks.
- *
- * Needs nothing beyond develop's agents API: no poll_work, no reply_with, no
- * work ledger. The sequence follows the original FCM plugin (`main`, Jonathan
- * Strickland), per account:
- *
- *   accept pending invites/vouches → register with FCM (./receiver.ts) →
- *   register_push_token → first-contact greeting → hold the socket open
- *
- * and each push:
- *
- *   decode (./decode.ts) →
- *     ping           → POST /pong (no model)
- *     invite / vouch → accept it
- *     chat message   → control account: gateway command (src/gateway.ts)
- *                      otherwise: wake? (./wake-policy.ts) → one agent turn →
- *                      reply once where participation allows (./reply-route.ts)
- *
- * Turns run one at a time per account, in arrival order. A failed turn is
- * logged and dropped: without a ledger there is nothing to redeliver it, and
- * pausing the account would drop everything after it too.
+ * The FCM transport, the default. Turns run one at a time per account, in arrival order. A failed
+ * turn is logged and dropped: nothing redelivers a push, and pausing the account would drop
+ * everything after it too.
  */
 import { acceptPending } from "../../accept-pending.js";
 import { isFirstContact } from "../../onboarding-core.js";
@@ -36,11 +18,11 @@ import { FcmReceiver, type FcmReceiverOptions } from "./receiver.js";
 import { alreadyAnswered, type RoutablePush, routeReply } from "./reply-route.js";
 import { decideWake, EngagedThreads } from "./wake-policy.js";
 
-/** What Filament stores the token as: DirectPusher's FCM (not APNs) kind. */
+/** The server's platform name for an FCM (not APNs) token. */
 const PUSH_PLATFORM = "android";
 const MAX_SEEN_EVENTS = 500;
 
-/** One-line summary of a decoded push for observability (never the whole text). */
+/** For logs: never includes the message text. */
 function summarize(push: DecodedPush): string {
   const parts = [`type=${push.branchType}`];
   if (push.roomId) parts.push(`room=${push.roomId}`);
@@ -50,13 +32,11 @@ function summarize(push: DecodedPush): string {
   return parts.join(" ");
 }
 
-/** The body the agent sees for a push; a media-only message still says what it is. */
 function messageBody(push: DecodedPush): string {
   if (typeof push.text === "string" && push.text) return push.text;
   return push.hasMedia || push.text === null ? ATTACHMENT_ONLY_BODY : "";
 }
 
-/** The receiver surface the transport uses; a fake stands in for it in tests. */
 export interface PushSource {
   start(): Promise<void>;
   token(): string | null;
@@ -75,7 +55,6 @@ export async function runFcmTransport(
   const engaged = new EngagedThreads();
   const seenEvents = new Set<string>();
 
-  // Turns run strictly one after another, in arrival order.
   let chain: Promise<void> = Promise.resolve();
   const enqueue = (work: () => Promise<void>) => {
     chain = chain.then(work).catch((error) => {
@@ -111,7 +90,7 @@ export async function runFcmTransport(
     };
 
     if (ctx.control) {
-      // The gateway only takes commands; the authority check lives there.
+      // handleGatewayItem does the authority check.
       if (isBackchannel) await ctx.handleControl(item);
       return;
     }

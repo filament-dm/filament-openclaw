@@ -8,10 +8,10 @@ import type { TransportContext, TurnResult } from "../types.js";
 import type { FcmMessageEnvelope, FcmReceiverOptions } from "./receiver.js";
 import { runFcmTransport } from "./index.js";
 
-const SELF = "@a_test1.1:filament-dev.local";
-const PRINCIPAL = "@u_test1:filament-dev.local";
-const CC = "!cc:filament-dev.local";
-const ROOM = "!general:filament-dev.local";
+const SELF = "@a_test1.1:example.test";
+const PRINCIPAL = "@u_test1:example.test";
+const CC = "!cc:example.test";
+const ROOM = "!general:example.test";
 
 type Call = { name: string; args: Record<string, unknown> };
 
@@ -51,7 +51,7 @@ function chat(branch: Record<string, unknown>, roomId = ROOM, pid = String(Math.
         body: JSON.stringify({
           event_id: branch.event_id ?? "$e1",
           room_id: roomId,
-          branch: { type: "channel_message", sender_id: "@u_test2:filament-dev.local", ...branch },
+          branch: { type: "channel_message", sender_id: "@u_test2:example.test", ...branch },
         }),
       },
     },

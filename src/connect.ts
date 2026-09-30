@@ -1,14 +1,6 @@
 /**
- * Filament connect sequence — the client half of onboarding, shared by both
- * transports:
- *
- *   1. Resolve the bearer (src/credentials.ts): the connect token itself.
- *   2. initialize + get_self until the agent is finalized; learn its identity
- *      (principal, backchannel room, mxid) and persist it per account.
- *   3. Presence heartbeat loop (independent 20s interval, cancelled on abort).
- *
- * Everything transport-specific — registering a push token, the poll loop,
- * the invite sweep, the first-contact greeting — lives in src/transports/.
+ * The connect sequence both transports share: resolve the bearer, poll `get_self` until the agent
+ * is finalized, then keep a presence heartbeat.
  */
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
 import { resolveBearer } from "./credentials.js";
@@ -21,7 +13,6 @@ const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;
 const HEARTBEAT_INTERVAL_MS = 20_000; // < 30s presence-decay window
 
-/** Thrown when connect is aborted before it finishes. */
 export class ConnectAbortedError extends Error {
   constructor() {
     super("connect aborted");
@@ -45,9 +36,8 @@ export interface RetryConnectOptions {
 }
 
 /**
- * Keep calling `connect` until it succeeds. A gateway that starts before
- * Filament is reachable would otherwise leave the account idle until the next
- * restart. A rejected bearer or an abort ends the attempts.
+ * A gateway that starts before Filament is reachable would otherwise leave the account idle until
+ * the next restart. A rejected bearer or an abort ends the attempts.
  */
 export async function retryConnect<T>(
   connect: () => Promise<T>,
@@ -75,7 +65,6 @@ export async function retryConnect<T>(
   }
 }
 
-/** A running connection: stop the heartbeat, or use the MCP client for outbound calls. */
 export interface ConnectHandle {
   stop(): void;
   client: FilamentMcpClient;
@@ -84,22 +73,13 @@ export interface ConnectHandle {
 
 export interface RunConnectOptions {
   mcpUrl: string;
-  /** The configured token: a connect token (`fmcp_…`) or an already-issued bearer. */
   token: string;
-  /** The channel account this connection belongs to; keys its stored identity. */
   accountId?: string;
   log?: (message: string) => void;
   abortSignal?: AbortSignal;
-  /** Overridable for tests. */
   fetchImpl?: typeof fetch;
 }
 
-/**
- * Run the connect sequence: resolve a bearer, verify it with a read-only
- * get_self, and start the presence heartbeat. Throws (including
- * `ConnectAbortedError`) if the token is rejected or connect is aborted
- * before finishing.
- */
 export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle> {
   const {
     mcpUrl,
@@ -121,8 +101,6 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     heartbeatTimer = null;
   };
 
-  // initialize + get_self: read-only verification step. Learns identity;
-  // never mutates anything.
   await client.initialize({ signal: abortSignal });
 
   let identity: ResolvedIdentity | null = null;
@@ -163,7 +141,6 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
   );
 
-  // Presence heartbeat loop — independent of the poll loop, cancelled on abort.
   const beat = async () => {
     try {
       await client.heartbeat({ signal: abortSignal });

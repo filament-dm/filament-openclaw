@@ -1,39 +1,16 @@
 #!/usr/bin/env node
 /**
- * Regenerate `src/filament-tools.snapshot.json`: a static array of
- * `{name, description, inputSchema, annotations}` for every tool the live
- * Filament MCP server advertises, minus the tools this plugin never
- * registers (`poll_work`, `register_push_token`, `list_push_tokens` — see
- * `src/filament-tools.ts`'s `EXCLUDED_TOOLS`). `annotations` (specifically
- * `readOnlyHint`) is kept even though it's not part of the minimal spec,
- * because `classifyToolTier` needs it to pick the read/ring0/write gate at
- * registration time now that `tools/list` is no longer fetched before a
- * tool is registered.
- *
- * Talks to the server directly with `initialize` + `tools/list`, mirroring
- * the JSON-RPC request shape `src/mcp-client.ts` (`FilamentMcpClient`) uses
- * — this script is intentionally plain Node (no TS build step needed to run
- * it), so the request bodies are hand-mirrored rather than imported.
- *
- * Requires:
- *   FILAMENT_MCP_URL    e.g. http://filament-dev.local:8448/mcp/agents
- *   FILAMENT_MCP_BEARER an already-issued bearer token for that server
- *
- * Usage:
- *   FILAMENT_MCP_URL=... FILAMENT_MCP_BEARER=... npm run snapshot:tools
- *
- * When no bearer is available (e.g. an agent session with no live gateway
- * to mint one from), the snapshot can instead be produced by reading the
- * tool registry straight out of the `synapse` source — see the header of
- * `/private/tmp/.../scratchpad/dump_tool_schemas.py` (not part of this repo;
- * a throwaway script) for that path. Whichever way produced the *committed*
- * file should be noted in the commit message.
+ * Regenerates `src/filament-tools.snapshot.json` from a live server's `tools/list`, minus the
+ * tools the plugin never registers. Needs FILAMENT_MCP_URL (e.g.
+ * https://<your-filament-host>/mcp/agents) and FILAMENT_MCP_BEARER.
+ * Usage: FILAMENT_MCP_URL=... FILAMENT_MCP_BEARER=... npm run snapshot:tools
  */
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 
+// Same list as EXCLUDED_TOOLS in src/filament-tools.ts.
 const EXCLUDED_TOOLS = new Set(["poll_work", "register_push_token", "list_push_tokens"]);
 
 const OUTPUT_PATH = fileURLToPath(
@@ -63,9 +40,7 @@ async function main() {
   const bearer = process.env.FILAMENT_MCP_BEARER;
   if (!mcpUrl || !bearer) {
     console.error(
-      "snapshot-tools: FILAMENT_MCP_URL and FILAMENT_MCP_BEARER must both be set.\n" +
-        "No bearer available? Generate the snapshot from synapse source instead — see this " +
-        "script's header comment.",
+      "snapshot-tools: FILAMENT_MCP_URL and FILAMENT_MCP_BEARER must both be set.",
     );
     process.exitCode = 1;
     return;

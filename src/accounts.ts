@@ -1,20 +1,7 @@
 /**
- * Channel accounts: one per Filament agent on this gateway.
- *
- * A Filament connect token belongs to exactly one Filament agent, so each
- * token is its own OpenClaw channel account
- * (`plugins.entries.filament-openclaw.config.accounts.<id>.connectToken`), and
- * OpenClaw's own `bindings` route that account to an OpenClaw agent:
- *
- *   { agentId: "researcher", match: { channel: "filament", accountId: "researcher" } }
- *
- * The pre-multi-account shape — one top-level `connectToken` — is the
- * `default` account, so an existing install keeps working unchanged.
- *
- * The same bindings answer the reverse question for tool calls: a
- * `filament_*` tool runs on behalf of an OpenClaw agent, and must reach
- * Filament with the bearer of the account bound to *that* agent, never
- * another agent's (`resolveToolAccountId`).
+ * Channel accounts: one per Filament agent, since a connect token belongs to exactly one agent.
+ * OpenClaw `bindings` route an account to an OpenClaw agent, and a `filament_*` tool call must use
+ * the account bound to its own agent, never another's. The top-level `connectToken` is `default`.
  */
 
 export const DEFAULT_ACCOUNT_ID = "default";
@@ -23,7 +10,7 @@ export const FILAMENT_CHANNEL_ID = "filament";
 
 export const PLUGIN_ID = "filament-openclaw";
 
-/** The gateway control account's id (src/gateway.ts); install.sh writes it. */
+/** install.sh writes this id. */
 export const GATEWAY_ACCOUNT_ID = "gateway";
 
 export function asRecord(value: unknown): Record<string, unknown> {
@@ -39,13 +26,7 @@ export function hasTokenInput(value: unknown): boolean {
   );
 }
 
-/**
- * The channel accounts the plugin config declares: every `accounts.<id>`
- * entry with a token, plus `default` when the legacy top-level
- * `connectToken` (or `FILAMENT_MCP_TOKEN`) is set. With nothing configured,
- * `default` alone is listed so the channel still shows up (idle) in
- * `openclaw channels status`.
- */
+/** With nothing configured, `default` is still listed so the channel shows up (idle) in status. */
 export function listConfiguredAccountIds(
   pluginConfig: unknown,
   env: NodeJS.ProcessEnv = process.env,
@@ -61,21 +42,15 @@ export function listConfiguredAccountIds(
   return ids;
 }
 
-/**
- * Whether an account is a gateway control account (`control: true`): it runs
- * no agent turns and owns no tools — see src/gateway.ts.
- */
 export function isControlAccount(pluginConfig: unknown, accountId: string): boolean {
   return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
 }
 
-/** This plugin's own config inside the full gateway config, or undefined. */
 export function pluginConfigFrom(gatewayConfig: unknown): unknown {
   const entry = asRecord(asRecord(asRecord(gatewayConfig).plugins).entries)[PLUGIN_ID];
   return entry === undefined ? undefined : asRecord(entry).config;
 }
 
-/** The subset of OpenClaw's tool-factory context this module reads. */
 export interface ToolAccountContext {
   config?: unknown;
   getRuntimeConfig?: () => unknown;
@@ -85,11 +60,8 @@ export interface ToolAccountContext {
 }
 
 /**
- * The Filament account a tool call made by this OpenClaw agent belongs to,
- * or null when the agent has none. In order: the account of the Filament
- * turn itself; the account a binding routes to this agent; the only
- * configured account, when there is just one and nothing is bound (the
- * single-agent install, where no binding is needed).
+ * In order: the Filament turn's own account, the account bound to this agent, or the only
+ * configured account when nothing is bound (a single-agent install needs no binding).
  */
 export function resolveToolAccountId(
   ctx: ToolAccountContext,

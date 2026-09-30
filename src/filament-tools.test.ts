@@ -117,8 +117,6 @@ test("contracts/snapshot equality: openclaw.plugin.json's contracts.tools matche
   );
 });
 
-// ── registerFilamentToolsFromSnapshot ───────────────────────────────────────
-
 test("registerFilamentToolsFromSnapshot: registers every snapshot tool, prefixed, synchronously", () => {
   const { api, tools } = fakeApi();
   const { log, lines } = fakeLog();
@@ -257,8 +255,6 @@ test("setFilamentClient/getFilamentClient: holds and clears the current connecti
   assert.equal(getFilamentClient(), null);
 });
 
-// ── drift check (runtime, log-only) ─────────────────────────────────────────
-
 test("logToolDrift: logs server-only and snapshot-only tool names, not the known exclusions", () => {
   const { log, lines } = fakeLog();
   const liveTools: McpToolDescriptor[] = [
@@ -309,8 +305,6 @@ test("checkFilamentToolDrift: a failed tools/list is logged and does not throw",
   await checkFilamentToolDrift(client, log);
   assert.ok(lines.some((l) => l.includes("drift check skipped")));
 });
-
-// ── Two accounts on one gateway ─────────────────────────────────────────────
 
 test("two accounts: each agent's tool calls through its own account's client and turn", async () => {
   const bindings = [

@@ -7,12 +7,12 @@ import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
 import { classifyPublish, runPollTransport } from "./index.js";
 
-const SELF = "@a_test1.1:filament-dev.local";
-const PRINCIPAL = "@u_test1:filament-dev.local";
-const CC = "!cc:filament-dev.local";
-const ROOM = "!general:filament-dev.local";
-const HUMAN = "@u_test2:filament-dev.local";
-const BOT = "@a_test3.1:filament-dev.local";
+const SELF = "@a_test1.1:example.test";
+const PRINCIPAL = "@u_test1:example.test";
+const CC = "!cc:example.test";
+const ROOM = "!general:example.test";
+const HUMAN = "@u_test2:example.test";
+const BOT = "@a_test3.1:example.test";
 
 const ok = (data: unknown): ToolCallResult => ({ ok: true, httpStatus: 200, data });
 
@@ -32,10 +32,6 @@ function item(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/**
- * Runs the transport over a scripted list of poll_work results; once they run
- * out, the account is stopped. Records every poll's args, publish and turn.
- */
 async function run(
   polls: unknown[],
   opts: { control?: boolean; publish?: ToolCallResult; turn?: Partial<TurnResult> } = {},
@@ -62,7 +58,7 @@ async function run(
     },
     listPendingInvites: async () => {
       events.push("list_invites");
-      return ok({ invites: [{ loop_id: "!loop:filament-dev.local" }] });
+      return ok({ invites: [{ loop_id: "!loop:example.test" }] });
     },
     listVouches: async () => ok({ vouches: [] }),
     acceptInvite: async (id: string) => {
@@ -100,11 +96,7 @@ const offer = (work: unknown) => ({ work: [work], cursor: "c:1" });
 
 test("poll: accepts pending invites at start, before the first poll", async () => {
   const h = await run([]);
-  assert.deepEqual(h.events.slice(0, 3), [
-    "list_invites",
-    "accept !loop:filament-dev.local",
-    "poll",
-  ]);
+  assert.deepEqual(h.events.slice(0, 3), ["list_invites", "accept !loop:example.test", "poll"]);
 });
 
 test("poll: a control account never sweeps invites", async () => {
@@ -116,10 +108,10 @@ test("poll: an invites hint in a poll result triggers a sweep", async () => {
   const h = await run([{ work: [], cursor: "c:1", invites: [{ room_id: "!loop:x" }] }]);
   assert.deepEqual(h.events, [
     "list_invites",
-    "accept !loop:filament-dev.local",
+    "accept !loop:example.test",
     "poll",
     "list_invites",
-    "accept !loop:filament-dev.local",
+    "accept !loop:example.test",
     "poll",
   ]);
 });
@@ -174,9 +166,7 @@ test("poll: another agent's message that mentions the agent runs a turn", async 
 });
 
 test("poll: a system notice is ack'd without a turn", async () => {
-  const h = await run([
-    offer(item({ messages: [msg({ sender: "@filament_god:filament-dev.local" })] })),
-  ]);
+  const h = await run([offer(item({ messages: [msg({ sender: "@filament_god:example.test" })] }))]);
   assert.equal(h.turns.length, 0);
   assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
 });

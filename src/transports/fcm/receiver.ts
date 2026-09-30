@@ -1,19 +1,10 @@
 /**
- * The live FCM push receiver for one channel account.
+ * One account's FCM receiver. Each account registers separately: the server keeps one push token
+ * per agent.
  *
- * Restored from the original FCM plugin (Jonathan Strickland, `main`'s
- * src/fcm.ts), made per account: each account registers on its own and keeps
- * its own credentials and processed-id window, because Filament keeps one push
- * token per agent (ENG-1588) and each account is a different agent.
- *
- * Built on `@eneris/push-receiver`, which speaks Google's MCS protocol so a
- * *headless* process can RECEIVE FCM data messages — the same approach the
- * Electron desktop client (`fcm-push-receiver.ts`) and the Python
- * `filament-hermes` plugin (`firebase-messaging`) use. `firebase-admin` only
- * sends, and the `firebase` web SDK needs a browser.
- *
- * Fresh registrations hit Google's flaky PHONE_REGISTRATION_ERROR, so connect
- * is retried with a gentle backoff (the same rationale as the Python plugin).
+ * `@eneris/push-receiver` speaks Google's MCS protocol, so a headless process can receive FCM data
+ * messages: `firebase-admin` only sends, and the `firebase` web SDK needs a browser. Fresh
+ * registrations hit Google's flaky PHONE_REGISTRATION_ERROR, hence the connect retries.
  */
 import { PushReceiver } from "@eneris/push-receiver";
 
@@ -28,11 +19,7 @@ import {
 } from "../../token-store.js";
 import { sleepAbortable } from "../../util.js";
 
-/**
- * The bits of an eneris `MessageEnvelope` we consume. Kept structural so this
- * module doesn't depend on the library's exported type names; `message.data` is
- * the FCM data dict (the DirectPusher payload), `persistentId` the dedup key.
- */
+/** Structural subset of eneris `MessageEnvelope`; `persistentId` is the dedup key. */
 export interface FcmMessageEnvelope {
   message?: { data?: Record<string, unknown> };
   persistentId: string;
@@ -55,18 +42,16 @@ export interface FcmReceiverOptions {
   accountId: string;
   firebase: FirebaseSettings;
   log: (message: string) => void;
-  /** Each new push, after cross-restart dedup by persistent id. */
+  /** Called after cross-restart dedup by persistent id. */
   onMessage: (env: FcmMessageEnvelope) => void;
   abortSignal?: AbortSignal;
 }
 
-/** A live FCM registration + receiver connection with credential persistence. */
 export class FcmReceiver {
   private receiver: PushReceiver | null = null;
 
   constructor(private readonly opts: FcmReceiverOptions) {}
 
-  /** The account's current FCM registration token, once registered. */
   token(): string | null {
     const { accountId, firebase } = this.opts;
     const live = this.receiver?.fcmToken;
@@ -74,7 +59,6 @@ export class FcmReceiver {
     return loadFcmCredentials(accountId, firebase.projectId)?.fcm?.token ?? null;
   }
 
-  /** Register (reusing saved credentials if any) and connect, with retry. */
   async start(): Promise<void> {
     const { accountId, firebase, log, onMessage, abortSignal } = this.opts;
     const saved = loadFcmCredentials(accountId, firebase.projectId);
@@ -90,7 +74,6 @@ export class FcmReceiver {
         appId: firebase.appId,
         messagingSenderId: firebase.messagingSenderId,
       },
-      // eneris Credentials is a superset; we persist/reload it opaquely.
       credentials: (saved ?? null) as never,
       // Seed already-processed ids so Google doesn't redeliver them on reconnect.
       persistentIds: loadReceivedIds(accountId),
@@ -143,7 +126,6 @@ export class FcmReceiver {
     throw new Error(`FCM connect failed after ${attempts} attempts: ${String(lastError)}`);
   }
 
-  /** Tear down the receiver socket. */
   stop(): void {
     this.receiver?.destroy?.();
     this.receiver = null;

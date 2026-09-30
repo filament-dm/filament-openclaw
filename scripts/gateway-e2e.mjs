@@ -1,6 +1,6 @@
-// Offline end-to-end check (poll transport) (`npm run build && node scripts/gateway-e2e.mjs`) of the gateway control account, against the real
-// compiled plugin (dist/), a fake Filament MCP server and a fake gateway API.
-// State dir is isolated to the scratchpad so the user's ~/.openclaw is untouched.
+// Offline end-to-end check of the gateway control account (poll transport) against the compiled
+// plugin (dist/), a fake Filament MCP server and a fake gateway API.
+// Usage: npm run build && node scripts/gateway-e2e.mjs
 import assert from "node:assert/strict";
 import http from "node:http";
 import { mkdtempSync } from "node:fs";
@@ -12,8 +12,8 @@ const SCRATCH = mkdtempSync(path.join(os.tmpdir(), "filament-gateway-e2e-"));
 process.env.OPENCLAW_STATE_DIR = path.join(SCRATCH, "oc-state");
 process.env.OPENCLAW_HOME = path.join(SCRATCH, "oc-home");
 
-const PRINCIPAL = "@u_test1:filament-dev.local";
-const CC = "!gwcc:filament-dev.local";
+const PRINCIPAL = "@u_test1:example.test";
+const CC = "!gwcc:example.test";
 const NEW_TOKEN = "fmcp_newagenttoken123";
 
 const seen = { tools: [], posts: [], reads: [], polls: 0 };
@@ -47,7 +47,7 @@ const server = http.createServer(async (req, res) => {
   if (json.method === "tools/list") return reply({ tools: [] });
   const { name, arguments: args } = json.params;
   if (name === "get_self") {
-    return toolResult({ user_id: "@gw:filament-dev.local", owner: { user_id: PRINCIPAL }, cc_room_id: CC });
+    return toolResult({ user_id: "@gw:example.test", owner: { user_id: PRINCIPAL }, cc_room_id: CC });
   }
   if (name === "poll_work") {
     seen.polls += 1;

@@ -1,7 +1,5 @@
-/** Accepting what an agent was invited or vouched into, for both transports. */
 import type { FilamentMcpClient } from "./mcp-client.js";
 
-/** Extract the `loop_id`s from a list_pending_invites / list_vouches result. */
 export function loopIds(data: unknown, key: "invites" | "vouches"): string[] {
   if (!data || typeof data !== "object") return [];
   const list = (data as Record<string, unknown>)[key];
@@ -18,7 +16,7 @@ export type PendingClient = Pick<
   "listPendingInvites" | "acceptInvite" | "listVouches" | "acceptVouch"
 >;
 
-/** Accept every pending invite and vouch. Never throws. */
+/** Never throws. */
 export async function acceptPending(
   client: PendingClient,
   log: (message: string) => void,

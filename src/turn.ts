@@ -1,24 +1,8 @@
 /**
- * Work-item → agent-turn dispatch for the Filament channel, shared by both
- * transports.
- *
- * A work item (src/work-item.ts) is grouped by `(channel_id, thread_id)` and
- * carries the unread `messages[]` for that spot — poll_work delivers it that
- * way, and the FCM transport builds one per push. There is no bundled
- * per-kind facade for this shape, so this module composes the same
- * SDK primitives OpenClaw's own group-channel path uses — route → envelope →
- * context → buffered-block dispatch — for BOTH direct/backchannel and
- * group/channel items, distinguished only by `peerKind`.
- *
- * This intentionally does NOT use `dispatchInboundDirectDmWithRuntime`
- * (the SDK's one-call direct-DM facade): its `deliver` callback forwards
- * every dispatcher callback (tool/block/final) with no `kind` info, so a
- * caller can't tell a "final" from an intermediate block — which is exactly
- * what a single-publish-per-item design needs to get right. Composing the
- * lower-level primitives ourselves (as done here) exposes `info.kind` on
- * every `deliver` call, so only `"final"` text is collected.
- *
- * All primitives below are exported from `openclaw/plugin-sdk/*`.
+ * Work item to agent turn, shared by both transports. Composes the SDK's route, envelope, context
+ * and buffered-dispatch primitives for direct and group items alike, rather than
+ * `dispatchInboundDirectDmWithRuntime`: that facade's `deliver` drops `info.kind`, so a final
+ * reply can't be told apart from an intermediate block.
  */
 import { createInboundEnvelopeBuilder } from "openclaw/plugin-sdk/inbound-envelope";
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
@@ -29,7 +13,6 @@ import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import type { WorkMessage } from "./work-item.js";
 
 export interface DispatchWorkItemParams {
-  // The channelRuntime surface + gateway config from the channel's startAccount ctx.
   // oxlint-disable-next-line typescript/no-explicit-any
   cfg: any;
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -37,42 +20,31 @@ export interface DispatchWorkItemParams {
   channel: string;
   channelLabel: string;
   accountId: string;
-  /** `"direct"` collapses to the agent's main session (backchannel/true-DM);
-   * `"group"` gets a per-channel session. The caller decides from the item. */
+  /** `"direct"` collapses to the agent's main session; `"group"` gets a per-channel session. */
   peerKind: "direct" | "group";
-  /** The room the item belongs to (`item.channel_id`). */
   channelId: string;
-  /** `item.thread_id`; when present the session is further scoped per-thread. */
   threadId: string | null;
   messages: WorkMessage[];
   recipientAddress: string;
   conversationLabel: string;
-  /** Item-level authorization — true only for `is_backchannel` items. */
   commandAuthorized: boolean;
   log: (message: string) => void;
 }
 
 export interface DispatchTurnResult {
-  /** Finalized reply text (joined `final` callbacks, in order); "" if none. */
   finalText: string;
   sawFinal: boolean;
-  /** The dispatcher explicitly skipped a reply (evidence of deliberate silence). */
+  /** Deliberate silence, as opposed to a turn that produced nothing. */
   sawSkip: boolean;
-  /** The dispatcher reported a terminal error for this turn. */
   sawError: boolean;
   errorDetail?: string;
 }
 
-/** Render one item's messages, sender + event_id preserved, in order. */
 function renderMessages(messages: WorkMessage[]): string {
   return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
 }
 
-/**
- * Route, envelope, and run one work item's agent turn, collecting only
- * `final` text callbacks (never publishing here — the transport publishes
- * at most once after this resolves; see src/transports/).
- */
+/** Never publishes: the transport publishes at most once after this resolves. */
 export async function dispatchWorkItemTurn(
   params: DispatchWorkItemParams,
 ): Promise<DispatchTurnResult> {
@@ -167,8 +139,7 @@ export async function dispatchWorkItemTurn(
         cfg: params.cfg,
         dispatcherOptions: {
           ...replyPipeline,
-          // `info.kind` is "tool" | "block" | "final" — only "final" text is
-          // ever collected. Never publish here; just buffer.
+          // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
           deliver: async (payload: unknown, info: { kind: string }) => {
             if (info?.kind !== "final") return;
             const normalized =

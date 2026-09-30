@@ -1,40 +1,14 @@
 /**
  * MCP-over-HTTP client for Filament's `/mcp/agents` endpoint.
  *
- * JSON-RPC 2.0 over HTTP POST, `Authorization: Bearer <token>`,
- * `Mcp-Session-Id` capture/replay, an `initialize` + `notifications/initialized`
- * handshake, and a tool-result unwrapper.
- *
- * Every outcome is classified so a caller never mistakes an error for success
- * (see `ClientErrorKind`):
- *   - "auth"      — 401/403, or a token-revoked/invalid JSON-RPC error. The
- *                   caller should stop retrying and surface a fatal status.
- *   - "transient" — 429/5xx, a network failure, or our own call timeout.
- *                   Safe to retry with backoff.
- *   - "tool"      — the call reached the server and got a well-formed
- *                   response, but the tool refused it (`result.isError ===
- *                   true`, "unknown tool", a policy refusal such as a
- *                   paused agent, or rejected arguments).
- *   - "protocol"  — invalid JSON, a malformed envelope, or any other
- *                   JSON-RPC-level error we can't otherwise classify.
- *
- * Every call accepts an optional `AbortSignal` and a per-call timeout. A
- * timeout classifies as "transient" (ok:false, returned normally); an
- * externally-aborted signal is NOT swallowed — it rethrows so the caller
- * (the poll loop) can tell "abort" apart from "the server is slow".
+ * Failures come back classified (`ClientErrorKind`), never thrown: "auth" should stop retries,
+ * "transient" is safe to retry. The exception is the caller's own abort, which rethrows so the poll
+ * loop can tell stopping apart from a slow server.
  */
 
-/** MCP protocol version we advertise. */
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 
-/**
- * One entry from a `tools/list` response, as Filament's server generates it
- * (see synapse's `ToolDef.to_mcp_schema()`): the tool's dispatch name, its
- * model-facing description, its JSON Schema argument shape, and MCP
- * annotations. `annotations.readOnlyHint` is the one flag this plugin relies
- * on — every read tool sets it `true`, every write tool (and `poll_work`)
- * sets it `false` — see `src/filament-tools.ts`.
- */
+/** The server sets `annotations.readOnlyHint` true on every read tool, false on every write tool. */
 export interface McpToolDescriptor {
   name: string;
   description?: string;
@@ -63,34 +37,25 @@ export interface JsonRpcResponse {
   error?: McpError;
 }
 
-/** The outcome of a single tools/call. */
 export interface ToolCallResult {
   ok: boolean;
   httpStatus: number;
-  /** Parsed inner JSON from the MCP content envelope (on success, or on a "tool" failure). */
   data?: unknown;
   error?: McpError;
-  /** Present only when ok is false. */
   kind?: ClientErrorKind;
 }
 
-/** Default per-call timeout for ordinary (non-long-poll) tool calls. */
 const DEFAULT_TIMEOUT_MS = 15_000;
-/** Margin added on top of `wait_seconds` for poll_work's long-poll timeout. */
 export const POLL_TIMEOUT_MARGIN_MS = 15_000;
 
 export interface CallOptions {
-  /** Abort the call (propagates as a thrown error, never swallowed as "transient"). */
   signal?: AbortSignal;
-  /** Per-call timeout in ms; a timeout is reported as ok:false / kind:"transient". */
   timeoutMs?: number;
 }
 
 /**
- * Unwrap an MCP tool result into its inner JSON. Handles both shapes seen in
- * the wild: `{ content: [{ type: "text", text }] }` (spec-standard) and
- * `{ type: "text", text }` (Filament synapse's `_handle_tools_call`). Falls
- * back to the raw value when there's no text envelope.
+ * Accepts both the spec's `{ content: [{ type: "text", text }] }` and the bare
+ * `{ type: "text", text }` that Filament's server returns.
  */
 export function parseToolResult(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
@@ -122,7 +87,6 @@ export function parseToolResult(result: unknown): unknown {
   return result;
 }
 
-/** True when `error` is the DOMException/Error thrown by an aborted fetch. */
 function isAbortError(error: unknown): boolean {
   return (
     (error instanceof Error && error.name === "AbortError") ||
@@ -132,15 +96,11 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-/** Classify a JSON-RPC top-level `error` object. */
 function classifyJsonRpcError(error: McpError): ClientErrorKind {
-  // -32001 is this server's convention for an auth failure (see onboarding-core.ts).
+  // -32001 is the server's auth-failure code.
   if (error.code === -32001) return "auth";
-  // The call was understood and turned down: a policy refusal (-32003
-  // participation, -32004 paused, -32005 principal colocation, -32006
-  // capability) or rejected arguments (-32602). Retrying it as is won't help.
+  // Policy refusals (-32003..-32006) and rejected arguments (-32602): retrying as is won't help.
   if ((error.code <= -32003 && error.code >= -32006) || error.code === -32602) return "tool";
-  // -32601 (method not found) means the tool itself is missing/unregistered.
   if (error.code === -32601) return "tool";
   const message = error.message?.toLowerCase() ?? "";
   if (
@@ -158,7 +118,7 @@ export class FilamentMcpClient {
   private sessionId: string | null = null;
   private nextId = 1;
   private initialized = false;
-  /** Server `instructions` from the initialize response (the first-contact directive lives here). */
+  /** From the initialize response; carries the server's first-contact directive. */
   instructions: string | null = null;
 
   constructor(
@@ -171,12 +131,7 @@ export class FilamentMcpClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  /**
-   * POST a JSON body with a timeout + abort signal. Resolves to the HTTP
-   * status and parsed JSON (or a parse-failure marker) on any response that
-   * reaches us; only rethrows when the call could not complete at all
-   * (network failure, our own timeout, or the caller's abort).
-   */
+  /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   private async post(
     url: string,
     body: unknown,
@@ -192,8 +147,7 @@ export class FilamentMcpClient {
     }, timeoutMs);
     const onExternalAbort = () => controller.abort();
     if (opts?.signal?.aborted) {
-      // Already aborted before we even started: abort immediately rather
-      // than waiting for an "abort" event that already fired in the past.
+      // An "abort" event that already fired won't fire again for a late listener.
       controller.abort();
     } else {
       opts?.signal?.addEventListener("abort", onExternalAbort, { once: true });
@@ -214,9 +168,8 @@ export class FilamentMcpClient {
           signal: controller.signal,
         });
       } catch (error) {
-        if (opts?.signal?.aborted) throw error; // caller-initiated abort: propagate as-is
+        if (opts?.signal?.aborted) throw error;
         if (isAbortError(error) && timedOut) {
-          // Our own timeout — a transient condition, not a thrown failure.
           return { status: 0, json: null, parseError: false };
         }
         throw error;
@@ -240,7 +193,6 @@ export class FilamentMcpClient {
     }
   }
 
-  /** MCP handshake: initialize + notifications/initialized. Idempotent. */
   async initialize(opts?: CallOptions): Promise<void> {
     if (this.initialized) return;
     const { json } = await this.post(
@@ -271,7 +223,6 @@ export class FilamentMcpClient {
         : undefined;
     this.instructions = typeof instr === "string" ? instr : null;
 
-    // Notification: no id, no response body expected.
     await this.post(
       this.mcpUrl,
       { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
@@ -281,11 +232,6 @@ export class FilamentMcpClient {
     this.initialized = true;
   }
 
-  /**
-   * Call an MCP tool, returning a classified result. Never throws on an
-   * error envelope; only throws on a caller-initiated abort (see module
-   * header), so the poll loop can distinguish "stop" from "retry".
-   */
   async callTool(
     name: string,
     args: Record<string, unknown> = {},
@@ -305,7 +251,6 @@ export class FilamentMcpClient {
     );
 
     if (status === 0 && !json) {
-      // Our own timeout (see `post`): never thrown, always transient.
       return {
         ok: false,
         httpStatus: 0,
@@ -376,18 +321,6 @@ export class FilamentMcpClient {
     return { ok: true, httpStatus: status, data };
   }
 
-  /**
-   * `tools/list`: the live agent-facing tool catalog (name, description,
-   * inputSchema, annotations) this bearer's server advertises right now.
-   * Used by `src/filament-tools.ts` to register the agent's tools with
-   * server-provided descriptions/schemas instead of a hand-maintained copy.
-   *
-   * Unlike `callTool`, there is no MCP content envelope to unwrap: a
-   * `tools/list` result is `{ tools: [...] }` directly. Classified the same
-   * way as `callTool` (auth/transient/protocol) for a consistent caller
-   * contract; a `tools/list` result never carries `isError`, so there is no
-   * "tool" kind here.
-   */
   async listTools(opts?: CallOptions): Promise<ListToolsResult> {
     await this.initialize(opts);
     const { status, json, parseError } = await this.post(
@@ -446,36 +379,27 @@ export class FilamentMcpClient {
     return { ok: true, tools: parsed };
   }
 
-  /** Fetch the agent's own identity (principal, backchannel, mxid). Read-only. */
   getSelf(opts?: CallOptions): Promise<ToolCallResult> {
     return this.callTool("get_self", {}, opts);
   }
 
-  /** List pending loop invites for this agent. Read-only. */
   listPendingInvites(opts?: CallOptions): Promise<ToolCallResult> {
     return this.callTool("list_pending_invites", {}, opts);
   }
 
-  /** Join a loop the agent was invited into. */
   acceptInvite(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
     return this.callTool("accept_invite", { loop_id: loopId }, opts);
   }
 
-  /** List pending vouches (member-initiated) for this agent. Read-only. */
   listVouches(opts?: CallOptions): Promise<ToolCallResult> {
     return this.callTool("list_vouches", {}, opts);
   }
 
-  /** Accept a member's vouch, turning it into a proposal a loop admin approves. */
   acceptVouch(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
     return this.callTool("accept_vouch", { loop_id: loopId }, opts);
   }
 
-  /**
-   * Ask for outstanding work: a long-poll that blocks server-side up to
-   * `args.wait_seconds`. The HTTP timeout must exceed that, hence the
-   * caller (src/poll-work.ts) always passes an explicit `timeoutMs`.
-   */
+  /** Blocks server-side up to `wait_seconds`: callers must pass a longer `timeoutMs`. */
   pollWork(
     args: { cursor?: string | null; ack?: string[]; wait_seconds: number; max_items: number },
     opts?: CallOptions,
@@ -492,13 +416,7 @@ export class FilamentMcpClient {
     );
   }
 
-  /**
-   * Publish a reply exactly as the server asked for it: `reply_with.tool`
-   * with `reply_with.args` verbatim, plus the generated text. `reply_with`
-   * only ever names `post_message` or `reply_in_thread` — both tools accept
-   * `markdown_body` alongside their pre-resolved args (`channel` /
-   * `message_id`), so this single call covers both.
-   */
+  /** `reply_with` only names `post_message` or `reply_in_thread`; both take `markdown_body`. */
   replyWith(
     replyWithSpec: { tool: string; args: Record<string, unknown> },
     markdownBody: string,
@@ -511,30 +429,19 @@ export class FilamentMcpClient {
     );
   }
 
-  /**
-   * Side-channel POST to `${mcpUrl}${path}` (not JSON-RPC), bearer-authed.
-   * Used by the presence/liveness endpoint.
-   */
   private async sideChannelPost(path: string, body?: unknown, opts?: CallOptions): Promise<number> {
     const { status } = await this.post(`${this.mcpUrl}${path}`, body, false, opts);
     return status;
   }
 
-  /** Presence keep-alive: POST /heartbeat (keeps the agent online). */
   heartbeat(opts?: CallOptions): Promise<number> {
     return this.sideChannelPost("/heartbeat", undefined, opts);
   }
 
-  /** Answer a liveness ping pushed over FCM: POST /pong with its nonce. */
   pong(nonce: string, opts?: CallOptions): Promise<number> {
     return this.sideChannelPost("/pong", { nonce }, opts);
   }
 
-  /**
-   * Whole-inventory report: POST /tools (ENG-914). The gateway control
-   * account borrows it to publish this gateway's OpenClaw agents — see
-   * src/gateway.ts. Returns the HTTP status.
-   */
   reportTools(
     tools: Array<{ name: string; description?: string; origin?: string; health?: string }>,
     opts?: CallOptions,

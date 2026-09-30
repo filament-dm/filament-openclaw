@@ -1,17 +1,8 @@
 /**
- * The `poll_work` transport (opt-in: `transport: "poll"`).
- *
- * Work arrives as items from a blocking `poll_work` call (./poll-work.ts);
- * the server has already decided what wakes the agent and where the reply
- * goes (`reply_with`), and its work ledger makes replying the acknowledgment.
- * Needs a synapse carrying ENG-1392.
- *
- * What the plugin still decides is the part both transports share
- * (src/wake-rules.ts): an item made only of messages that would never wake
- * the agent — its own, the system user's, another agent's without a mention
- * — is acknowledged without a turn. A failed turn, or a reply the server
- * refuses, is logged and acknowledged, as over FCM; a reply that may not
- * have landed is retried on the next offer (./poll-work.ts).
+ * The `poll_work` transport (opt-in; needs a server that supports `poll_work`). The server decides
+ * what wakes the agent and where the reply goes (`reply_with`), and replying acknowledges the item.
+ * An item made only of messages that would never wake the agent (src/wake-rules.ts) is acked
+ * without a turn.
  */
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
@@ -20,22 +11,14 @@ import type { DispatchOutcome } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import { type PollWorkItem, runPollLoop } from "./poll-work.js";
 
-/** True when a publish result looks like a genuine success (has an event_id, no error). */
 function publishSucceeded(data: unknown): boolean {
   if (!data || typeof data !== "object") return false;
   const d = data as Record<string, unknown>;
   return typeof d.event_id === "string" && d.event_id.length > 0 && d.error === undefined;
 }
 
-/**
- * The exact prefix of synapse's `_ALREADY_ANSWERED` message
- * (`tools_write.py`), returned as `{"error": "..."}` (HTTP 200, no
- * `isError`) when a reply targets a work-ledger item a tool call already
- * answered this turn (e.g. the model called `filament_post_message` itself
- * before the poll loop's own `reply_with` publish ran). This is a success
- * from the ledger's point of view — the item got exactly one reply — so it
- * must not be treated as a publish failure.
- */
+// The server rejects a second reply to an answered item with this error (HTTP 200, no `isError`),
+// e.g. when a tool call replied before our `reply_with` publish. The item got its reply: success.
 const ALREADY_ANSWERED_PREFIX = "You have already answered this message";
 
 function isAlreadyAnsweredError(data: unknown): boolean {
@@ -65,7 +48,6 @@ export function skipReason(item: PollWorkItem, selfMxid: string): string | null 
   return reasons.size ? [...reasons].join(", ") : null;
 }
 
-/** What a reply_with publish result means for the item. */
 export function classifyPublish(res: ToolCallResult): DispatchOutcome {
   if (res.ok) {
     if (publishSucceeded(res.data)) return { kind: "published" };
@@ -86,16 +68,13 @@ export function classifyPublish(res: ToolCallResult): DispatchOutcome {
 export async function runPollTransport(ctx: TransportContext): Promise<TransportResult> {
   const { client, abortSignal, log } = ctx;
 
-  // Dispatch one work item: run the turn, publish at most once via
-  // reply_with, and classify the outcome for the poll loop.
   const dispatchItem = async (item: PollWorkItem): Promise<DispatchOutcome> => {
     const replyWith = item.reply_with;
     if (!replyWith) {
-      // Defense in depth: the poll loop already filters these out.
+      // The poll loop already filters these out.
       return { kind: "ambiguous" };
     }
     if (ctx.control) {
-      // The gateway never chats: every control item is acked.
       await ctx.handleControl(item);
       return { kind: "silent" };
     }
@@ -127,11 +106,6 @@ export async function runPollTransport(ctx: TransportContext): Promise<Transport
         return { kind: "retry", diagnostic: `publish threw: ${String(error)}` };
       }
       if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
-        // The model already answered this item with a tool call
-        // (filament_post_message/filament_reply_in_thread/
-        // filament_message_principal) during the turn; the ledger
-        // rejected our own reply_with publish as a duplicate. The item
-        // got its one reply, so this is success, not a publish failure.
         log("filament: item already answered by a tool call; skipping publish");
         return { kind: "published" };
       }

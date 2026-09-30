@@ -47,11 +47,11 @@ test("resolveMcpSettings: the transport defaults to fcm; poll only by name", () 
 
 test("resolveMcpSettings: firebase is config, then FILAMENT_FIREBASE_*, then production", () => {
   assert.equal(resolveMcpSettings({}, {}).firebase.projectId, "filament-8ce44");
-  const dev = resolveMcpSettings(
-    { firebase: { appId: "1:681866944642:android:abc" } },
-    { FILAMENT_FIREBASE_PROJECT_ID: "filament-dev-f2f90" },
+  const custom = resolveMcpSettings(
+    { firebase: { appId: "1:1:android:abc" } },
+    { FILAMENT_FIREBASE_PROJECT_ID: "test-project" },
   ).firebase;
-  assert.equal(dev.projectId, "filament-dev-f2f90");
-  assert.equal(dev.appId, "1:681866944642:android:abc");
-  assert.equal(dev.messagingSenderId, "143821144946");
+  assert.equal(custom.projectId, "test-project");
+  assert.equal(custom.appId, "1:1:android:abc");
+  assert.equal(custom.messagingSenderId, "143821144946");
 });

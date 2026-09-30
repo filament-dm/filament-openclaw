@@ -1,21 +1,6 @@
 /**
- * The Filament OpenClaw **channel**.
- *
- * A channel is a first-class messaging transport the gateway drives: it gets
- * a per-account `startAccount`/`stopAccount` lifecycle and a `channelRuntime`
- * surface that can wake agent turns and route replies. The whole Filament
- * integration lives inside the channel account:
- *
- *   startAccount → resolve settings + token → runConnect (bearer, get_self,
- *   heartbeat) → run the account's transport until it stops → hold open
- *   until abort.
- *
- * This module owns what both transports share — connecting, running an agent
- * turn, the tool connection, the gateway control account — and hands it to
- * the transport the account's settings pick (src/transports/):
- *
- *   - `fcm` (default): pushes over Firebase Cloud Messaging, replies over MCP.
- *   - `poll` (opt-in): the `poll_work` long-poll with `reply_with`.
+ * The Filament channel. Per account: connect, run the transport the settings pick (`fcm` by
+ * default, or `poll`) until it stops, then hold the account open until the gateway aborts it.
  */
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
@@ -60,19 +45,15 @@ const TRANSPORTS: Record<Transport, RunTransport> = {
   poll: runPollTransport,
 };
 
-// The gateway control account's inventory report, when one is running, so a
-// data account coming up or going down refreshes what the Filament app shows.
+// Set while a control account runs, so a data account starting or stopping refreshes its inventory.
 let refreshGatewayInventory: (() => void) | null = null;
 
-// Loose structural view of the plugin API surface the channel touches. The
-// concrete OpenClaw SDK types only resolve inside the gateway, so we keep
-// this minimal and let the runtime provide the real objects.
+// Structural: the concrete OpenClaw SDK types only resolve inside the gateway.
 export interface FilamentChannelApi extends FilamentToolsApi {
   config: unknown;
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
   registerChannel: (registration: { plugin: ChannelPlugin }) => void;
-  /** `api.runtime.config` — the gateway control account reads and writes config through it. */
   runtime?: {
     config?: {
       current?: () => unknown;
@@ -84,12 +65,6 @@ export interface FilamentChannelApi extends FilamentToolsApi {
   };
 }
 
-/**
- * Register the Filament channel. `onConnectionChange` surfaces the live
- * ConnectHandle (kept for parity with the previous conformance surface, and
- * for tests); called with the handle when an account connects and null when
- * it stops.
- */
 export function registerFilamentChannel(
   api: FilamentChannelApi,
   onConnectionChange: (connection: ConnectHandle | null) => void = () => {},
@@ -103,13 +78,7 @@ export function registerFilamentChannel(
   // oxlint-disable-next-line typescript/no-explicit-any
   const pluginConfigOf = (cfg: any): unknown => pluginConfigFrom(cfg) ?? api.pluginConfig;
 
-  // Register the whole Filament tool surface now, synchronously, from the
-  // schema snapshot — before any connection exists. See
-  // src/filament-tools.ts's module docstring for why this replaced the old
-  // post-connect, tools/list-fetching registration: a session can resolve
-  // its toolset before that later write ever lands in the registry. Each
-  // tool's execute() resolves the live connection lazily via
-  // getFilamentClient(), which startAccount below populates once connected.
+  // Before any connection exists: a session can resolve its toolset before connect finishes.
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
 
   const plugin: ChannelPlugin = {
@@ -123,8 +92,6 @@ export function registerFilamentChannel(
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
-      // One account per Filament agent: `config.accounts.<id>`, plus the
-      // legacy top-level token as `default` (src/accounts.ts).
       // oxlint-disable-next-line typescript/no-explicit-any
       listAccountIds: (cfg: any) => listConfiguredAccountIds(pluginConfigOf(cfg)),
       // oxlint-disable-next-line typescript/no-explicit-any
@@ -142,7 +109,6 @@ export function registerFilamentChannel(
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
         accountLog(`filament: transport ${mcp.transport}`);
-        // A gateway control account (src/gateway.ts): no agent turns, no tools.
         const control = isControlAccount(pluginConfig, accountId);
         const liveGatewayConfig = (): unknown => api.runtime?.config?.current?.() ?? ctx.cfg;
         // Recent command outcomes, re-sent with every inventory report. Lost on
@@ -161,7 +127,6 @@ export function registerFilamentChannel(
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
         };
 
-        // Apply one control-account item: gateway commands, never a turn.
         const handleControl = async (item: WorkItem): Promise<void> => {
           if (!connection) return;
           const client = connection.client;
@@ -192,16 +157,11 @@ export function registerFilamentChannel(
           });
         };
 
-        // Run one agent turn for an item; the transport publishes the reply.
         const runTurn = async (item: WorkItem): Promise<TurnResult> => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
           const identity = loadIdentity(accountId);
-          // Marks this turn as Filament-originated (and whether it came from
-          // the backchannel) for src/filament-tools.ts's authorization gate —
-          // see that module's docstring for why this is a module-level flag
-          // rather than something read off `ctx` inside a tool's execute().
           beginFilamentTurn(item.is_backchannel === true, accountId);
           let repliedTo: ReadonlySet<string> = new Set();
           let result;
@@ -218,9 +178,8 @@ export function registerFilamentChannel(
               messages: item.messages,
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: item.channel_id,
-              // Filament (not OpenClaw) decides who can reach the agent; this
-              // only ever authorizes the backchannel/control-plane item, never
-              // an arbitrary conversation (see the plan's item 5).
+              // Filament, not OpenClaw, decides who can reach the agent; only the
+              // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,
               log: accountLog,
             });
@@ -230,8 +189,6 @@ export function registerFilamentChannel(
           return { ...result, repliedTo };
         };
 
-        // Resolve the connect token: a raw string, a `${ENV}` shorthand, or a
-        // SecretRef pointing at an env/file/exec provider.
         let token = "";
         if (mcp.tokenInput !== undefined) {
           const resolved = await resolveConfiguredSecretInputString({
@@ -288,15 +245,8 @@ export function registerFilamentChannel(
         }
 
         if (connection) {
-          // The tool surface is already registered (see registerFilamentChannel
-          // above); populate the connection holder so each tool's execute()
-          // can reach the live client. Cleared below on the way out, whatever
-          // the exit reason (normal wind-down or fatal). A control account
-          // owns no tools, so it never gets one.
           if (!control) setFilamentClient(connection.client, accountId);
           refreshOtherwise();
-          // Best-effort diagnostic only — see src/filament-tools.ts's
-          // checkFilamentToolDrift docstring. Never blocks/aborts connect.
           if (!control) {
             void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
               accountLog(`filament: tool drift check failed: ${String(error)}`);
@@ -314,11 +264,8 @@ export function registerFilamentChannel(
             handleControl,
           });
           if (fatal) {
-            // Surface a diagnostic and stop: returning normally here (rather
-            // than throwing) is a deliberate choice — see ROADMAP.md's
-            // "lifecycle on fatal" note on why we don't want the gateway's
-            // exit-triggers-restart behavior to silently re-run a transport
-            // that just told us to stop.
+            // Report and hold open rather than throw: the gateway restarts an account that
+            // exits, which would re-run a transport that just asked to stop.
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
             ctx.setStatus?.({
               accountId,
@@ -330,9 +277,7 @@ export function registerFilamentChannel(
           setFilamentClient(null, accountId);
         }
 
-        // Hold the account open until the gateway aborts it (covers both the
-        // "no token configured" idle case and the post-transport wind-down),
-        // so the channel stays "running" instead of exit-triggering a restart.
+        // Hold open until abort, idle or wound down, so the gateway does not restart the account.
         if (!abortSignal.aborted) {
           await new Promise<void>((resolve) => {
             if (abortSignal.aborted) return resolve();
