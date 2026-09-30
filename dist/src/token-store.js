@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doctor";
-const PLUGIN_ID = "filament-fcm";
+const PLUGIN_ID = "filament-openclaw";
 const FCM_NAMESPACE = "fcm-registrations";
 const RECEIVED_IDS_NAMESPACE = "fcm-received";
 const RECEIVED_IDS_MAX = 1e3;

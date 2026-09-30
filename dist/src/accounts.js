@@ -1,6 +1,6 @@
 const DEFAULT_ACCOUNT_ID = "default";
 const FILAMENT_CHANNEL_ID = "filament";
-const PLUGIN_ID = "filament-fcm";
+const PLUGIN_ID = "filament-openclaw";
 const GATEWAY_ACCOUNT_ID = "gateway";
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
