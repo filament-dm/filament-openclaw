@@ -12,7 +12,7 @@
  */
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
 import { resolveBearer } from "./credentials.js";
-import { sleepAbortable } from "./util.js";
+import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
 import { saveIdentity } from "./token-store.js";
@@ -26,6 +26,52 @@ export class ConnectAbortedError extends Error {
   constructor() {
     super("connect aborted");
     this.name = "ConnectAbortedError";
+  }
+}
+
+/** Thrown when the server refuses the bearer: retrying cannot fix it. */
+export class BearerRejectedError extends Error {
+  constructor() {
+    super("bearer rejected");
+    this.name = "BearerRejectedError";
+  }
+}
+
+export interface RetryConnectOptions {
+  log?: (msg: string) => void;
+  abortSignal?: AbortSignal;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  backoff?: (attempt: number) => number;
+}
+
+/**
+ * Keep calling `connect` until it succeeds. A gateway that starts before
+ * Filament is reachable would otherwise leave the account idle until the next
+ * restart. A rejected bearer or an abort ends the attempts.
+ */
+export async function retryConnect<T>(
+  connect: () => Promise<T>,
+  opts: RetryConnectOptions = {},
+): Promise<T> {
+  const {
+    log = () => {},
+    abortSignal,
+    sleep = sleepAbortable,
+    backoff = (attempt) => nextBackoffMs(attempt),
+  } = opts;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } catch (error) {
+      if (abortSignal?.aborted || error instanceof ConnectAbortedError) {
+        throw error instanceof ConnectAbortedError ? error : new ConnectAbortedError();
+      }
+      if (error instanceof BearerRejectedError) throw error;
+      const wait = backoff(attempt);
+      log(`filament: connect failed: ${String(error)}; retrying in ${wait}ms`);
+      await sleep(wait, abortSignal);
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
+    }
   }
 }
 
@@ -101,7 +147,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     if (decision.status === "auth_failed") {
       log("filament-connect: bearer rejected (auth failed)");
       stop();
-      throw new Error("bearer rejected");
+      throw new BearerRejectedError();
     }
     log(`filament-connect: not finalized yet (attempt ${attempt}/${GETSELF_MAX_ATTEMPTS})`);
     await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);

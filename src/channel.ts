@@ -28,7 +28,7 @@ import {
   PLUGIN_ID,
   pluginConfigFrom,
 } from "./accounts.js";
-import { type ConnectHandle, runConnect } from "./connect.js";
+import { type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -253,13 +253,17 @@ export function registerFilamentChannel(
 
         if (token) {
           try {
-            connection = await runConnect({
-              mcpUrl: mcp.mcpUrl,
-              token,
-              accountId,
-              log: accountLog,
-              abortSignal,
-            });
+            connection = await retryConnect(
+              () =>
+                runConnect({
+                  mcpUrl: mcp.mcpUrl,
+                  token,
+                  accountId,
+                  log: accountLog,
+                  abortSignal,
+                }),
+              { log: accountLog, abortSignal },
+            );
             onConnectionChange(connection);
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);
