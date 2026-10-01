@@ -1,155 +1,156 @@
 /**
- * Persistent storage for FCM registration credentials, backed by OpenClaw's
- * plugin-state keyed store (SQLite at ~/.openclaw/plugin-state.sqlite). This
- * replaces the JSON files the Python plugin wrote under ~/.hermes/filament-fcm/.
+ * Plugin state in OpenClaw's keyed store, per channel account: the `get_self` identity, the FCM
+ * registration (so a restart keeps the push token) and processed push ids (so Google does not
+ * redeliver them).
  *
- * We store the whole eneris `Credentials` object (which carries `fcm.token`)
- * under a single key, so a restart reuses the saved registration instead of
- * re-registering with Google.
+ * Bearers are read only, keyed by a hash of the connect token they were exchanged for, so a new
+ * token never reuses an old token's bearer or identity. Nothing writes new ones.
  */
+import { createHash } from "node:crypto";
+
 import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doctor";
 
-/** Subset of the eneris Credentials shape we rely on. */
+export interface AgentIdentity {
+  mxid: string;
+  principal: string;
+  /** The command-and-control (backchannel) room. */
+  ccRoomId?: string;
+  onboardedAt: number;
+}
+
+export interface StoredBearer {
+  bearer: string;
+  obtainedAt: number;
+}
+
+/** eneris `Credentials`, persisted opaquely. */
 export interface FcmCredentials {
   fcm?: { token?: string };
   [key: string]: unknown;
 }
 
-/**
- * Credentials as persisted, tagged with the Firebase project they were
- * registered against. The tag lets us invalidate a cached token when the
- * configured project changes (e.g. prod `filament-8ce44` → dev
- * `filament-dev-f2f90`) — otherwise we'd hand Filament a token the server's
- * DirectPusher (bound to the new project) can never deliver to.
- */
+// Tagged with its Firebase project: after a project change the old token can never be delivered
+// to, so the account must re-register.
 interface StoredFcm {
-  project?: string;
+  project: string;
   credentials: FcmCredentials;
 }
 
-/** The agent identity learned from Filament during onboarding (get_self). */
-export interface AgentIdentity {
-  mxid: string;
-  /** The principal (owner) mxid that controls this agent. */
-  principal: string;
-  /** The command-and-control backchannel room id, when present. */
-  ccRoomId?: string;
-  onboardedAt: number;
-}
-
-const PLUGIN_ID = "filament-fcm";
-const CREDENTIALS_NAMESPACE = "fcm";
-const CREDENTIALS_KEY = "credentials";
-const IDENTITY_NAMESPACE = "identity";
-const IDENTITY_KEY = "self";
-const RECEIVED_IDS_NAMESPACE = "received-ids";
-const RECEIVED_IDS_KEY = "ids";
-// Bounded window of processed FCM persistent IDs, kept small enough that the
-// persisted list and the MCS login payload don't grow unbounded (mirrors the
-// Python plugin's 1000-entry cap).
+const PLUGIN_ID = "filament-openclaw";
+// Reopening a namespace with different store options throws on a hot reload, so a namespace's
+// options never change; new options need a new namespace.
+const FCM_NAMESPACE = "fcm-registrations";
+const RECEIVED_IDS_NAMESPACE = "fcm-received";
+// Bounded because the list is also sent in the MCS login payload.
 const RECEIVED_IDS_MAX = 1_000;
+const IDENTITY_NAMESPACE = "identities";
+const BEARER_NAMESPACE = "bearers";
 
-// Structural view of the sync keyed store — avoids depending on the store's
-// exported type name (the runtime module is only present inside the gateway).
+// Structural: the store's runtime module is only present inside the gateway.
 type SyncStore<T> = {
   lookup(key: string): T | undefined;
   register(key: string, value: T): void;
 };
 
-let credStore: SyncStore<StoredFcm> | null = null;
 let idStore: SyncStore<AgentIdentity> | null = null;
-let receivedIdsStore: SyncStore<string[]> | null = null;
+let bearerStore: SyncStore<StoredBearer> | null = null;
+let fcmStore: SyncStore<StoredFcm> | null = null;
+let receivedStore: SyncStore<string[]> | null = null;
 
-function credentialStore(): SyncStore<StoredFcm> {
-  if (!credStore) {
-    credStore = createPluginStateSyncKeyedStore<StoredFcm>(PLUGIN_ID, {
-      namespace: CREDENTIALS_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new",
+function fcmStoreInstance(): SyncStore<StoredFcm> {
+  if (!fcmStore) {
+    fcmStore = createPluginStateSyncKeyedStore<StoredFcm>(PLUGIN_ID, {
+      namespace: FCM_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
     }) as SyncStore<StoredFcm>;
   }
-  return credStore;
+  return fcmStore;
+}
+
+function receivedStoreInstance(): SyncStore<string[]> {
+  if (!receivedStore) {
+    receivedStore = createPluginStateSyncKeyedStore<string[]>(PLUGIN_ID, {
+      namespace: RECEIVED_IDS_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<string[]>;
+  }
+  return receivedStore;
 }
 
 function identityStore(): SyncStore<AgentIdentity> {
   if (!idStore) {
     idStore = createPluginStateSyncKeyedStore<AgentIdentity>(PLUGIN_ID, {
       namespace: IDENTITY_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new",
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
     }) as SyncStore<AgentIdentity>;
   }
   return idStore;
 }
 
-/**
- * Load saved FCM credentials, or undefined on first run. When `projectId` is
- * given, credentials tagged with a *different* project are treated as absent so
- * the caller re-registers fresh against the configured project (old untagged
- * records are also discarded, forcing a one-time re-register after upgrade).
- */
-export function loadCredentials(projectId?: string): FcmCredentials | undefined {
-  const stored = credentialStore().lookup(CREDENTIALS_KEY);
-  if (!stored?.credentials) return undefined;
-  if (projectId !== undefined && stored.project !== projectId) return undefined;
-  return stored.credentials;
-}
-
-/** Persist FCM credentials, tagged with the project they belong to. */
-export function saveCredentials(creds: FcmCredentials, projectId?: string): void {
-  credentialStore().register(CREDENTIALS_KEY, {
-    credentials: creds,
-    ...(projectId !== undefined ? { project: projectId } : {}),
-  });
-}
-
-/**
- * The cached FCM registration token, or null when none is stored (or it belongs
- * to a different project than `projectId`, when provided).
- */
-export function cachedToken(projectId?: string): string | null {
-  return loadCredentials(projectId)?.fcm?.token ?? null;
-}
-
-/** Load the onboarded agent identity, or undefined if not onboarded yet. */
-export function loadIdentity(): AgentIdentity | undefined {
-  return identityStore().lookup(IDENTITY_KEY);
-}
-
-/** Persist the agent identity learned during onboarding. */
-export function saveIdentity(identity: AgentIdentity): void {
-  identityStore().register(IDENTITY_KEY, identity);
-}
-
-function receivedIds(): SyncStore<string[]> {
-  if (!receivedIdsStore) {
-    receivedIdsStore = createPluginStateSyncKeyedStore<string[]>(PLUGIN_ID, {
-      namespace: RECEIVED_IDS_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "reject-new",
-    }) as SyncStore<string[]>;
+function bearerStoreInstance(): SyncStore<StoredBearer> {
+  if (!bearerStore) {
+    bearerStore = createPluginStateSyncKeyedStore<StoredBearer>(PLUGIN_ID, {
+      namespace: BEARER_NAMESPACE,
+      // Read only, but the options must not change: see FCM_NAMESPACE.
+      maxEntries: 16,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<StoredBearer>;
   }
-  return receivedIdsStore;
+  return bearerStore;
 }
 
-/**
- * The processed FCM persistent IDs, most-recent last. Seeded into the receiver
- * on start so Google does not redeliver already-handled pushes across restarts.
- */
-export function loadReceivedIds(): string[] {
-  return receivedIds().lookup(RECEIVED_IDS_KEY) ?? [];
+/** Never store or log the connect token itself. */
+function bearerKey(connectToken: string): string {
+  return createHash("sha256").update(connectToken).digest("hex").slice(0, 16);
 }
 
-/**
- * Record a persistent ID as processed. Returns false if it was already present
- * (a duplicate/redelivery), true if newly recorded. Keeps a bounded window.
- */
-export function recordReceivedId(id: string): boolean {
+export function loadIdentity(accountId: string): AgentIdentity | undefined {
+  return identityStore().lookup(accountId);
+}
+
+export function saveIdentity(accountId: string, identity: AgentIdentity): void {
+  identityStore().register(accountId, identity);
+}
+
+export function loadBearer(connectToken: string): string | undefined {
+  return bearerStoreInstance().lookup(bearerKey(connectToken))?.bearer;
+}
+
+export function loadFcmCredentials(
+  accountId: string,
+  projectId: string,
+): FcmCredentials | undefined {
+  const stored = fcmStoreInstance().lookup(accountId);
+  return stored && stored.project === projectId ? stored.credentials : undefined;
+}
+
+export function hasFcmCredentialsForOtherProject(accountId: string, projectId: string): boolean {
+  const stored = fcmStoreInstance().lookup(accountId);
+  return stored !== undefined && stored.project !== projectId;
+}
+
+export function saveFcmCredentials(
+  accountId: string,
+  credentials: FcmCredentials,
+  projectId: string,
+): void {
+  fcmStoreInstance().register(accountId, { project: projectId, credentials });
+}
+
+export function loadReceivedIds(accountId: string): string[] {
+  return receivedStoreInstance().lookup(accountId) ?? [];
+}
+
+/** False when the id was already recorded (a redelivery). */
+export function recordReceivedId(accountId: string, id: string): boolean {
   if (!id) return false;
-  const current = loadReceivedIds();
+  const current = loadReceivedIds(accountId);
   if (current.includes(id)) return false;
   const next = [...current, id];
   if (next.length > RECEIVED_IDS_MAX) next.splice(0, next.length - RECEIVED_IDS_MAX);
-  receivedIds().register(RECEIVED_IDS_KEY, next);
+  receivedStoreInstance().register(accountId, next);
   return true;
 }

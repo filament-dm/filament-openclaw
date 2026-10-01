@@ -1,230 +1,157 @@
 /**
- * Filament connect sequence — the client half of onboarding, mirroring the
- * Python Hermes plugin's `adapter.connect()`:
- *
- *   1. initialize (capture the first-contact directive)
- *   2. get_self poll until finalized → persist identity (principal + backchannel)
- *   3. accept pending invites + vouches (best-effort)
- *   4. FCM register (obtain a Google push token)
- *   5. register_push_token → hand Filament the token so it can push to us
- *   6. heartbeat presence loop (keeps the agent online)
- *   7. first-contact greeting (canned hello; an agent-generated greeting would
- *      reuse the inbound → agent → outbound loop the channel now drives)
- *
- * Inbound pushes are forwarded to the caller's `onInbound` handler (the channel,
- * src/channel.ts), which decodes and dispatches them to the agent.
+ * The connect sequence both transports share: resolve the bearer, poll `get_self` until the agent
+ * is finalized, then keep a presence heartbeat.
  */
-import type { TokenSnapshot } from "./conformance-core.js";
-import { buildSnapshot, FcmConnection, type FcmMessageEnvelope } from "./fcm.js";
+import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
+import { resolveBearer } from "./credentials.js";
+import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
-import { classifyGetSelf, isFirstContact, type ResolvedIdentity } from "./onboarding-core.js";
-import { cachedToken, saveIdentity } from "./token-store.js";
+import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
+import { saveIdentity } from "./token-store.js";
 
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
 const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;
 const HEARTBEAT_INTERVAL_MS = 20_000; // < 30s presence-decay window
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export class ConnectAbortedError extends Error {
+  constructor() {
+    super("connect aborted");
+    this.name = "ConnectAbortedError";
+  }
+}
 
-export interface McpSettings {
-  /**
-   * The raw connect-token input: a string, a `${ENV}` shorthand, or a SecretRef
-   * object. Resolved to a concrete token by the caller (which has the gateway
-   * config needed to resolve file/exec refs). Undefined = not configured.
-   */
-  tokenInput?: unknown;
-  mcpUrl: string;
+/** Thrown when the server refuses the bearer: retrying cannot fix it. */
+export class BearerRejectedError extends Error {
+  constructor() {
+    super("bearer rejected");
+    this.name = "BearerRejectedError";
+  }
+}
+
+export interface RetryConnectOptions {
+  log?: (msg: string) => void;
+  abortSignal?: AbortSignal;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  backoff?: (attempt: number) => number;
 }
 
 /**
- * Resolve the MCP endpoint and the connect-token *input* from plugin config,
- * falling back to env (`FILAMENT_MCP_TOKEN`/`FILAMENT_MCP_URL`) then the prod
- * default. A present token input is the gate that enables connect.
+ * A gateway that starts before Filament is reachable would otherwise leave the account idle until
+ * the next restart. A rejected bearer or an abort ends the attempts.
  */
-export function resolveMcpSettings(
-  pluginConfig: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): McpSettings {
-  const cfg =
-    pluginConfig && typeof pluginConfig === "object"
-      ? (pluginConfig as Record<string, unknown>)
-      : {};
-  const cfgToken = cfg.connectToken;
-  const hasCfgToken =
-    (typeof cfgToken === "string" && cfgToken.trim().length > 0) ||
-    (typeof cfgToken === "object" && cfgToken !== null);
-  const envToken = env.FILAMENT_MCP_TOKEN?.trim();
-  const tokenInput = hasCfgToken ? cfgToken : envToken || undefined;
-  const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  return { tokenInput, mcpUrl };
+export async function retryConnect<T>(
+  connect: () => Promise<T>,
+  opts: RetryConnectOptions = {},
+): Promise<T> {
+  const {
+    log = () => {},
+    abortSignal,
+    sleep = sleepAbortable,
+    backoff = (attempt) => nextBackoffMs(attempt),
+  } = opts;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } catch (error) {
+      if (abortSignal?.aborted || error instanceof ConnectAbortedError) {
+        throw error instanceof ConnectAbortedError ? error : new ConnectAbortedError();
+      }
+      if (error instanceof BearerRejectedError) throw error;
+      const wait = backoff(attempt);
+      log(`filament: connect failed: ${String(error)}; retrying in ${wait}ms`);
+      await sleep(wait, abortSignal);
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
+    }
+  }
 }
 
-/** A running connection: stop it, read the live FCM token snapshot, or use the
- * MCP client for outbound calls (posting replies, pong, etc.). */
 export interface ConnectHandle {
   stop(): void;
-  snapshot(): TokenSnapshot | null;
   client: FilamentMcpClient;
+  identity: ResolvedIdentity;
 }
 
 export interface RunConnectOptions {
   mcpUrl: string;
   token: string;
+  accountId?: string;
   log?: (message: string) => void;
-  /** Handler for each new inbound FCM push (deduped). Enables inbound dispatch. */
-  onInbound?: (env: FcmMessageEnvelope) => void;
+  abortSignal?: AbortSignal;
+  fetchImpl?: typeof fetch;
 }
 
-/** Extract the `loop_id`s from a list_pending_invites / list_vouches result. */
-function loopIds(result: ToolCallResult, key: "invites" | "vouches"): string[] {
-  if (!result.ok || !result.data || typeof result.data !== "object") return [];
-  const list = (result.data as Record<string, unknown>)[key];
-  if (!Array.isArray(list)) return [];
-  return list
-    .map((item) =>
-      item && typeof item === "object" ? (item as { loop_id?: unknown }).loop_id : undefined,
-    )
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-}
-
-/** Auto-accept pending loop invites and vouches. Best-effort; never throws. */
-async function acceptPending(
-  client: FilamentMcpClient,
-  log: (message: string) => void,
-): Promise<void> {
-  try {
-    for (const loopId of loopIds(await client.listPendingInvites(), "invites")) {
-      const res = await client.acceptInvite(loopId);
-      log(
-        `filament-connect: accept_invite ${loopId} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`,
-      );
-    }
-  } catch (error) {
-    log(`filament-connect: invites step failed (continuing): ${String(error)}`);
-  }
-  try {
-    for (const loopId of loopIds(await client.listVouches(), "vouches")) {
-      const res = await client.acceptVouch(loopId);
-      log(
-        `filament-connect: accept_vouch ${loopId} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`,
-      );
-    }
-  } catch (error) {
-    log(`filament-connect: vouches step failed (continuing): ${String(error)}`);
-  }
-}
-
-/**
- * Run the full connect sequence. Returns a handle that stops the heartbeat loop
- * and FCM listener. Throws only if the connect token is rejected.
- */
 export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle> {
-  const { mcpUrl, token, log = () => {}, onInbound } = opts;
-  const client = new FilamentMcpClient(mcpUrl, token);
-  let fcm: FcmConnection | null = null;
+  const {
+    mcpUrl,
+    token,
+    accountId = DEFAULT_ACCOUNT_ID,
+    log = () => {},
+    abortSignal,
+    fetchImpl = fetch,
+  } = opts;
+
+  const bearer = resolveBearer(token, log);
+  if (abortSignal?.aborted) throw new ConnectAbortedError();
+
+  const client = new FilamentMcpClient(mcpUrl, bearer, undefined, fetchImpl);
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   const stop = () => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = null;
-    fcm?.stop();
-    fcm = null;
   };
-  const snapshot = (): TokenSnapshot | null => (fcm ? fcm.snapshot() : buildSnapshot(false));
 
-  // 1. Initialize; a first-contact directive means we should greet.
-  await client.initialize();
-  const greetPending = isFirstContact(client.instructions);
+  await client.initialize({ signal: abortSignal });
 
-  // 2. Poll get_self until the app finalizes the agent.
   let identity: ResolvedIdentity | null = null;
-  let ownerName: string | undefined;
   for (let attempt = 1; attempt <= GETSELF_MAX_ATTEMPTS; attempt++) {
+    if (abortSignal?.aborted) throw new ConnectAbortedError();
     let res: ToolCallResult;
     try {
-      res = await client.getSelf();
+      res = await client.getSelf({ signal: abortSignal });
     } catch (error) {
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
       log(
         `filament-connect: get_self attempt ${attempt}/${GETSELF_MAX_ATTEMPTS} threw: ${String(error)}`,
       );
-      if (attempt < GETSELF_MAX_ATTEMPTS) await sleep(GETSELF_INTERVAL_MS);
+      await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);
       continue;
     }
     const decision = classifyGetSelf(res);
     if (decision.status === "finalized" && decision.identity) {
       identity = decision.identity;
-      const owner = (res.data as { owner?: { display_name?: unknown } } | undefined)?.owner;
-      if (owner && typeof owner.display_name === "string") ownerName = owner.display_name;
       break;
     }
     if (decision.status === "auth_failed") {
-      log("filament-connect: connect token rejected (auth failed)");
+      log("filament-connect: bearer rejected (auth failed)");
       stop();
-      throw new Error("connect token rejected");
+      throw new BearerRejectedError();
     }
     log(`filament-connect: not finalized yet (attempt ${attempt}/${GETSELF_MAX_ATTEMPTS})`);
-    if (attempt < GETSELF_MAX_ATTEMPTS) await sleep(GETSELF_INTERVAL_MS);
+    await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);
   }
   if (!identity) {
-    log("filament-connect: agent not finalized within the window; will retry on next restart");
-    return { stop, snapshot, client };
+    stop();
+    throw new Error(
+      "agent not finalized within the verification window; will retry on next restart",
+    );
   }
-  saveIdentity({ ...identity, onboardedAt: Date.now() });
+  saveIdentity(accountId, { ...identity, onboardedAt: Date.now() });
   log(
-    `filament-connect: identity principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
+    `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
   );
 
-  // 3. Auto-accept anything we were invited/vouched into while offline.
-  await acceptPending(client, log);
-
-  // 4. Register with FCM (best-effort — a failure must not abort presence).
-  fcm = new FcmConnection(undefined, log, onInbound);
-  try {
-    await fcm.start();
-  } catch (error) {
-    log(`filament-connect: FCM registration failed (continuing without push): ${String(error)}`);
-  }
-
-  // 5. Hand Filament the push token.
-  const fcmToken = cachedToken();
-  if (fcmToken) {
-    const res = await client.registerPushToken(fcmToken, "android");
-    log(
-      res.ok
-        ? "filament-connect: push token registered with Filament"
-        : `filament-connect: register_push_token failed (${res.error?.code ?? "?"})`,
-    );
-  } else {
-    log("filament-connect: no FCM token available; skipping register_push_token");
-  }
-
-  // 6. Presence heartbeat loop.
   const beat = async () => {
     try {
-      await client.heartbeat();
+      await client.heartbeat({ signal: abortSignal });
     } catch (error) {
-      log(`filament-connect: heartbeat failed: ${String(error)}`);
+      if (!abortSignal?.aborted) log(`filament-connect: heartbeat failed: ${String(error)}`);
     }
   };
   await beat();
   heartbeatTimer = setInterval(() => void beat(), HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref?.();
+  abortSignal?.addEventListener("abort", stop, { once: true });
 
-  // 7. First-contact greeting (canned; see module header). The server's
-  // first-contact directive points at message_principal (DMs the principal).
-  if (greetPending) {
-    const hello = ownerName
-      ? `Hi ${ownerName} — I'm connected to Filament and ready.`
-      : "Hi — I'm connected to Filament and ready.";
-    const res = await client.messagePrincipal(hello);
-    log(
-      res.ok
-        ? "filament-connect: sent first-contact hello"
-        : `filament-connect: greeting failed (${res.error?.code ?? "?"})`,
-    );
-  }
-
-  return { stop, snapshot, client };
+  return { stop, client, identity };
 }

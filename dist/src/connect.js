@@ -1,140 +1,119 @@
-import { buildSnapshot, FcmConnection } from "./fcm.js";
+import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
+import { resolveBearer } from "./credentials.js";
+import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient } from "./mcp-client.js";
-import { classifyGetSelf, isFirstContact } from "./onboarding-core.js";
-import { cachedToken, saveIdentity } from "./token-store.js";
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+import { classifyGetSelf } from "./onboarding-core.js";
+import { saveIdentity } from "./token-store.js";
 const GETSELF_MAX_ATTEMPTS = 40;
 const GETSELF_INTERVAL_MS = 3e3;
 const HEARTBEAT_INTERVAL_MS = 2e4;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function resolveMcpSettings(pluginConfig, env = process.env) {
-  const cfg = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
-  const cfgToken = cfg.connectToken;
-  const hasCfgToken = typeof cfgToken === "string" && cfgToken.trim().length > 0 || typeof cfgToken === "object" && cfgToken !== null;
-  const envToken = env.FILAMENT_MCP_TOKEN?.trim();
-  const tokenInput = hasCfgToken ? cfgToken : envToken || void 0;
-  const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
-  return { tokenInput, mcpUrl };
-}
-function loopIds(result, key) {
-  if (!result.ok || !result.data || typeof result.data !== "object") return [];
-  const list = result.data[key];
-  if (!Array.isArray(list)) return [];
-  return list.map(
-    (item) => item && typeof item === "object" ? item.loop_id : void 0
-  ).filter((id) => typeof id === "string" && id.length > 0);
-}
-async function acceptPending(client, log) {
-  try {
-    for (const loopId of loopIds(await client.listPendingInvites(), "invites")) {
-      const res = await client.acceptInvite(loopId);
-      log(
-        `filament-connect: accept_invite ${loopId} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`
-      );
-    }
-  } catch (error) {
-    log(`filament-connect: invites step failed (continuing): ${String(error)}`);
+class ConnectAbortedError extends Error {
+  constructor() {
+    super("connect aborted");
+    this.name = "ConnectAbortedError";
   }
-  try {
-    for (const loopId of loopIds(await client.listVouches(), "vouches")) {
-      const res = await client.acceptVouch(loopId);
-      log(
-        `filament-connect: accept_vouch ${loopId} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`
-      );
+}
+class BearerRejectedError extends Error {
+  constructor() {
+    super("bearer rejected");
+    this.name = "BearerRejectedError";
+  }
+}
+async function retryConnect(connect, opts = {}) {
+  const {
+    log = () => {
+    },
+    abortSignal,
+    sleep = sleepAbortable,
+    backoff = (attempt) => nextBackoffMs(attempt)
+  } = opts;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await connect();
+    } catch (error) {
+      if (abortSignal?.aborted || error instanceof ConnectAbortedError) {
+        throw error instanceof ConnectAbortedError ? error : new ConnectAbortedError();
+      }
+      if (error instanceof BearerRejectedError) throw error;
+      const wait = backoff(attempt);
+      log(`filament: connect failed: ${String(error)}; retrying in ${wait}ms`);
+      await sleep(wait, abortSignal);
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
     }
-  } catch (error) {
-    log(`filament-connect: vouches step failed (continuing): ${String(error)}`);
   }
 }
 async function runConnect(opts) {
-  const { mcpUrl, token, log = () => {
-  }, onInbound } = opts;
-  const client = new FilamentMcpClient(mcpUrl, token);
-  let fcm = null;
+  const {
+    mcpUrl,
+    token,
+    accountId = DEFAULT_ACCOUNT_ID,
+    log = () => {
+    },
+    abortSignal,
+    fetchImpl = fetch
+  } = opts;
+  const bearer = resolveBearer(token, log);
+  if (abortSignal?.aborted) throw new ConnectAbortedError();
+  const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl);
   let heartbeatTimer = null;
   const stop = () => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = null;
-    fcm?.stop();
-    fcm = null;
   };
-  const snapshot = () => fcm ? fcm.snapshot() : buildSnapshot(false);
-  await client.initialize();
-  const greetPending = isFirstContact(client.instructions);
+  await client.initialize({ signal: abortSignal });
   let identity = null;
-  let ownerName;
   for (let attempt = 1; attempt <= GETSELF_MAX_ATTEMPTS; attempt++) {
+    if (abortSignal?.aborted) throw new ConnectAbortedError();
     let res;
     try {
-      res = await client.getSelf();
+      res = await client.getSelf({ signal: abortSignal });
     } catch (error) {
+      if (abortSignal?.aborted) throw new ConnectAbortedError();
       log(
         `filament-connect: get_self attempt ${attempt}/${GETSELF_MAX_ATTEMPTS} threw: ${String(error)}`
       );
-      if (attempt < GETSELF_MAX_ATTEMPTS) await sleep(GETSELF_INTERVAL_MS);
+      await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);
       continue;
     }
     const decision = classifyGetSelf(res);
     if (decision.status === "finalized" && decision.identity) {
       identity = decision.identity;
-      const owner = res.data?.owner;
-      if (owner && typeof owner.display_name === "string") ownerName = owner.display_name;
       break;
     }
     if (decision.status === "auth_failed") {
-      log("filament-connect: connect token rejected (auth failed)");
+      log("filament-connect: bearer rejected (auth failed)");
       stop();
-      throw new Error("connect token rejected");
+      throw new BearerRejectedError();
     }
     log(`filament-connect: not finalized yet (attempt ${attempt}/${GETSELF_MAX_ATTEMPTS})`);
-    if (attempt < GETSELF_MAX_ATTEMPTS) await sleep(GETSELF_INTERVAL_MS);
+    await sleepAbortable(GETSELF_INTERVAL_MS, abortSignal);
   }
   if (!identity) {
-    log("filament-connect: agent not finalized within the window; will retry on next restart");
-    return { stop, snapshot, client };
-  }
-  saveIdentity({ ...identity, onboardedAt: Date.now() });
-  log(
-    `filament-connect: identity principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
-  );
-  await acceptPending(client, log);
-  fcm = new FcmConnection(void 0, log, onInbound);
-  try {
-    await fcm.start();
-  } catch (error) {
-    log(`filament-connect: FCM registration failed (continuing without push): ${String(error)}`);
-  }
-  const fcmToken = cachedToken();
-  if (fcmToken) {
-    const res = await client.registerPushToken(fcmToken, "android");
-    log(
-      res.ok ? "filament-connect: push token registered with Filament" : `filament-connect: register_push_token failed (${res.error?.code ?? "?"})`
+    stop();
+    throw new Error(
+      "agent not finalized within the verification window; will retry on next restart"
     );
-  } else {
-    log("filament-connect: no FCM token available; skipping register_push_token");
   }
+  saveIdentity(accountId, { ...identity, onboardedAt: Date.now() });
+  log(
+    `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
+  );
   const beat = async () => {
     try {
-      await client.heartbeat();
+      await client.heartbeat({ signal: abortSignal });
     } catch (error) {
-      log(`filament-connect: heartbeat failed: ${String(error)}`);
+      if (!abortSignal?.aborted) log(`filament-connect: heartbeat failed: ${String(error)}`);
     }
   };
   await beat();
   heartbeatTimer = setInterval(() => void beat(), HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref?.();
-  if (greetPending) {
-    const hello = ownerName ? `Hi ${ownerName} \u2014 I'm connected to Filament and ready.` : "Hi \u2014 I'm connected to Filament and ready.";
-    const res = await client.messagePrincipal(hello);
-    log(
-      res.ok ? "filament-connect: sent first-contact hello" : `filament-connect: greeting failed (${res.error?.code ?? "?"})`
-    );
-  }
-  return { stop, snapshot, client };
+  abortSignal?.addEventListener("abort", stop, { once: true });
+  return { stop, client, identity };
 }
 export {
-  resolveMcpSettings,
+  BearerRejectedError,
+  ConnectAbortedError,
+  retryConnect,
   runConnect
 };
-//# sourceMappingURL=connect.js.map

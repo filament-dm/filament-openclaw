@@ -1,12 +1,7 @@
-/**
- * Pure onboarding decision logic — no OpenClaw/eneris imports, so it can be
- * unit-tested without a gateway (mirrors the `conformance-core.ts` split).
- */
 import type { ToolCallResult } from "./mcp-client.js";
 
 export type OnboardingStatus = "finalized" | "not_finalized" | "auth_failed" | "transient";
 
-/** The identity fields learned from a finalized `get_self` (sans timestamp). */
 export interface ResolvedIdentity {
   mxid: string;
   principal: string;
@@ -15,19 +10,10 @@ export interface ResolvedIdentity {
 
 export interface OnboardingDecision {
   status: OnboardingStatus;
-  /** Present only when status is "finalized". */
   identity?: ResolvedIdentity;
 }
 
-/**
- * Classify a `get_self` result (mirrors Hermes' finalization logic, resilient
- * to the exact error code):
- *   - success with an owner   -> finalized (extract principal + backchannel)
- *   - success without owner    -> not finalized yet
- *   - -32002 (reserved)        -> not finalized yet
- *   - -32001 / HTTP 401 / 403  -> auth failed (token rejected; stop)
- *   - anything else            -> transient (retry)
- */
+/** An agent without an owner, or `-32002` (reserved), is not finalized yet. */
 export function classifyGetSelf(result: ToolCallResult): OnboardingDecision {
   if (result.ok) {
     const data = result.data;
@@ -61,10 +47,7 @@ export function classifyGetSelf(result: ToolCallResult): OnboardingDecision {
   return { status: "transient" };
 }
 
-/**
- * Whether the `initialize` response instructions carry a first-contact directive
- * (the server asks the agent to greet on connect). Mirrors Hermes' check.
- */
+/** The server asks the agent to greet on connect through its `initialize` instructions. */
 export function isFirstContact(instructions: string | null | undefined): boolean {
   return typeof instructions === "string" && instructions.includes("First contact:");
 }

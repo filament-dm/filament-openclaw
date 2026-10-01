@@ -1,40 +1,45 @@
-import { dispatchInboundDirectDmWithRuntime } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { resolveMcpSettings, runConnect } from "./connect.js";
 import {
-  decodeDirectPusher,
-  isChatMessage,
-  isInvite,
-  isVouch
-} from "./inbound-core.js";
-import { dispatchInboundGroupTurn } from "./inbound-dispatch.js";
+  DEFAULT_ACCOUNT_ID,
+  FILAMENT_CHANNEL_ID,
+  isControlAccount,
+  listConfiguredAccountIds,
+  PLUGIN_ID,
+  pluginConfigFrom
+} from "./accounts.js";
+import { retryConnect, runConnect } from "./connect.js";
+import {
+  beginFilamentTurn,
+  checkFilamentToolDrift,
+  endFilamentTurn,
+  getFilamentClient,
+  registerFilamentToolsFromSnapshot,
+  setFilamentClient
+} from "./filament-tools.js";
+import {
+  handleGatewayItem,
+  inventoryEntries,
+  listGatewayAgents,
+  MAX_REPORTED_STATUSES
+} from "./gateway.js";
+import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { loadIdentity } from "./token-store.js";
-const FILAMENT_CHANNEL_ID = "filament";
-function summarize(decoded) {
-  const parts = [`type=${decoded.branchType}`];
-  if (decoded.roomId) parts.push(`room=${decoded.roomId}`);
-  if (decoded.senderId) parts.push(`from=${decoded.senderId}`);
-  if (decoded.eventId) parts.push(`event=${decoded.eventId}`);
-  if (decoded.text != null) {
-    const preview = decoded.text.length > 60 ? `${decoded.text.slice(0, 60)}\u2026` : decoded.text;
-    parts.push(`text=${JSON.stringify(preview)}`);
-  } else if (isChatMessage(decoded.branchType)) {
-    parts.push("text=<media-only>");
-  }
-  if (decoded.nonce) parts.push(`nonce=${decoded.nonce}`);
-  return parts.join(" ");
-}
-function replyText(payload) {
-  const text = payload && typeof payload === "object" ? payload.text : void 0;
-  return typeof text === "string" ? text : "";
-}
+import { runFcmTransport } from "./transports/fcm/index.js";
+import { runPollTransport } from "./transports/poll/index.js";
+import { dispatchWorkItemTurn } from "./turn.js";
+const TRANSPORTS = {
+  fcm: runFcmTransport,
+  poll: runPollTransport
+};
+let refreshGatewayInventory = null;
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
   const log = (message) => {
     if (api.logger?.info) api.logger.info(message);
     else console.log(message);
   };
-  const mcp = resolveMcpSettings(api.pluginConfig);
+  const pluginConfigOf = (cfg) => pluginConfigFrom(cfg) ?? api.pluginConfig;
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const plugin = {
     id: FILAMENT_CHANNEL_ID,
     meta: {
@@ -42,165 +47,195 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via FCM push + MCP-over-HTTP"
+      blurb: "Connects the agent to Filament via FCM push (or poll_work) + MCP"
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
-      listAccountIds: () => ["default"],
+      // oxlint-disable-next-line typescript/no-explicit-any
+      listAccountIds: (cfg) => listConfiguredAccountIds(pluginConfigOf(cfg)),
       // oxlint-disable-next-line typescript/no-explicit-any
       resolveAccount: (_cfg, accountId) => ({
-        accountId: accountId ?? "default"
+        accountId: accountId ?? DEFAULT_ACCOUNT_ID
       })
     },
     gateway: {
       // oxlint-disable-next-line typescript/no-explicit-any
       startAccount: async (ctx) => {
         let connection = null;
-        const handleInbound = async (env) => {
-          const decoded = decodeDirectPusher(env);
-          if (!decoded) {
-            log(`filament: inbound pid=${env.persistentId} (badge-only or unparseable; ignored)`);
-            return;
-          }
-          log(`filament: inbound ${summarize(decoded)}`);
-          if (decoded.branchType === "io.filament.ping") {
-            if (decoded.nonce && connection) {
-              try {
-                await connection.client.pong(decoded.nonce);
-                log(`filament: pong sent (nonce=${decoded.nonce})`);
-              } catch (error) {
-                log(`filament: pong failed: ${String(error)}`);
-              }
-            }
-            return;
-          }
-          if (isInvite(decoded.branchType) || isVouch(decoded.branchType)) {
-            const targetId = isVouch(decoded.branchType) ? decoded.loopId ?? decoded.roomId : decoded.roomId;
-            if (!connection || !targetId) {
-              log(`filament: ${decoded.branchType} before connect / no id; skipping`);
-              return;
-            }
-            try {
-              const res = isVouch(decoded.branchType) ? await connection.client.acceptVouch(targetId) : await connection.client.acceptInvite(targetId);
-              log(
-                res.ok ? `filament: ${isVouch(decoded.branchType) ? "accepted vouch into" : "accepted invite to"} ${targetId}` : `filament: ${decoded.branchType} accept failed (${res.error?.code ?? "?"})`
-              );
-            } catch (error) {
-              log(`filament: ${decoded.branchType} accept threw: ${String(error)}`);
-            }
-            return;
-          }
-          if (!isChatMessage(decoded.branchType) || !decoded.roomId) {
-            log(`filament: inbound ${decoded.branchType} not yet handled`);
-            return;
-          }
-          if (!connection) {
-            log("filament: inbound arrived before connect finished; dropping");
-            return;
-          }
-          if (!ctx?.channelRuntime) {
-            log("filament: ctx.channelRuntime unavailable; cannot wake a turn");
-            return;
-          }
+        const abortSignal = ctx.abortSignal;
+        const accountId = ctx.accountId ?? DEFAULT_ACCOUNT_ID;
+        const pluginConfig = pluginConfigOf(ctx.cfg);
+        const mcp = resolveAccountSettings(pluginConfig, accountId);
+        const accountLog = (message) => log(`[${accountId}] ${message}`);
+        accountLog(`filament: transport ${mcp.transport}`);
+        const control = isControlAccount(pluginConfig, accountId);
+        const liveGatewayConfig = () => api.runtime?.config?.current?.() ?? ctx.cfg;
+        const statuses = [];
+        const reportInventory = async () => {
+          if (!connection) return;
+          const agents = listGatewayAgents(
+            liveGatewayConfig(),
+            (id) => getFilamentClient(id) ? loadIdentity(id)?.mxid : void 0
+          );
+          const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
+            signal: abortSignal
+          });
+          accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
+        };
+        const handleControl = async (item) => {
+          if (!connection) return;
           const client = connection.client;
-          const roomId = decoded.roomId;
-          const identity = loadIdentity();
-          const isBackchannel = !!identity?.ccRoomId && roomId === identity.ccRoomId;
-          const deliver = async (payload) => {
-            const text = replyText(payload);
-            if (!text.trim()) {
-              log("filament: agent produced no text reply; nothing to post");
-              return;
-            }
-            const res = isBackchannel ? await client.messagePrincipal(text) : await client.postMessage(roomId, text);
-            log(
-              res.ok ? `filament: reply posted to ${roomId}` : `filament: reply post failed (${res.error?.code ?? "?"})`
-            );
-          };
-          try {
-            if (isBackchannel || decoded.branchType === "direct_message") {
-              await dispatchInboundDirectDmWithRuntime({
-                cfg: ctx.cfg,
-                runtime: { channel: ctx.channelRuntime },
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                peer: { kind: "direct", id: roomId },
-                senderId: decoded.senderId ?? "unknown",
-                senderAddress: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                // The principal's own agent; Filament already gates who can reach it.
-                commandAuthorized: true,
-                deliver,
-                onRecordError: (error) => log(`filament: record error (continuing): ${String(error)}`),
-                // oxlint-disable-next-line typescript/no-explicit-any
-                onDispatchError: (error, info) => log(`filament: dispatch error (${info?.kind ?? "?"}): ${String(error)}`)
-              });
-            } else {
-              const sessionKey = await dispatchInboundGroupTurn({
-                cfg: ctx.cfg,
-                channelRuntime: ctx.channelRuntime,
-                channel: FILAMENT_CHANNEL_ID,
-                channelLabel: "Filament",
-                accountId: ctx.accountId ?? "default",
-                roomId,
-                senderId: decoded.senderId ?? "unknown",
-                recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-                conversationLabel: decoded.channel ?? decoded.sender ?? roomId,
-                rawBody: decoded.text ?? "",
-                messageId: decoded.eventId ?? env.persistentId,
-                deliver,
-                log: (message) => log(`filament: ${message}`)
-              });
-              log(`filament: dispatched channel_message (session=${sessionKey ?? "?"})`);
-            }
-          } catch (error) {
-            log(`filament: inbound dispatch threw: ${String(error)}`);
+          await handleGatewayItem({
+            item,
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            gatewayConfig: liveGatewayConfig(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal }
+              );
+            },
+            mutateConfig: async (mutate) => {
+              const write = api.runtime?.config?.mutateConfigFile;
+              if (!write)
+                throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+              await write({ afterWrite: { mode: "auto" }, mutate });
+            },
+            report: async (entries) => {
+              statuses.unshift(...[...entries].reverse());
+              statuses.splice(MAX_REPORTED_STATUSES);
+              await reportInventory();
+            },
+            log: accountLog
+          });
+        };
+        const runTurn = async (item) => {
+          if (!ctx.channelRuntime) {
+            throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
+          const identity = loadIdentity(accountId);
+          beginFilamentTurn(item.is_backchannel === true, accountId);
+          let repliedTo = /* @__PURE__ */ new Set();
+          let result;
+          try {
+            result = await dispatchWorkItemTurn({
+              cfg: ctx.cfg,
+              channelRuntime: ctx.channelRuntime,
+              channel: FILAMENT_CHANNEL_ID,
+              channelLabel: "Filament",
+              accountId,
+              peerKind: item.is_backchannel || item.is_direct ? "direct" : "group",
+              channelId: item.channel_id,
+              threadId: item.thread_id,
+              messages: item.messages,
+              recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
+              conversationLabel: item.channel_id,
+              // Filament, not OpenClaw, decides who can reach the agent; only the
+              // backchannel may run OpenClaw commands.
+              commandAuthorized: item.is_backchannel === true,
+              log: accountLog
+            });
+          } finally {
+            repliedTo = endFilamentTurn(accountId);
+          }
+          return { ...result, repliedTo };
         };
         let token = "";
         if (mcp.tokenInput !== void 0) {
           const resolved = await resolveConfiguredSecretInputString({
+            // oxlint-disable-next-line typescript/no-explicit-any
             config: api.config,
             env: process.env,
             value: mcp.tokenInput,
-            path: "plugins.entries.filament-fcm.config.connectToken"
+            path: connectTokenConfigPath(PLUGIN_ID, accountId, pluginConfig)
           });
           token = resolved.value ?? "";
           if (!token) {
-            log(
+            accountLog(
               `filament: connect token did not resolve${resolved.unresolvedRefReason ? ` (${resolved.unresolvedRefReason})` : ""}`
             );
           }
         }
         if (token) {
           try {
-            connection = await runConnect({
-              mcpUrl: mcp.mcpUrl,
-              token,
-              log,
-              onInbound: (env) => void handleInbound(env)
-            });
+            connection = await retryConnect(
+              () => runConnect({
+                mcpUrl: mcp.mcpUrl,
+                token,
+                accountId,
+                log: accountLog,
+                abortSignal
+              }),
+              { log: accountLog, abortSignal }
+            );
             onConnectionChange(connection);
           } catch (error) {
-            log(`filament: connect failed: ${String(error)}`);
+            accountLog(`filament: connect failed: ${String(error)}`);
+            connection = null;
           }
         } else {
-          log("filament: no connect token configured; channel idle (set config.connectToken)");
+          accountLog(
+            "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)"
+          );
         }
-        await new Promise((resolve) => {
-          const signal = ctx?.abortSignal;
-          if (!signal) return resolve();
-          if (signal.aborted) return resolve();
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
+        const refreshOtherwise = () => {
+          if (!control) refreshGatewayInventory?.();
+        };
+        if (connection && control) {
+          refreshGatewayInventory = () => {
+            reportInventory().catch((error) => {
+              accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
+            });
+          };
+          refreshGatewayInventory();
+        }
+        if (connection) {
+          if (!control) setFilamentClient(connection.client, accountId);
+          refreshOtherwise();
+          if (!control) {
+            void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+              accountLog(`filament: tool drift check failed: ${String(error)}`);
+            });
+          }
+          const { fatal } = await TRANSPORTS[mcp.transport]({
+            accountId,
+            client: connection.client,
+            identity: connection.identity,
+            settings: mcp,
+            control,
+            abortSignal,
+            log: accountLog,
+            runTurn,
+            handleControl
+          });
+          if (fatal) {
+            accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
+            ctx.setStatus?.({
+              accountId,
+              connected: false,
+              statusState: "error",
+              restartPending: false
+            });
+          }
+          setFilamentClient(null, accountId);
+        }
+        if (!abortSignal.aborted) {
+          await new Promise((resolve) => {
+            if (abortSignal.aborted) return resolve();
+            abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
         connection?.stop();
+        setFilamentClient(null, accountId);
+        if (control) refreshGatewayInventory = null;
+        else refreshOtherwise();
         onConnectionChange(null);
       },
-      stopAccount: async () => {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      stopAccount: async (ctx) => {
+        setFilamentClient(null, ctx?.accountId ?? DEFAULT_ACCOUNT_ID);
         onConnectionChange(null);
       }
     }
@@ -216,4 +251,3 @@ export {
   FILAMENT_CHANNEL_ID,
   registerFilamentChannel
 };
-//# sourceMappingURL=channel.js.map

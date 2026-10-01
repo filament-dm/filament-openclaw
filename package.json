@@ -1,7 +1,7 @@
 {
-  "name": "@filament/openclaw-filament-fcm",
+  "name": "@filament/filament-openclaw",
   "version": "0.1.0",
-  "description": "OpenClaw plugin that connects an agent to Filament via Firebase Cloud Messaging (FCM) pushes and the Filament MCP-over-HTTP agents API.",
+  "description": "OpenClaw plugin that connects an agent to Filament via Firebase Cloud Messaging (FCM) pushes — or, opt-in, a poll_work long-poll — and the Filament MCP-over-HTTP agents API.",
   "private": true,
   "type": "module",
   "repository": {
@@ -16,19 +16,19 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "esbuild index.ts src/fcm.ts src/token-store.ts src/conformance-core.ts src/conformance-http.ts src/mcp-client.ts src/connect.ts src/onboarding-core.ts src/channel.ts src/inbound-core.ts src/inbound-dispatch.ts --outdir=dist --format=esm --platform=node --target=node22 --sourcemap",
+    "build": "esbuild index.ts src/util.ts src/accounts.ts src/gateway.ts src/token-store.ts src/mcp-client.ts src/settings.ts src/credentials.ts src/connect.ts src/work-item.ts src/wake-rules.ts src/accept-pending.ts src/transports/types.ts src/transports/poll/index.ts src/transports/poll/poll-work.ts src/transports/fcm/index.ts src/transports/fcm/receiver.ts src/transports/fcm/decode.ts src/transports/fcm/wake-policy.ts src/transports/fcm/reply-route.ts src/onboarding-core.ts src/filament-tools.ts src/channel.ts src/turn.ts --outdir=dist --format=esm --platform=node --target=node22 && node -e \"require('fs').copyFileSync('src/filament-tools.snapshot.json','dist/src/filament-tools.snapshot.json')\"",
     "prepare": "npm run build",
-    "test": "esbuild src/conformance-core.test.ts src/onboarding-core.test.ts src/inbound-core.test.ts --bundle --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/conformance-core.test.mjs dist-test/onboarding-core.test.mjs dist-test/inbound-core.test.mjs",
-    "format": "oxfmt index.ts src",
-    "format:check": "oxfmt --check index.ts src",
+    "test": "esbuild src/onboarding-core.test.ts src/mcp-client.test.ts src/credentials.test.ts src/connect.test.ts src/settings.test.ts src/transports/poll/poll-work.test.ts src/transports/poll/index.test.ts src/transports/fcm/index.test.ts src/transports/fcm/decode.test.ts src/transports/fcm/wake-policy.test.ts src/transports/fcm/reply-route.test.ts src/filament-tools.test.ts src/accounts.test.ts src/gateway.test.ts --bundle --external:openclaw --external:@eneris/push-receiver --platform=node --format=esm --outdir=dist-test --out-extension:.js=.mjs && node --test dist-test/onboarding-core.test.mjs dist-test/mcp-client.test.mjs dist-test/credentials.test.mjs dist-test/connect.test.mjs dist-test/settings.test.mjs dist-test/transports/poll/poll-work.test.mjs dist-test/transports/poll/index.test.mjs dist-test/transports/fcm/index.test.mjs dist-test/transports/fcm/decode.test.mjs dist-test/transports/fcm/wake-policy.test.mjs dist-test/transports/fcm/reply-route.test.mjs dist-test/filament-tools.test.mjs dist-test/accounts.test.mjs dist-test/gateway.test.mjs",
+    "format": "oxfmt index.ts src scripts",
+    "format:check": "oxfmt --check index.ts src scripts",
     "lint": "oxlint index.ts src",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@eneris/push-receiver": "4.3.1"
+    "typecheck": "tsc --noEmit",
+    "snapshot:tools": "node scripts/snapshot-tools.mjs"
   },
   "devDependencies": {
+    "@types/node": "22.20.4",
     "esbuild": "^0.25.0",
+    "openclaw": "2026.7.1-2",
     "oxfmt": "^0.61.0",
     "oxlint": "^1.76.0",
     "typescript": "5.9.2"
@@ -57,5 +57,8 @@
       "publishToClawHub": false,
       "publishToNpm": false
     }
+  },
+  "dependencies": {
+    "@eneris/push-receiver": "4.3.1"
   }
 }

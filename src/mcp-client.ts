@@ -1,14 +1,29 @@
 /**
- * Minimal MCP-over-HTTP client for Filament's `/mcp/agents` endpoint.
+ * MCP-over-HTTP client for Filament's `/mcp/agents` endpoint.
  *
- * Ports the essentials of the Python Hermes plugin's `filament_api.py`:
- * JSON-RPC 2.0 over HTTP POST, `Authorization: Bearer <fmcp_…>`, `Mcp-Session-Id`
- * capture/replay, an `initialize` + `notifications/initialized` handshake, and a
- * tool-result unwrapper. Uses the global `fetch` (Node 22+); no new dependency.
+ * Failures come back classified (`ClientErrorKind`), never thrown: "auth" should stop retries,
+ * "transient" is safe to retry. The exception is the caller's own abort, which rethrows so the poll
+ * loop can tell stopping apart from a slow server.
  */
 
-/** MCP protocol version we advertise (matches Hermes). */
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
+
+/** The server sets `annotations.readOnlyHint` true on every read tool, false on every write tool. */
+export interface McpToolDescriptor {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+  annotations?: { readOnlyHint?: boolean; [key: string]: unknown };
+}
+
+export interface ListToolsResult {
+  ok: boolean;
+  tools?: McpToolDescriptor[];
+  error?: McpError;
+  kind?: ClientErrorKind;
+}
+
+export type ClientErrorKind = "auth" | "transient" | "tool" | "protocol";
 
 export interface McpError {
   code: number;
@@ -22,20 +37,25 @@ export interface JsonRpcResponse {
   error?: McpError;
 }
 
-/** The outcome of a single tools/call. */
 export interface ToolCallResult {
   ok: boolean;
   httpStatus: number;
-  /** Parsed inner JSON from the MCP content envelope (on success). */
   data?: unknown;
   error?: McpError;
+  kind?: ClientErrorKind;
+}
+
+const DEFAULT_TIMEOUT_MS = 15_000;
+export const POLL_TIMEOUT_MARGIN_MS = 15_000;
+
+export interface CallOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 /**
- * Unwrap an MCP tool result into its inner JSON. Handles both shapes seen in
- * the wild: `{ content: [{ type: "text", text }] }` (Hermes' expectation) and
- * `{ type: "text", text }` (Filament synapse's `_handle_tools_call`). Falls
- * back to the raw value when there's no text envelope.
+ * Accepts both the spec's `{ content: [{ type: "text", text }] }` and the bare
+ * `{ type: "text", text }` that Filament's server returns.
  */
 export function parseToolResult(result: unknown): unknown {
   if (!result || typeof result !== "object") return result;
@@ -67,11 +87,38 @@ export function parseToolResult(result: unknown): unknown {
   return result;
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { name?: unknown }).name === "AbortError")
+  );
+}
+
+function classifyJsonRpcError(error: McpError): ClientErrorKind {
+  // -32001 is the server's auth-failure code.
+  if (error.code === -32001) return "auth";
+  // Policy refusals (-32003..-32006) and rejected arguments (-32602): retrying as is won't help.
+  if ((error.code <= -32003 && error.code >= -32006) || error.code === -32602) return "tool";
+  if (error.code === -32601) return "tool";
+  const message = error.message?.toLowerCase() ?? "";
+  if (
+    message.includes("revoked") ||
+    message.includes("unauthorized") ||
+    message.includes("invalid_grant")
+  ) {
+    return "auth";
+  }
+  if (message.includes("unknown tool") || message.includes("not found")) return "tool";
+  return "protocol";
+}
+
 export class FilamentMcpClient {
   private sessionId: string | null = null;
   private nextId = 1;
   private initialized = false;
-  /** Server `instructions` from the initialize response (the first-contact directive lives here). */
+  /** From the initialize response; carries the server's first-contact directive. */
   instructions: string | null = null;
 
   constructor(
@@ -84,40 +131,72 @@ export class FilamentMcpClient {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   private async post(
+    url: string,
     body: unknown,
     expectJson: boolean,
-  ): Promise<{ status: number; json: JsonRpcResponse | null }> {
-    const response = await this.fetchImpl(this.mcpUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${this.token}`,
-        ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-
-    const headerSid = response.headers.get("mcp-session-id");
-    if (headerSid) this.sessionId = headerSid;
-
-    if (!expectJson || response.status === 204) {
-      return { status: response.status, json: null };
+    opts?: CallOptions,
+  ): Promise<{ status: number; json: JsonRpcResponse | null; parseError: boolean }> {
+    const controller = new AbortController();
+    const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    if (opts?.signal?.aborted) {
+      // An "abort" event that already fired won't fire again for a late listener.
+      controller.abort();
+    } else {
+      opts?.signal?.addEventListener("abort", onExternalAbort, { once: true });
     }
-    let json: JsonRpcResponse | null = null;
+
     try {
-      json = (await response.json()) as JsonRpcResponse;
-    } catch {
-      json = null;
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json",
+            authorization: `Bearer ${this.token}`,
+            ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (opts?.signal?.aborted) throw error;
+        if (isAbortError(error) && timedOut) {
+          return { status: 0, json: null, parseError: false };
+        }
+        throw error;
+      }
+
+      const headerSid = response.headers.get("mcp-session-id");
+      if (headerSid) this.sessionId = headerSid;
+
+      if (!expectJson || response.status === 204) {
+        return { status: response.status, json: null, parseError: false };
+      }
+      try {
+        const json = (await response.json()) as JsonRpcResponse;
+        return { status: response.status, json, parseError: false };
+      } catch {
+        return { status: response.status, json: null, parseError: true };
+      }
+    } finally {
+      clearTimeout(timer);
+      opts?.signal?.removeEventListener("abort", onExternalAbort);
     }
-    return { status: response.status, json };
   }
 
-  /** MCP handshake: initialize + notifications/initialized. Idempotent. */
-  async initialize(): Promise<void> {
+  async initialize(opts?: CallOptions): Promise<void> {
     if (this.initialized) return;
-    const { json } = await this.post(
+    const { status, json } = await this.post(
+      this.mcpUrl,
       {
         jsonrpc: "2.0",
         id: this.nextId++,
@@ -129,7 +208,10 @@ export class FilamentMcpClient {
         },
       },
       true,
+      opts,
     );
+    // Not initialized: the next call runs the handshake again.
+    if (status !== 200 || !json?.result) return;
     // Some servers carry the session id in the body rather than a header.
     const bodySid =
       json?.result && typeof json.result === "object"
@@ -143,15 +225,23 @@ export class FilamentMcpClient {
         : undefined;
     this.instructions = typeof instr === "string" ? instr : null;
 
-    // Notification: no id, no response body expected.
-    await this.post({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }, false);
+    await this.post(
+      this.mcpUrl,
+      { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+      false,
+      opts,
+    );
     this.initialized = true;
   }
 
-  /** Call an MCP tool, returning a classified result (never throws on error envelopes). */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<ToolCallResult> {
-    await this.initialize();
-    const { status, json } = await this.post(
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+    opts?: CallOptions,
+  ): Promise<ToolCallResult> {
+    await this.initialize(opts);
+    const { status, json, parseError } = await this.post(
+      this.mcpUrl,
       {
         jsonrpc: "2.0",
         id: this.nextId++,
@@ -159,76 +249,205 @@ export class FilamentMcpClient {
         params: { name, arguments: args },
       },
       true,
+      opts,
     );
-    if (json?.error) {
-      return { ok: false, httpStatus: status, error: json.error };
+
+    if (status === 0 && !json) {
+      return {
+        ok: false,
+        httpStatus: 0,
+        kind: "transient",
+        error: { code: -1, message: "request timed out" },
+      };
     }
     if (status === 401 || status === 403) {
-      return { ok: false, httpStatus: status, error: { code: -32001, message: `HTTP ${status}` } };
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: "auth",
+        error: { code: -32001, message: `HTTP ${status}` },
+      };
     }
-    return { ok: true, httpStatus: status, data: parseToolResult(json?.result) };
+    if (status === 429 || status >= 500) {
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: "transient",
+        error: { code: -32000, message: `HTTP ${status}` },
+      };
+    }
+    if (parseError) {
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: "protocol",
+        error: { code: -32700, message: "invalid JSON in response body" },
+      };
+    }
+    if (json?.error) {
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: classifyJsonRpcError(json.error),
+        error: json.error,
+      };
+    }
+    if (status < 200 || status >= 300) {
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: "protocol",
+        error: { code: -1, message: `unexpected HTTP ${status}` },
+      };
+    }
+
+    const rawResult = json?.result;
+    const rawIsError =
+      rawResult &&
+      typeof rawResult === "object" &&
+      (rawResult as { isError?: unknown }).isError === true;
+    const data = parseToolResult(rawResult);
+    if (rawIsError) {
+      const message =
+        data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
+          ? (data as { error: string }).error
+          : "tool reported an error";
+      return {
+        ok: false,
+        httpStatus: status,
+        kind: "tool",
+        data,
+        error: { code: -32000, message },
+      };
+    }
+    return { ok: true, httpStatus: status, data };
   }
 
-  /** Fetch the agent's own identity (principal, backchannel, mxid). */
-  getSelf(): Promise<ToolCallResult> {
-    return this.callTool("get_self", {});
+  async listTools(opts?: CallOptions): Promise<ListToolsResult> {
+    await this.initialize(opts);
+    const { status, json, parseError } = await this.post(
+      this.mcpUrl,
+      { jsonrpc: "2.0", id: this.nextId++, method: "tools/list", params: {} },
+      true,
+      opts,
+    );
+
+    if (status === 0 && !json) {
+      return { ok: false, kind: "transient", error: { code: -1, message: "request timed out" } };
+    }
+    if (status === 401 || status === 403) {
+      return { ok: false, kind: "auth", error: { code: -32001, message: `HTTP ${status}` } };
+    }
+    if (status === 429 || status >= 500) {
+      return { ok: false, kind: "transient", error: { code: -32000, message: `HTTP ${status}` } };
+    }
+    if (parseError) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -32700, message: "invalid JSON in response body" },
+      };
+    }
+    if (json?.error) {
+      return { ok: false, kind: classifyJsonRpcError(json.error), error: json.error };
+    }
+    if (status < 200 || status >= 300) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: `unexpected HTTP ${status}` },
+      };
+    }
+    const tools = (json?.result as { tools?: unknown } | undefined)?.tools;
+    if (!Array.isArray(tools)) {
+      return {
+        ok: false,
+        kind: "protocol",
+        error: { code: -1, message: "tools/list result missing a tools[] array" },
+      };
+    }
+    const parsed: McpToolDescriptor[] = tools
+      .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+      .filter((t) => typeof t.name === "string" && t.name.length > 0)
+      .map((t) => ({
+        name: t.name as string,
+        description: typeof t.description === "string" ? t.description : undefined,
+        inputSchema: t.inputSchema,
+        annotations:
+          t.annotations && typeof t.annotations === "object"
+            ? (t.annotations as McpToolDescriptor["annotations"])
+            : undefined,
+      }));
+    return { ok: true, tools: parsed };
   }
 
-  /** Hand Filament our FCM push token so DirectPusher can push to us. */
-  registerPushToken(token: string, platform = "android"): Promise<ToolCallResult> {
-    return this.callTool("register_push_token", { token, platform });
+  getSelf(opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("get_self", {}, opts);
   }
 
-  listPendingInvites(): Promise<ToolCallResult> {
-    return this.callTool("list_pending_invites", {});
+  listPendingInvites(opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("list_pending_invites", {}, opts);
   }
 
-  acceptInvite(loopId: string): Promise<ToolCallResult> {
-    return this.callTool("accept_invite", { loop_id: loopId });
+  acceptInvite(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("accept_invite", { loop_id: loopId }, opts);
   }
 
-  listVouches(): Promise<ToolCallResult> {
-    return this.callTool("list_vouches", {});
+  listVouches(opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("list_vouches", {}, opts);
   }
 
-  acceptVouch(loopId: string): Promise<ToolCallResult> {
-    return this.callTool("accept_vouch", { loop_id: loopId });
+  acceptVouch(loopId: string, opts?: CallOptions): Promise<ToolCallResult> {
+    return this.callTool("accept_vouch", { loop_id: loopId }, opts);
   }
 
-  /** Post a message to a channel. */
-  postMessage(channel: string, markdownBody: string): Promise<ToolCallResult> {
-    return this.callTool("post_message", { channel, markdown_body: markdownBody });
-  }
-
-  /** DM the principal (the server's first-contact directive points here). */
-  messagePrincipal(markdownBody: string): Promise<ToolCallResult> {
-    return this.callTool("message_principal", { markdown_body: markdownBody });
-  }
-
-  /**
-   * Side-channel POST to `${mcpUrl}${path}` (not JSON-RPC), bearer-authed.
-   * Used by the presence/liveness endpoints. Returns the HTTP status.
-   */
-  private async sideChannelPost(path: string, body?: unknown): Promise<number> {
-    const response = await this.fetchImpl(`${this.mcpUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.token}`,
-        ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
+  /** Blocks server-side up to `wait_seconds`: callers must pass a longer `timeoutMs`. */
+  pollWork(
+    args: { cursor?: string | null; ack?: string[]; wait_seconds: number; max_items: number },
+    opts?: CallOptions,
+  ): Promise<ToolCallResult> {
+    return this.callTool(
+      "poll_work",
+      {
+        cursor: args.cursor ?? null,
+        ...(args.ack && args.ack.length > 0 ? { ack: args.ack } : {}),
+        wait_seconds: args.wait_seconds,
+        max_items: args.max_items,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    return response.status;
+      opts,
+    );
   }
 
-  /** Presence keep-alive: POST /heartbeat (keeps the agent online). */
-  heartbeat(): Promise<number> {
-    return this.sideChannelPost("/heartbeat");
+  /** `reply_with` only names `post_message` or `reply_in_thread`; both take `markdown_body`. */
+  replyWith(
+    replyWithSpec: { tool: string; args: Record<string, unknown> },
+    markdownBody: string,
+    opts?: CallOptions,
+  ): Promise<ToolCallResult> {
+    return this.callTool(
+      replyWithSpec.tool,
+      { ...replyWithSpec.args, markdown_body: markdownBody },
+      opts,
+    );
   }
 
-  /** Acknowledge a liveness ping: POST /pong (the channel calls this on an inbound ping). */
-  pong(nonce: string): Promise<number> {
-    return this.sideChannelPost("/pong", { nonce });
+  private async sideChannelPost(path: string, body?: unknown, opts?: CallOptions): Promise<number> {
+    const { status } = await this.post(`${this.mcpUrl}${path}`, body, false, opts);
+    return status;
+  }
+
+  heartbeat(opts?: CallOptions): Promise<number> {
+    return this.sideChannelPost("/heartbeat", undefined, opts);
+  }
+
+  pong(nonce: string, opts?: CallOptions): Promise<number> {
+    return this.sideChannelPost("/pong", { nonce }, opts);
+  }
+
+  reportTools(
+    tools: Array<{ name: string; description?: string; origin?: string; health?: string }>,
+    opts?: CallOptions,
+  ): Promise<number> {
+    return this.sideChannelPost("/tools", { tools }, opts);
   }
 }
