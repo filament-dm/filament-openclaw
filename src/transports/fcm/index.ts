@@ -175,9 +175,13 @@ export async function runFcmTransport(
   const setStatus = async (args: Record<string, unknown>) => {
     try {
       const res = await client.callTool("set_status", args, { signal: abortSignal });
-      if (!res.ok) log(`filament-fcm: status not published (${res.kind ?? "?"})`);
-    } catch {
-      // aborted with the transport
+      if (!res.ok) {
+        log(
+          `filament-fcm: status not published (${res.kind ?? "?"}: ${res.error?.message ?? "?"})`,
+        );
+      }
+    } catch (error) {
+      if (!abortSignal.aborted) log(`filament-fcm: status not published: ${String(error)}`);
     }
   };
 
