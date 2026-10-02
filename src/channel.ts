@@ -41,7 +41,7 @@ import {
   MAX_REPORTED_STATUSES,
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
-import { loadIdentity, markChoiceAsked } from "./token-store.js";
+import { choiceAsked, loadIdentity, markChoiceAsked } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
@@ -175,16 +175,23 @@ export function registerFilamentChannel(
 
         // A pending account's only job: find out which OpenClaw agent it is, then bind it.
         const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
-        const bindPending = (agentId: string) =>
-          mutateConfig((draft) => applyPendingChoice(draft, accountId, agentId, token));
-        const sayToPrincipal = async (markdownBody: string): Promise<void> => {
-          if (!connection) return;
+        const bindPending = async (agentId: string): Promise<boolean> => {
+          let bound = false;
+          await mutateConfig((draft) => {
+            bound = applyPendingChoice(draft, accountId, agentId, token);
+          });
+          return bound;
+        };
+        /** Resolves true only when the message landed. */
+        const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {
+          if (!connection) return false;
           const res = await connection.client.callTool(
             "message_principal",
             { markdown_body: markdownBody },
             { signal: abortSignal },
           );
           if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
+          return res.ok;
         };
         // A connected agent takes `/filament connect <token>` from its principal: the app sends
         // it here so a second Filament agent joins this gateway with no terminal step. Outcomes
@@ -194,6 +201,7 @@ export function registerFilamentChannel(
           const client = connection.client;
           await handleGatewayItem({
             item,
+            scope: "connect",
             principal: connection.identity.principal,
             ccRoomId: connection.identity.ccRoomId,
             gatewayConfig: liveGatewayConfig(),
@@ -233,8 +241,11 @@ export function registerFilamentChannel(
                 { signal: abortSignal },
               );
             },
-            say: sayToPrincipal,
+            say: async (body) => {
+              await sayToPrincipal(body);
+            },
             bind: bindPending,
+            refreshOptions: pendingOptions,
             log: accountLog,
           });
         };
@@ -244,11 +255,14 @@ export function registerFilamentChannel(
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
             await bindPending(chosen);
+          } else if (choiceAsked(accountId)) {
+            return;
           } else if (freeOptions(options).length === 0) {
             accountLog("filament-choose: this gateway has no free agent to bind");
-            if (markChoiceAsked(accountId)) await sayToPrincipal(nothingFreeBody(options));
-          } else if (markChoiceAsked(accountId)) {
-            await sayToPrincipal(questionBody(options));
+            // Marked only once said: a failed send must not silence every later start.
+            if (await sayToPrincipal(nothingFreeBody(options))) markChoiceAsked(accountId);
+          } else if (await sayToPrincipal(questionBody(options))) {
+            markChoiceAsked(accountId);
           }
         };
 

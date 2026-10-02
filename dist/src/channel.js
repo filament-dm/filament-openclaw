@@ -33,7 +33,7 @@ import {
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
-import { loadIdentity, markChoiceAsked } from "./token-store.js";
+import { choiceAsked, loadIdentity, markChoiceAsked } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -124,21 +124,29 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
         };
         const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
-        const bindPending = (agentId) => mutateConfig((draft) => applyPendingChoice(draft, accountId, agentId, token));
+        const bindPending = async (agentId) => {
+          let bound = false;
+          await mutateConfig((draft) => {
+            bound = applyPendingChoice(draft, accountId, agentId, token);
+          });
+          return bound;
+        };
         const sayToPrincipal = async (markdownBody) => {
-          if (!connection) return;
+          if (!connection) return false;
           const res = await connection.client.callTool(
             "message_principal",
             { markdown_body: markdownBody },
             { signal: abortSignal }
           );
           if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
+          return res.ok;
         };
         const handleCommand = async (item) => {
           if (!connection) return;
           const client = connection.client;
           await handleGatewayItem({
             item,
+            scope: "connect",
             principal: connection.identity.principal,
             ccRoomId: connection.identity.ccRoomId,
             gatewayConfig: liveGatewayConfig(),
@@ -174,8 +182,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
                 { signal: abortSignal }
               );
             },
-            say: sayToPrincipal,
+            say: async (body) => {
+              await sayToPrincipal(body);
+            },
             bind: bindPending,
+            refreshOptions: pendingOptions,
             log: accountLog
           });
         };
@@ -185,11 +196,13 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
             await bindPending(chosen);
+          } else if (choiceAsked(accountId)) {
+            return;
           } else if (freeOptions(options).length === 0) {
             accountLog("filament-choose: this gateway has no free agent to bind");
-            if (markChoiceAsked(accountId)) await sayToPrincipal(nothingFreeBody(options));
-          } else if (markChoiceAsked(accountId)) {
-            await sayToPrincipal(questionBody(options));
+            if (await sayToPrincipal(nothingFreeBody(options))) markChoiceAsked(accountId);
+          } else if (await sayToPrincipal(questionBody(options))) {
+            markChoiceAsked(accountId);
           }
         };
         const runTurn = async (item) => {

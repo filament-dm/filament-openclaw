@@ -169,8 +169,11 @@ export function recordReceivedId(accountId: string, id: string): boolean {
 }
 
 /** False when this pending account already asked; a config reload must not ask again. */
-export function markChoiceAsked(accountId: string): boolean {
-  if (choiceAskedStoreInstance().lookup(accountId) !== undefined) return false;
+export function choiceAsked(accountId: string): boolean {
+  return choiceAskedStoreInstance().lookup(accountId) !== undefined;
+}
+
+/** Record that the question was put to the principal. Call it after the send succeeded. */
+export function markChoiceAsked(accountId: string): void {
   choiceAskedStoreInstance().register(accountId, Date.now());
-  return true;
 }

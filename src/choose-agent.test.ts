@@ -79,7 +79,7 @@ test("applyPendingChoice: binds the agent under its own account and drops the pe
     },
     bindings: [],
   };
-  applyPendingChoice(draft, "pending-abc", "writer", "fmcp_x");
+  assert.equal(applyPendingChoice(draft, "pending-abc", "writer", "fmcp_x"), true);
   const plugins = draft.plugins as { entries: Record<string, { config: { accounts: unknown } }> };
   assert.deepEqual(plugins.entries["filament-openclaw"]!.config.accounts, {
     writer: { connectToken: "fmcp_x" },
@@ -99,7 +99,7 @@ function item(body: string, overrides: Partial<WorkItem> = {}): WorkItem {
   } as WorkItem;
 }
 
-function harness(answer: string, overrides: Partial<WorkItem> = {}) {
+function harness(answer: string, overrides: Partial<WorkItem> = {}, bindResult = true) {
   const said: string[] = [];
   const bound: string[] = [];
   const consumed: string[] = [];
@@ -116,18 +116,29 @@ function harness(answer: string, overrides: Partial<WorkItem> = {}) {
     },
     bind: async (id) => {
       bound.push(id);
+      return bindResult;
     },
     log: () => {},
   });
   return { run, said, bound, consumed };
 }
 
-test("handlePendingItem: a tap binds that agent after saying so", async () => {
+test("handlePendingItem: a tap binds that agent, then says so", async () => {
   const h = harness("✍️ Writer");
   assert.deepEqual(await h.run, { kind: "silent" });
   assert.deepEqual(h.consumed, ["$1"]);
   assert.deepEqual(h.bound, ["writer"]);
   assert.match(h.said[0]!, /Writer\*\* answers here/);
+});
+
+test("handlePendingItem: an agent taken before the write is reported and the question re-asked", async () => {
+  const h = harness("✍️ Writer", {}, false);
+  assert.deepEqual(await h.run, { kind: "silent" });
+  assert.deepEqual(h.bound, ["writer"]);
+  assert.equal(h.said.length, 1);
+  assert.match(h.said[0]!, /Writer\*\* was just connected to another Filament agent/);
+  assert.match(h.said[0]!, /Tap the OpenClaw agent/);
+  assert.doesNotMatch(h.said[0]!, /answers here from now on/);
 });
 
 test("handlePendingItem: anything else asks again and binds nothing", async () => {
@@ -143,4 +154,27 @@ test("handlePendingItem: work outside the principal's backchannel is consumed an
   assert.deepEqual(h.consumed, ["$1"]);
   assert.deepEqual(h.bound, []);
   assert.deepEqual(h.said, []);
+});
+
+test("applyPendingChoice: an agent bound to another live account meanwhile is refused, nothing changes", () => {
+  const draft: Record<string, unknown> = {
+    plugins: {
+      entries: {
+        "filament-openclaw": {
+          config: {
+            accounts: {
+              writer: { connectToken: "fmcp_first" },
+              "pending-abc": { connectToken: "fmcp_x", pending: true },
+            },
+          },
+        },
+      },
+    },
+    bindings: [{ agentId: "writer", match: { channel: "filament", accountId: "writer" } }],
+  };
+  const before = JSON.stringify(draft);
+  assert.equal(applyPendingChoice(draft, "pending-abc", "writer", "fmcp_x"), false);
+  assert.equal(JSON.stringify(draft), before);
+  // The same token re-applied (a retried write) is not a conflict.
+  assert.equal(applyPendingChoice(draft, "pending-abc", "writer", "fmcp_first"), true);
 });

@@ -43,10 +43,29 @@ function resolveChoice(text, options) {
   );
   return match ? match.agentId : null;
 }
+function boundAccountOf(draft, agentId) {
+  const bindings = Array.isArray(draft.bindings) ? draft.bindings : [];
+  for (const raw of bindings) {
+    const binding = asRecord(raw);
+    const match = asRecord(binding.match);
+    if (match.channel === "filament" && binding.agentId === agentId) {
+      return typeof match.accountId === "string" ? match.accountId : DEFAULT_ACCOUNT_ID;
+    }
+  }
+  return void 0;
+}
 function applyPendingChoice(draft, pendingAccountId, agentId, token) {
-  applyAgentConnect(draft, agentId, token);
+  const holder = boundAccountOf(draft, agentId);
+  if (holder !== void 0 && holder !== pendingAccountId && holder !== agentId) return false;
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
-  delete asRecord(config.accounts)[pendingAccountId];
+  const accounts = asRecord(config.accounts);
+  const current = asRecord(accounts[holder ?? ""]);
+  if (holder === agentId && current.connectToken !== void 0 && current.connectToken !== token) {
+    return false;
+  }
+  applyAgentConnect(draft, agentId, token);
+  delete accounts[pendingAccountId];
+  return true;
 }
 async function handlePendingItem(ctx) {
   const { item, log } = ctx;
@@ -67,10 +86,20 @@ async function handlePendingItem(ctx) {
     return done;
   }
   const label = ctx.options.find((option) => option.agentId === agentId).label;
-  await ctx.say(`Done \u2014 **${label}** answers here from now on.`);
   try {
-    await ctx.bind(agentId);
+    const bound = await ctx.bind(agentId);
+    if (!bound) {
+      log(`filament-choose: '${agentId}' was taken before the write`);
+      await ctx.say(
+        `**${label}** was just connected to another Filament agent.
+
+${questionBody(ctx.refreshOptions?.() ?? ctx.options, true)}`
+      );
+      return done;
+    }
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
+    await ctx.say(`Done \u2014 **${label}** answers here from now on.`).catch(() => {
+    });
   } catch (error) {
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);

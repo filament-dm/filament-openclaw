@@ -57,7 +57,9 @@ export function questionBody(options: readonly ChoiceOption[], retry = false): s
   const rows = freeOptions(options).map((option) => `- [${option.label}](filament:message-send)`);
   const taken = options.filter((option) => option.taken).map((option) => option.label);
   const footer =
-    taken.length > 0 ? ["", `Already connected to another Filament agent: ${taken.join(", ")}.`] : [];
+    taken.length > 0
+      ? ["", `Already connected to another Filament agent: ${taken.join(", ")}.`]
+      : [];
   return [lead, "", ...rows, ...footer].join("\n");
 }
 
@@ -78,16 +80,43 @@ export function resolveChoice(text: string, options: readonly ChoiceOption[]): s
   return match ? match.agentId : null;
 }
 
-/** Binds `agentId` to this account's token under its own account id and drops the pending one. */
+/** The account `agentId` is bound to in `draft`, if any. */
+function boundAccountOf(draft: Record<string, unknown>, agentId: string): string | undefined {
+  const bindings = Array.isArray(draft.bindings) ? draft.bindings : [];
+  for (const raw of bindings) {
+    const binding = asRecord(raw);
+    const match = asRecord(binding.match);
+    if (match.channel === "filament" && binding.agentId === agentId) {
+      return typeof match.accountId === "string" ? match.accountId : DEFAULT_ACCOUNT_ID;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Binds `agentId` to this account's token under its own account id and drops the pending one.
+ * Checked against the draft it is applied to, not the options the question was built from: two
+ * pending accounts asked at once may both be answered with the same agent, and the second write
+ * must not displace the first. Returns false when the agent was taken meanwhile.
+ */
 export function applyPendingChoice(
   draft: Record<string, unknown>,
   pendingAccountId: string,
   agentId: string,
   token: string,
-): void {
-  applyAgentConnect(draft, agentId, token);
+): boolean {
+  const holder = boundAccountOf(draft, agentId);
+  if (holder !== undefined && holder !== pendingAccountId && holder !== agentId) return false;
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
-  delete asRecord(config.accounts)[pendingAccountId];
+  const accounts = asRecord(config.accounts);
+  const current = asRecord(accounts[holder ?? ""]);
+  // Bound to a live account already (its own id): taken, unless it is this very token.
+  if (holder === agentId && current.connectToken !== undefined && current.connectToken !== token) {
+    return false;
+  }
+  applyAgentConnect(draft, agentId, token);
+  delete accounts[pendingAccountId];
+  return true;
 }
 
 export interface PendingChoiceContext {
@@ -97,7 +126,10 @@ export interface PendingChoiceContext {
   options: readonly ChoiceOption[];
   consume: (upToEventId: string) => Promise<void>;
   say: (markdownBody: string) => Promise<void>;
-  bind: (agentId: string) => Promise<void>;
+  /** Resolves false when the agent was taken by another account meanwhile. */
+  bind: (agentId: string) => Promise<boolean>;
+  /** The options as they stand now, for a second question. */
+  refreshOptions?: () => readonly ChoiceOption[];
   log: (message: string) => void;
 }
 
@@ -122,11 +154,19 @@ export async function handlePendingItem(ctx: PendingChoiceContext): Promise<Disp
     return done;
   }
   const label = ctx.options.find((option) => option.agentId === agentId)!.label;
-  // Said before binding: the write restarts this account under the agent's own id.
-  await ctx.say(`Done — **${label}** answers here from now on.`);
   try {
-    await ctx.bind(agentId);
+    // The write restarts this account under the agent's own id, so a refused
+    // bind is the only outcome this account can still report on.
+    const bound = await ctx.bind(agentId);
+    if (!bound) {
+      log(`filament-choose: '${agentId}' was taken before the write`);
+      await ctx.say(
+        `**${label}** was just connected to another Filament agent.\n\n${questionBody(ctx.refreshOptions?.() ?? ctx.options, true)}`,
+      );
+      return done;
+    }
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
+    await ctx.say(`Done — **${label}** answers here from now on.`).catch(() => {});
   } catch (error) {
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);

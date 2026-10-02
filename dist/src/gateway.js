@@ -63,7 +63,7 @@ function parseGatewayCommand(body, fallbackRequestId) {
   if (words[0] !== "/filament") return null;
   const verb = words[1];
   const args = words.slice(2);
-  const tokenOnly = verb === "connect" && (args[0]?.startsWith("fmcp_") ?? false);
+  const tokenOnly = verb === "connect" && (args[0]?.startsWith("fmcp_") ?? false) && !(args[1]?.startsWith("fmcp_") ?? false);
   const arity = verb === "connect" ? tokenOnly ? 1 : 2 : verb === "disconnect" ? 1 : 0;
   const extra = args.slice(arity);
   const requestId = extra.length === 1 && REQUEST_ID_PATTERN.test(extra[0]) ? extra[0] : fallbackRequestId;
@@ -179,12 +179,20 @@ async function handleGatewayItem(ctx) {
   const { item, log } = ctx;
   const done = { kind: "silent" };
   if (item.messages.length === 0) return done;
-  const fromPrincipal = ctx.principal !== void 0 && item.messages.every((m) => m.sender === ctx.principal);
-  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
+  const principalMessages = ctx.principal === void 0 ? [] : item.messages.filter((m) => m.sender === ctx.principal);
+  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || principalMessages.length === 0) {
     log("filament-gateway: ignoring work outside the principal's backchannel");
     return done;
   }
-  const commands = item.messages.map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))).filter((parsed) => parsed !== null);
+  const commands = principalMessages.map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))).filter((parsed) => parsed !== null).map((command) => {
+    if (ctx.scope !== "connect" || command.kind === "invalid") return command;
+    if (command.kind === "connect" && command.agentId === void 0) return command;
+    return {
+      kind: "invalid",
+      requestId: command.requestId,
+      reason: "only `/filament connect <connect-token>` is accepted here"
+    };
+  });
   const last = item.messages[item.messages.length - 1];
   await ctx.consume(last.event_id).catch((error) => {
     log(`filament-gateway: could not mark the commands read: ${String(error)}`);

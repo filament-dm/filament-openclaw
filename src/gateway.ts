@@ -117,14 +117,15 @@ export interface GatewayStatus {
   message?: string;
 }
 
-export type GatewayCommand = { requestId: string } & (
+export type GatewayCommand = { requestId: string } &
   /** Without `agentId` the token becomes a pending account that picks its agent in chat. */
-  | { kind: "connect"; agentId?: string; token: string }
-  | { kind: "disconnect"; agentId: string }
-  | { kind: "unpair" }
-  | { kind: "agents" }
-  | { kind: "invalid"; reason: string }
-);
+  (
+    | { kind: "connect"; agentId?: string; token: string }
+    | { kind: "disconnect"; agentId: string }
+    | { kind: "unpair" }
+    | { kind: "agents" }
+    | { kind: "invalid"; reason: string }
+  );
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -139,7 +140,10 @@ export function parseGatewayCommand(
   const args = words.slice(2);
   // `connect <token>` names no agent: the app sends it through an agent that is
   // already connected, and the new account asks which agent it is in its chat.
-  const tokenOnly = verb === "connect" && (args[0]?.startsWith("fmcp_") ?? false);
+  const tokenOnly =
+    verb === "connect" &&
+    (args[0]?.startsWith("fmcp_") ?? false) &&
+    !(args[1]?.startsWith("fmcp_") ?? false);
   const arity = verb === "connect" ? (tokenOnly ? 1 : 2) : verb === "disconnect" ? 1 : 0;
   const extra = args.slice(arity);
   const requestId =
@@ -295,6 +299,11 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
 
 export interface GatewayItemContext {
   item: WorkItem;
+  /**
+   * `control`: every command. `connect`: only `/filament connect <token>`; a connected agent's
+   * account must not disconnect or unpair what other accounts, or other principals, own.
+   */
+  scope?: "control" | "connect";
   principal: string | undefined;
   ccRoomId: string | undefined;
   gatewayConfig: unknown;
@@ -313,16 +322,27 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
   const { item, log } = ctx;
   const done: DispatchOutcome = { kind: "silent" };
   if (item.messages.length === 0) return done;
-  const fromPrincipal =
-    ctx.principal !== undefined && item.messages.every((m) => m.sender === ctx.principal);
-  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
+  // Only the principal's own lines are commands; another sender's line in the
+  // same item is ignored, not a reason to drop the principal's.
+  const principalMessages =
+    ctx.principal === undefined ? [] : item.messages.filter((m) => m.sender === ctx.principal);
+  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || principalMessages.length === 0) {
     log("filament-gateway: ignoring work outside the principal's backchannel");
     return done;
   }
 
-  const commands = item.messages
+  const commands = principalMessages
     .map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64)))
-    .filter((parsed): parsed is GatewayCommand => parsed !== null);
+    .filter((parsed): parsed is GatewayCommand => parsed !== null)
+    .map((command): GatewayCommand => {
+      if (ctx.scope !== "connect" || command.kind === "invalid") return command;
+      if (command.kind === "connect" && command.agentId === undefined) return command;
+      return {
+        kind: "invalid",
+        requestId: command.requestId,
+        reason: "only `/filament connect <connect-token>` is accepted here",
+      };
+    });
   // Consume first: a config write reloads the plugin, this account included,
   // and a command left unread would be redelivered after the restart.
   const last = item.messages[item.messages.length - 1]!;

@@ -95,24 +95,34 @@ LOG_START_LINE=0
 [ -r "$LOG_PATH" ] && LOG_START_LINE="$(wc -l < "$LOG_PATH" | tr -d ' ')"
 
 # --- 1. The plugin: install only when missing ------------------------------------
-# FOUND/MISSING + trust.installSource ("git"/"path"/"npm"/...) + enabled, tab-sep.
+# FOUND/MISSING + trust.installSource ("git"/"path"/"npm"/...) + enabled + whether the
+# installed manifest knows pending accounts, tab-sep.
 LIST_JSON="$(openclaw plugins list --json 2>/dev/null || true)"
 PLUGIN_STATE="$(python3 - "$LIST_JSON" "$PLUGIN_ID" <<'PY'
-import json, sys
+import json, os, sys
 raw, pid = sys.argv[1], sys.argv[2]
 try:
     data = json.loads(raw)
     for p in data.get("plugins", []):
         if p.get("id") == pid:
             src = (p.get("trust") or {}).get("installSource", "")
-            print(f"FOUND\t{src or '-'}\t{'1' if p.get('enabled') else '0'}")
+            # An install from before agent choice rejects `pending` on an account.
+            supports = "0"
+            try:
+                with open(os.path.join(p.get("rootDir", ""), "openclaw.plugin.json")) as f:
+                    accounts = json.load(f)["configSchema"]["properties"]["accounts"]
+                    if "pending" in accounts["additionalProperties"]["properties"]:
+                        supports = "1"
+            except Exception:
+                pass
+            print(f"FOUND\t{src or '-'}\t{'1' if p.get('enabled') else '0'}\t{supports}")
             sys.exit(0)
-    print("MISSING\t-\t0")
+    print("MISSING\t-\t0\t0")
 except Exception:
-    print("UNKNOWN\t-\t0")
+    print("UNKNOWN\t-\t0\t0")
 PY
 )"
-IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE PLUGIN_ENABLED <<EOF
+IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE PLUGIN_ENABLED SUPPORTS_PENDING <<EOF
 $PLUGIN_STATE
 EOF
 
@@ -143,7 +153,8 @@ install_fresh() {
 if [ "$FOUND_STATE" = "MISSING" ]; then
   install_fresh
   PLUGIN_ENABLED=0
-elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ]; then
+elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] || { [ "$PENDING_MODE" = 1 ] && [ "$SUPPORTS_PENDING" != 1 ]; }; then
+  [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] || info "The installed $PLUGIN_ID predates agent choice in chat; updating it first."
   if [ "$INSTALL_SOURCE" = "git" ]; then
     info "Updating $PLUGIN_ID (installed from git) ..."
     openclaw plugins update "$PLUGIN_ID" || err "plugin update failed for $PLUGIN_ID."

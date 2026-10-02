@@ -418,6 +418,47 @@ test("handleGatewayItem: an item with no messages is ignored", async () => {
   assert.equal(h.drafts.length, 0);
 });
 
+test("parseGatewayCommand: an agent id that looks like a token still takes the two-argument form", () => {
+  assert.deepEqual(parseGatewayCommand(`/filament connect fmcp_writer ${TOKEN}`, "$e"), {
+    kind: "connect",
+    agentId: "fmcp_writer",
+    token: TOKEN,
+    requestId: "$e",
+  });
+});
+
+test("handleGatewayItem: in connect scope only the token-only connect is accepted", async () => {
+  for (const body of [
+    `/filament connect writer ${TOKEN}`,
+    "/filament disconnect writer",
+    "/filament unpair",
+    "/filament agents",
+  ]) {
+    const h = harness(`${body} r1`);
+    h.ctx.scope = "connect";
+    await handleGatewayItem(h.ctx);
+    assert.equal(h.drafts.length, 0, body);
+    assert.equal(h.statuses[0]?.state, "rejected", body);
+    assert.match(h.statuses[0]?.message ?? "", /only `\/filament connect <connect-token>`/);
+  }
+  const ok = harness(`/filament connect ${TOKEN} r2`);
+  ok.ctx.scope = "connect";
+  await handleGatewayItem(ok.ctx);
+  assert.equal(ok.drafts.length, 1);
+});
+
+test("handleGatewayItem: another sender's line in the item does not drop the principal's command", async () => {
+  const h = harness(`/filament connect ${TOKEN} r3`, {
+    messages: [
+      { event_id: "$a", sender: "@other-agent:example.test", body: "hello", ts: 1 },
+      { event_id: "$e1", sender: PRINCIPAL, body: `/filament connect ${TOKEN} r3`, ts: 2 },
+    ],
+  });
+  await handleGatewayItem(h.ctx);
+  assert.deepEqual(h.consumed, ["$e1"]);
+  assert.equal(h.drafts.length, 1);
+});
+
 test("parseGatewayCommand: connect with a token alone names no agent", () => {
   assert.deepEqual(parseGatewayCommand(`/filament connect ${TOKEN}`, "$e"), {
     kind: "connect",
@@ -459,12 +500,19 @@ test("isGatewayCommandItem: only a principal's /filament line in this backchanne
   assert.equal(isGatewayCommandItem(item(`/filament connect ${TOKEN}`), PRINCIPAL, CC_ROOM), true);
   assert.equal(isGatewayCommandItem(item("hi"), PRINCIPAL, CC_ROOM), false);
   assert.equal(
-    isGatewayCommandItem(item(`/filament connect ${TOKEN}`, { is_backchannel: false }), PRINCIPAL, CC_ROOM),
+    isGatewayCommandItem(
+      item(`/filament connect ${TOKEN}`, { is_backchannel: false }),
+      PRINCIPAL,
+      CC_ROOM,
+    ),
     false,
   );
   assert.equal(
     isGatewayCommandItem(item(`/filament connect ${TOKEN}`), "@someone-else:example.test", CC_ROOM),
     false,
   );
-  assert.equal(isGatewayCommandItem(item(`/filament connect ${TOKEN}`), PRINCIPAL, undefined), false);
+  assert.equal(
+    isGatewayCommandItem(item(`/filament connect ${TOKEN}`), PRINCIPAL, undefined),
+    false,
+  );
 });

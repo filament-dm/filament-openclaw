@@ -98,12 +98,14 @@ function recordReceivedId(accountId, id) {
   receivedStoreInstance().register(accountId, next);
   return true;
 }
+function choiceAsked(accountId) {
+  return choiceAskedStoreInstance().lookup(accountId) !== void 0;
+}
 function markChoiceAsked(accountId) {
-  if (choiceAskedStoreInstance().lookup(accountId) !== void 0) return false;
   choiceAskedStoreInstance().register(accountId, Date.now());
-  return true;
 }
 export {
+  choiceAsked,
   hasFcmCredentialsForOtherProject,
   loadBearer,
   loadFcmCredentials,
