@@ -6,6 +6,7 @@
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { isFirstContact } from "../../onboarding-core.js";
+import { isGatewayCommandItem } from "../../gateway.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import {
@@ -97,6 +98,10 @@ export async function runFcmTransport(
     if (ctx.control) {
       // handleGatewayItem does the authority check.
       if (isBackchannel) await ctx.handleControl(item);
+      return;
+    }
+    if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
+      await ctx.handleCommand(item);
       return;
     }
 

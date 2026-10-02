@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Channel accounts: one per Filament agent, since a connect token belongs to exactly one agent.
  * OpenClaw `bindings` route an account to an OpenClaw agent, and a `filament_*` tool call must use
@@ -12,6 +14,14 @@ export const PLUGIN_ID = "filament-openclaw";
 
 /** install.sh writes this id. */
 export const GATEWAY_ACCOUNT_ID = "gateway";
+
+/** A connect token not yet bound to an OpenClaw agent lives under this id; see choose-agent.ts. */
+export const PENDING_ACCOUNT_PREFIX = "pending-";
+
+/** The same id install.sh derives, so the two paths never duplicate an account for one token. */
+export function pendingAccountId(token: string): string {
+  return PENDING_ACCOUNT_PREFIX + createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
 
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

@@ -5,6 +5,7 @@ import {
   applyPendingChoice,
   automaticChoice,
   choiceOptions,
+  nothingFreeBody,
   handlePendingItem,
   questionBody,
   resolveChoice,
@@ -32,13 +33,31 @@ test("automaticChoice: only a lone free agent is chosen without asking", () => {
   assert.equal(automaticChoice(choiceOptions([writer])), "writer");
   assert.equal(automaticChoice(choiceOptions([{ ...writer, boundAccount: "writer" }])), null);
   assert.equal(automaticChoice(choiceOptions([writer, researcher])), null);
+  // Taken agents do not count: one free among several is still a lone choice.
+  assert.equal(
+    automaticChoice(choiceOptions([writer, { ...researcher, boundAccount: "x" }])),
+    "writer",
+  );
   assert.equal(automaticChoice([]), null);
 });
 
-test("questionBody: one tappable suggested message per agent", () => {
+test("questionBody: one tappable suggested message per free agent; taken ones only listed", () => {
   const body = questionBody(choiceOptions([writer, { ...researcher, boundAccount: "x" }]));
   assert.match(body, /- \[✍️ Writer\]\(filament:message-send\)\n/);
-  assert.match(body, /- \[Researcher\]\(filament:message-send\) — connected to another/);
+  assert.doesNotMatch(body, /\[Researcher\]\(filament:message-send\)/);
+  assert.match(body, /Already connected to another Filament agent: Researcher\./);
+  assert.doesNotMatch(questionBody(choiceOptions([writer])), /Already connected/);
+});
+
+test("resolveChoice: a taken agent cannot be chosen", () => {
+  const options = choiceOptions([writer, { ...researcher, boundAccount: "x" }]);
+  assert.equal(resolveChoice("Researcher", options), null);
+  assert.equal(resolveChoice("researcher", options), null);
+});
+
+test("nothingFreeBody: distinguishes no agents from all taken", () => {
+  assert.match(nothingFreeBody([]), /has no agents/);
+  assert.match(nothingFreeBody(choiceOptions([{ ...writer, boundAccount: "w" }])), /every agent/);
 });
 
 test("resolveChoice: the tapped label or a typed id, nothing else", () => {

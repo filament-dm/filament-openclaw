@@ -4,7 +4,7 @@
 # Run the command the Filament app shows you:
 #
 #   curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-#     | CONNECT_TOKEN=fmcp_... FILAMENT_TRANSPORT=poll bash
+#     | CONNECT_TOKEN=fmcp_... bash
 #
 # What it does, safe to re-run:
 #   1. installs the plugin if the gateway doesn't have it (an existing install
@@ -22,7 +22,7 @@
 #   OPENCLAW_GATEWAY=1      pair the gateway instead; the app then connects its
 #                           agents with no further terminal step
 #   FILAMENT_MCP_URL        a non-production Filament server
-#   FILAMENT_TRANSPORT      fcm (default) or poll
+#   FILAMENT_TRANSPORT      poll (default) or fcm
 #   FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID, _SENDER_ID
 #                           Firebase project of a non-production server (fcm)
 #   PLUGIN_REF              branch, tag or commit to install (default: main)
@@ -71,7 +71,7 @@ fi
 TRANSPORT="$(printf '%s' "${FILAMENT_TRANSPORT:-}" | tr '[:upper:]' '[:lower:]')"
 case "$TRANSPORT" in
   ""|fcm|poll) ;;
-  *) err "FILAMENT_TRANSPORT='$FILAMENT_TRANSPORT' is not a transport (fcm or poll)." ;;
+  *) err "FILAMENT_TRANSPORT='$FILAMENT_TRANSPORT' is not a transport (poll or fcm)." ;;
 esac
 export TRANSPORT
 

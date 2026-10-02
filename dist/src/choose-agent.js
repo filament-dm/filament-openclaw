@@ -1,6 +1,11 @@
-import { asRecord, DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID, PLUGIN_ID } from "./accounts.js";
+import {
+  asRecord,
+  DEFAULT_ACCOUNT_ID,
+  GATEWAY_ACCOUNT_ID,
+  PENDING_ACCOUNT_PREFIX,
+  PLUGIN_ID
+} from "./accounts.js";
 import { applyAgentConnect } from "./gateway.js";
-const PENDING_ACCOUNT_PREFIX = "pending-";
 const RESERVED_AGENT_IDS = /* @__PURE__ */ new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
 function choiceOptions(agents) {
   const usable = agents.filter((agent) => !RESERVED_AGENT_IDS.has(agent.id));
@@ -13,20 +18,27 @@ function choiceOptions(agents) {
     taken: agent.boundAccount !== void 0
   }));
 }
+function freeOptions(options) {
+  return options.filter((option) => !option.taken);
+}
 function automaticChoice(options) {
-  return options.length === 1 && !options[0].taken ? options[0].agentId : null;
+  const free = freeOptions(options);
+  return free.length === 1 ? free[0].agentId : null;
 }
 function questionBody(options, retry = false) {
   const lead = retry ? "I didn't catch that. Tap the OpenClaw agent that should answer here:" : "I'm connected to your OpenClaw gateway. Which of its agents should answer here?";
-  const rows = options.map(
-    (option) => `- [${option.label}](filament:message-send)${option.taken ? " \u2014 connected to another Filament agent; choosing it moves it here" : ""}`
-  );
-  return [lead, "", ...rows].join("\n");
+  const rows = freeOptions(options).map((option) => `- [${option.label}](filament:message-send)`);
+  const taken = options.filter((option) => option.taken).map((option) => option.label);
+  const footer = taken.length > 0 ? ["", `Already connected to another Filament agent: ${taken.join(", ")}.`] : [];
+  return [lead, "", ...rows, ...footer].join("\n");
+}
+function nothingFreeBody(options) {
+  return options.length === 0 ? "I'm connected to your OpenClaw gateway, but it has no agents to answer as. Add one in OpenClaw, then connect again." : "I'm connected to your OpenClaw gateway, but every agent on it already answers as another Filament agent. Disconnect one of those, or add an agent in OpenClaw, then connect again.";
 }
 function resolveChoice(text, options) {
   const needle = text.trim().toLowerCase();
   if (!needle) return null;
-  const match = options.find(
+  const match = freeOptions(options).find(
     (option) => option.label.toLowerCase() === needle || option.agentId.toLowerCase() === needle
   );
   return match ? match.agentId : null;
@@ -70,7 +82,9 @@ export {
   applyPendingChoice,
   automaticChoice,
   choiceOptions,
+  freeOptions,
   handlePendingItem,
+  nothingFreeBody,
   questionBody,
   resolveChoice
 };

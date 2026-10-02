@@ -1,5 +1,6 @@
 import { acceptPending } from "../../accept-pending.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
+import { isGatewayCommandItem } from "../../gateway.js";
 import { runPollLoop } from "./poll-work.js";
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
@@ -56,6 +57,10 @@ async function runPollTransport(ctx) {
     }
     if (ctx.control) {
       await ctx.handleControl(item);
+      return { kind: "silent" };
+    }
+    if (ctx.handleCommand && isGatewayCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)) {
+      await ctx.handleCommand(item);
       return { kind: "silent" };
     }
     const skip = skipReason(item, ctx.identity.mxid);

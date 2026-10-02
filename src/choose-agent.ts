@@ -4,11 +4,17 @@
  * gateway with one free agent binds it at once; otherwise the account asks its principal in the
  * backchannel, one suggested-message button per agent, and binds the one they tap.
  */
-import { asRecord, DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID, PLUGIN_ID } from "./accounts.js";
+import {
+  asRecord,
+  DEFAULT_ACCOUNT_ID,
+  GATEWAY_ACCOUNT_ID,
+  PENDING_ACCOUNT_PREFIX,
+  PLUGIN_ID,
+} from "./accounts.js";
 import { applyAgentConnect, type GatewayAgent } from "./gateway.js";
 import type { DispatchOutcome, WorkItem } from "./work-item.js";
 
-export const PENDING_ACCOUNT_PREFIX = "pending-";
+export { PENDING_ACCOUNT_PREFIX };
 
 const RESERVED_AGENT_IDS: ReadonlySet<string> = new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
 
@@ -32,29 +38,41 @@ export function choiceOptions(agents: readonly GatewayAgent[]): ChoiceOption[] {
   }));
 }
 
-/** A gateway with exactly one agent, still free, needs no question. */
-export function automaticChoice(options: readonly ChoiceOption[]): string | null {
-  return options.length === 1 && !options[0]!.taken ? options[0]!.agentId : null;
+/** The agents still free to take; a taken one answers as another Filament agent already. */
+export function freeOptions(options: readonly ChoiceOption[]): ChoiceOption[] {
+  return options.filter((option) => !option.taken);
 }
 
+/** A gateway with exactly one free agent needs no question. */
+export function automaticChoice(options: readonly ChoiceOption[]): string | null {
+  const free = freeOptions(options);
+  return free.length === 1 ? free[0]!.agentId : null;
+}
+
+/** Only free agents are offered; taken ones are listed, not tappable. */
 export function questionBody(options: readonly ChoiceOption[], retry = false): string {
   const lead = retry
     ? "I didn't catch that. Tap the OpenClaw agent that should answer here:"
     : "I'm connected to your OpenClaw gateway. Which of its agents should answer here?";
-  const rows = options.map(
-    (option) =>
-      `- [${option.label}](filament:message-send)${
-        option.taken ? " — connected to another Filament agent; choosing it moves it here" : ""
-      }`,
-  );
-  return [lead, "", ...rows].join("\n");
+  const rows = freeOptions(options).map((option) => `- [${option.label}](filament:message-send)`);
+  const taken = options.filter((option) => option.taken).map((option) => option.label);
+  const footer =
+    taken.length > 0 ? ["", `Already connected to another Filament agent: ${taken.join(", ")}.`] : [];
+  return [lead, "", ...rows, ...footer].join("\n");
+}
+
+/** What to say when nothing on the gateway is free to take. */
+export function nothingFreeBody(options: readonly ChoiceOption[]): string {
+  return options.length === 0
+    ? "I'm connected to your OpenClaw gateway, but it has no agents to answer as. Add one in OpenClaw, then connect again."
+    : "I'm connected to your OpenClaw gateway, but every agent on it already answers as another Filament agent. Disconnect one of those, or add an agent in OpenClaw, then connect again.";
 }
 
 /** A tap sends the label back; a typed reply may also name the agent id. */
 export function resolveChoice(text: string, options: readonly ChoiceOption[]): string | null {
   const needle = text.trim().toLowerCase();
   if (!needle) return null;
-  const match = options.find(
+  const match = freeOptions(options).find(
     (option) => option.label.toLowerCase() === needle || option.agentId.toLowerCase() === needle,
   );
   return match ? match.agentId : null;

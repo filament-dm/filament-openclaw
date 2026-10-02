@@ -1,7 +1,12 @@
+import { createHash } from "node:crypto";
 const DEFAULT_ACCOUNT_ID = "default";
 const FILAMENT_CHANNEL_ID = "filament";
 const PLUGIN_ID = "filament-openclaw";
 const GATEWAY_ACCOUNT_ID = "gateway";
+const PENDING_ACCOUNT_PREFIX = "pending-";
+function pendingAccountId(token) {
+  return PENDING_ACCOUNT_PREFIX + createHash("sha256").update(token).digest("hex").slice(0, 12);
+}
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -52,12 +57,14 @@ export {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   GATEWAY_ACCOUNT_ID,
+  PENDING_ACCOUNT_PREFIX,
   PLUGIN_ID,
   asRecord,
   hasTokenInput,
   isControlAccount,
   isPendingAccount,
   listConfiguredAccountIds,
+  pendingAccountId,
   pluginConfigFrom,
   resolveToolAccountId
 };

@@ -12,7 +12,9 @@ import {
   applyPendingChoice,
   automaticChoice,
   choiceOptions,
+  freeOptions,
   handlePendingItem,
+  nothingFreeBody,
   questionBody
 } from "./choose-agent.js";
 import { retryConnect, runConnect } from "./connect.js";
@@ -132,6 +134,31 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           );
           if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
         };
+        const handleCommand = async (item) => {
+          if (!connection) return;
+          const client = connection.client;
+          await handleGatewayItem({
+            item,
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            gatewayConfig: liveGatewayConfig(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal }
+              );
+            },
+            mutateConfig,
+            report: async (entries) => {
+              const lines = entries.map(
+                (status) => status.state === "applied" ? status.command === "connect" && status.agentId === void 0 ? "Connecting a new Filament agent to this gateway. It will ask in its own chat which OpenClaw agent should answer as it." : `Applied: ${status.command}${status.agentId ? ` ${status.agentId}` : ""}.` : `Couldn't ${status.command}: ${status.message ?? status.state}`
+              );
+              if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
+            },
+            log: accountLog
+          });
+        };
         const handlePending = async (item) => {
           if (!connection) return;
           const client = connection.client;
@@ -158,8 +185,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
             await bindPending(chosen);
-          } else if (options.length === 0) {
-            accountLog("filament-choose: this gateway has no agent to bind");
+          } else if (freeOptions(options).length === 0) {
+            accountLog("filament-choose: this gateway has no free agent to bind");
+            if (markChoiceAsked(accountId)) await sayToPrincipal(nothingFreeBody(options));
           } else if (markChoiceAsked(accountId)) {
             await sayToPrincipal(questionBody(options));
           }
@@ -266,7 +294,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             abortSignal,
             log: accountLog,
             runTurn,
-            handleControl: pending ? handlePending : handleControl
+            handleControl: pending ? handlePending : handleControl,
+            ...handlesOwnWork ? {} : { handleCommand }
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);

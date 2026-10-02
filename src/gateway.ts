@@ -15,6 +15,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   GATEWAY_ACCOUNT_ID,
+  pendingAccountId,
   PLUGIN_ID,
 } from "./accounts.js";
 import type { DispatchOutcome, WorkItem } from "./work-item.js";
@@ -117,7 +118,8 @@ export interface GatewayStatus {
 }
 
 export type GatewayCommand = { requestId: string } & (
-  | { kind: "connect"; agentId: string; token: string }
+  /** Without `agentId` the token becomes a pending account that picks its agent in chat. */
+  | { kind: "connect"; agentId?: string; token: string }
   | { kind: "disconnect"; agentId: string }
   | { kind: "unpair" }
   | { kind: "agents" }
@@ -134,8 +136,11 @@ export function parseGatewayCommand(
   const words = body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
   const verb = words[1];
-  const arity = verb === "connect" ? 2 : verb === "disconnect" ? 1 : 0;
   const args = words.slice(2);
+  // `connect <token>` names no agent: the app sends it through an agent that is
+  // already connected, and the new account asks which agent it is in its chat.
+  const tokenOnly = verb === "connect" && (args[0]?.startsWith("fmcp_") ?? false);
+  const arity = verb === "connect" ? (tokenOnly ? 1 : 2) : verb === "disconnect" ? 1 : 0;
   const extra = args.slice(arity);
   const requestId =
     extra.length === 1 && REQUEST_ID_PATTERN.test(extra[0]!) ? extra[0]! : fallbackRequestId;
@@ -145,11 +150,14 @@ export function parseGatewayCommand(
   }
   if (args.length < arity || extra.length > 1 || (extra.length === 1 && requestId !== extra[0])) {
     return invalid(
-      `usage: /filament ${verb}${arity >= 1 ? " <agent-id>" : ""}${arity === 2 ? " <connect-token>" : ""} [<request-id>]`,
+      verb === "connect"
+        ? "usage: /filament connect [<agent-id>] <connect-token> [<request-id>]"
+        : `usage: /filament ${verb}${arity >= 1 ? " <agent-id>" : ""} [<request-id>]`,
     );
   }
   if (verb === "agents") return { kind: "agents", requestId };
   if (verb === "unpair") return { kind: "unpair", requestId };
+  if (tokenOnly) return { kind: "connect", token: args[0]!, requestId };
   const agentId = args[0]!;
   if (!AGENT_ID_PATTERN.test(agentId) || RESERVED_ACCOUNT_IDS.has(agentId)) {
     return invalid(`"${agentId}" is not a usable agent id`);
@@ -200,6 +208,35 @@ export function applyAgentConnect(
   }
   accounts[agentId] = { ...asRecord(accounts[agentId]), connectToken: token };
   return { displaced: [...displaced] };
+}
+
+/**
+ * A token with no agent named: the account install.sh would have written, so the plugin asks in
+ * the new agent's chat which OpenClaw agent it is (choose-agent.ts). No binding yet.
+ */
+export function applyPendingConnect(draft: Record<string, unknown>, token: string): void {
+  const plugins = ensureRecord(draft, "plugins");
+  const entries = ensureRecord(plugins, "entries");
+  const entry = ensureRecord(entries, PLUGIN_ID);
+  const config = ensureRecord(entry, "config");
+  const accounts = ensureRecord(config, "accounts");
+  accounts[pendingAccountId(token)] = { connectToken: token, pending: true };
+}
+
+/**
+ * Whether an item is a `/filament` command from the principal in this account's backchannel.
+ * A connected agent answers these itself instead of waking its model, so a second Filament
+ * agent can be connected from the app without a terminal, and the token never reaches a prompt.
+ */
+export function isGatewayCommandItem(
+  item: WorkItem,
+  principal: string | undefined,
+  ccRoomId: string | undefined,
+): boolean {
+  if (!item.is_backchannel || item.channel_id !== ccRoomId || principal === undefined) return false;
+  const last = item.messages[item.messages.length - 1];
+  if (!last || last.sender !== principal) return false;
+  return parseGatewayCommand(last.body, "x") !== null;
 }
 
 /** Deletes whichever account the binding pointed at, including `default` (the top-level token). */
@@ -303,19 +340,27 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
       statuses.push({ ...base, command: "invalid", state: "rejected", message: command.reason });
     } else if (command.kind === "agents") {
       statuses.push({ ...base, command: "agents", state: "applied" });
-    } else if (command.kind === "connect" && !knownAgents.has(command.agentId)) {
-      statuses.push({
-        ...base,
-        command: "connect",
-        agentId: command.agentId,
-        state: "rejected",
-        message: `This gateway has no OpenClaw agent "${command.agentId}".`,
-      });
-    } else if (command.kind === "connect") {
+    } else if (command.kind === "connect" && command.agentId === undefined) {
       mutations.push((draft) => {
-        applyAgentConnect(draft, command.agentId, command.token);
+        applyPendingConnect(draft, command.token);
       });
-      statuses.push({ ...base, command: "connect", agentId: command.agentId, state: "applied" });
+      statuses.push({ ...base, command: "connect", state: "applied" });
+    } else if (command.kind === "connect") {
+      const { agentId, token } = command as { agentId: string; token: string };
+      if (!knownAgents.has(agentId)) {
+        statuses.push({
+          ...base,
+          command: "connect",
+          agentId,
+          state: "rejected",
+          message: `This gateway has no OpenClaw agent "${agentId}".`,
+        });
+      } else {
+        mutations.push((draft) => {
+          applyAgentConnect(draft, agentId, token);
+        });
+        statuses.push({ ...base, command: "connect", agentId, state: "applied" });
+      }
     } else if (command.kind === "disconnect") {
       mutations.push((draft) => applyAgentDisconnect(draft, command.agentId));
       statuses.push({ ...base, command: "disconnect", agentId: command.agentId, state: "applied" });

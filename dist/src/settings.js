@@ -2,7 +2,7 @@ import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
 const MIN_POLL_WAIT_SECONDS = 1;
 const MAX_POLL_WAIT_SECONDS = 60;
-const DEFAULT_TRANSPORT = "fcm";
+const DEFAULT_TRANSPORT = "poll";
 const PRODUCTION_FIREBASE = {
   projectId: "filament-8ce44",
   apiKey: "AIzaSyBtYzzP3IRpmIZ57dp1PMS4Y8RPjTB0snk",

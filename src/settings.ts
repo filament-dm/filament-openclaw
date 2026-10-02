@@ -10,10 +10,11 @@ const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
 export const MIN_POLL_WAIT_SECONDS = 1;
 export const MAX_POLL_WAIT_SECONDS = 60;
 
-// `poll` needs a server that supports `poll_work`.
 export type Transport = "fcm" | "poll";
 
-export const DEFAULT_TRANSPORT: Transport = "fcm";
+// `poll` is served by production Filament; `fcm` stays available by name for a
+// gateway that wants pushes and a matching Firebase project.
+export const DEFAULT_TRANSPORT: Transport = "poll";
 
 /** Public client identifiers, not secrets. */
 export interface FirebaseSettings {

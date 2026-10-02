@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { resolveToolAccountId } from "./accounts.js";
+import { pendingAccountId } from "./accounts.js";
 import {
   applyAgentConnect,
+  applyPendingConnect,
+  isGatewayCommandItem,
   handleGatewayItem,
   inventoryEntries,
   listGatewayAgents,
@@ -413,4 +416,55 @@ test("handleGatewayItem: an item with no messages is ignored", async () => {
   assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
   assert.deepEqual(h.consumed, []);
   assert.equal(h.drafts.length, 0);
+});
+
+test("parseGatewayCommand: connect with a token alone names no agent", () => {
+  assert.deepEqual(parseGatewayCommand(`/filament connect ${TOKEN}`, "$e"), {
+    kind: "connect",
+    token: TOKEN,
+    requestId: "$e",
+  });
+  assert.deepEqual(parseGatewayCommand(`/filament connect ${TOKEN} req-1`, "$e"), {
+    kind: "connect",
+    token: TOKEN,
+    requestId: "req-1",
+  });
+  // An agent id still takes the two-argument form.
+  assert.equal(parseGatewayCommand(`/filament connect writer ${TOKEN}`, "$e")?.kind, "connect");
+  assert.equal(parseGatewayCommand("/filament connect", "$e")?.kind, "invalid");
+});
+
+test("applyPendingConnect: the account install.sh would write, under the same id, no binding", () => {
+  const draft: Record<string, unknown> = {};
+  applyPendingConnect(draft, TOKEN);
+  const accounts = (draft.plugins as any).entries["filament-openclaw"].config.accounts;
+  assert.deepEqual(accounts, { [pendingAccountId(TOKEN)]: { connectToken: TOKEN, pending: true } });
+  assert.ok(pendingAccountId(TOKEN).startsWith("pending-"));
+  assert.equal(pendingAccountId(TOKEN).length, "pending-".length + 12);
+  assert.equal(draft.bindings, undefined);
+});
+
+test("handleGatewayItem: a token-only connect writes a pending account and reports without an agent", async () => {
+  const h = harness(`/filament connect ${TOKEN} req-2`);
+  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
+  assert.deepEqual(h.consumed, ["$e1"]);
+  assert.deepEqual(h.statuses, [{ requestId: "req-2", command: "connect", state: "applied" }]);
+  assert.ok(!JSON.stringify(h.statuses).includes(TOKEN));
+  assert.equal(h.drafts.length, 1);
+  const accounts = (h.drafts[0]!.plugins as any).entries["filament-openclaw"].config.accounts;
+  assert.deepEqual(accounts[pendingAccountId(TOKEN)], { connectToken: TOKEN, pending: true });
+});
+
+test("isGatewayCommandItem: only a principal's /filament line in this backchannel", () => {
+  assert.equal(isGatewayCommandItem(item(`/filament connect ${TOKEN}`), PRINCIPAL, CC_ROOM), true);
+  assert.equal(isGatewayCommandItem(item("hi"), PRINCIPAL, CC_ROOM), false);
+  assert.equal(
+    isGatewayCommandItem(item(`/filament connect ${TOKEN}`, { is_backchannel: false }), PRINCIPAL, CC_ROOM),
+    false,
+  );
+  assert.equal(
+    isGatewayCommandItem(item(`/filament connect ${TOKEN}`), "@someone-else:example.test", CC_ROOM),
+    false,
+  );
+  assert.equal(isGatewayCommandItem(item(`/filament connect ${TOKEN}`), PRINCIPAL, undefined), false);
 });
