@@ -33,12 +33,12 @@ test("resolveMcpSettings: a numeric string pollWaitSeconds is parsed and clamped
   assert.equal(resolveMcpSettings({ pollWaitSeconds: "500" }, {}).pollWaitSeconds, 60);
 });
 
-test("resolveMcpSettings: the transport defaults to fcm; poll only by name", () => {
-  assert.equal(resolveMcpSettings({}, {}).transport, "fcm");
-  assert.equal(resolveMcpSettings({ transport: "poll" }, {}).transport, "poll");
-  assert.equal(resolveMcpSettings({ transport: "POLL" }, {}).transport, "poll");
-  assert.equal(resolveMcpSettings({ transport: "carrier-pigeon" }, {}).transport, "fcm");
-  assert.equal(resolveMcpSettings({}, { FILAMENT_TRANSPORT: "poll" }).transport, "poll");
+test("resolveMcpSettings: the transport defaults to poll; fcm only by name", () => {
+  assert.equal(resolveMcpSettings({}, {}).transport, "poll");
+  assert.equal(resolveMcpSettings({ transport: "fcm" }, {}).transport, "fcm");
+  assert.equal(resolveMcpSettings({ transport: "FCM" }, {}).transport, "fcm");
+  assert.equal(resolveMcpSettings({ transport: "carrier-pigeon" }, {}).transport, "poll");
+  assert.equal(resolveMcpSettings({}, { FILAMENT_TRANSPORT: "fcm" }).transport, "fcm");
   assert.equal(
     resolveMcpSettings({ transport: "fcm" }, { FILAMENT_TRANSPORT: "poll" }).transport,
     "fcm",

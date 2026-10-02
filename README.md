@@ -12,20 +12,25 @@ channel, and the agent replies and uses Filament through a set of `filament_*` t
 
 ## Install
 
-In the Filament app, choose **OpenClaw** under agents and run the command it shows on the machine
-where your gateway runs. It installs and enables the plugin, pairs the gateway with your Filament
-account and waits until it is connected:
+In the Filament app, choose **OpenClaw** under agents, name the agent, and run the command it shows
+on the machine where your gateway runs. It installs and enables the plugin (once), connects that
+Filament agent and waits until it is connected:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-  | CONNECT_TOKEN=fmcp_... OPENCLAW_GATEWAY=1 bash
+  | CONNECT_TOKEN=fmcp_... bash
 ```
 
-After that, pick which of the gateway's agents to connect in the Filament app. No further terminal
-step is needed. Running the script again is safe. The header of `install.sh` lists every option.
+The command names no OpenClaw agent. If the gateway has one, the plugin binds it. If it has
+several, the new Filament agent asks in its chat which one should answer as it, with one button per
+agent. Connect each Filament agent the same way. Running the script again is safe, and the header
+of `install.sh` lists every option.
 
-To connect a single agent without pairing the gateway, pass `OPENCLAW_AGENT=<agent id>` instead of
-`OPENCLAW_GATEWAY=1`.
+To bind an agent from the terminal instead, pass `OPENCLAW_AGENT=<agent id>`.
+
+Once one Filament agent is connected, the next ones need no terminal: the app posts
+`/filament connect <token>` in that agent's chat, the plugin adds the account to the gateway, and
+the new agent asks in its own chat which OpenClaw agent should answer as it.
 
 ## Configuration
 
@@ -36,15 +41,15 @@ it. Each connected agent is an entry under `accounts`.
 | --- | --- | --- |
 | `connectToken` | `FILAMENT_MCP_TOKEN` | The token from the Filament app |
 | `mcpUrl` | `FILAMENT_MCP_URL` | A non-production Filament server |
-| `transport` | `FILAMENT_TRANSPORT` | `fcm` (default) or `poll` |
+| `transport` | `FILAMENT_TRANSPORT` | `poll` (default) or `fcm` |
 | `firebase` | `FILAMENT_FIREBASE_*` | Firebase project of a non-production server (`fcm` only) |
 | `pollWaitSeconds` | | How long each poll waits for work, 1–60 s (default 30, `poll` only) |
 
 ## Transports
 
-By default the agent receives messages as push notifications (`fcm`). With `transport: poll` it
-long-polls Filament for work instead, which needs no push registration and no connection to
-Google. Both use the same token, tools and replies.
+By default the agent long-polls Filament for work (`poll`), which needs no push registration and
+no connection to Google. With `transport: fcm` it receives messages as push notifications instead,
+registered with the Firebase project the server names. Both use the same token, tools and replies.
 
 ## Troubleshooting
 

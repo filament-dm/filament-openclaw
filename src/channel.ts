@@ -9,10 +9,20 @@ import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   isControlAccount,
+  isPendingAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
   pluginConfigFrom,
 } from "./accounts.js";
+import {
+  applyPendingChoice,
+  automaticChoice,
+  choiceOptions,
+  freeOptions,
+  handlePendingItem,
+  nothingFreeBody,
+  questionBody,
+} from "./choose-agent.js";
 import { type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
@@ -31,7 +41,7 @@ import {
   MAX_REPORTED_STATUSES,
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
-import { loadIdentity } from "./token-store.js";
+import { choiceAsked, loadIdentity, markChoiceAsked } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
@@ -110,6 +120,9 @@ export function registerFilamentChannel(
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
         accountLog(`filament: transport ${mcp.transport}`);
         const control = isControlAccount(pluginConfig, accountId);
+        const pending = !control && isPendingAccount(pluginConfig, accountId);
+        // Neither kind runs agent turns: their work goes to a handler instead.
+        const handlesOwnWork = control || pending;
         const liveGatewayConfig = (): unknown => api.runtime?.config?.current?.() ?? ctx.cfg;
         // Recent command outcomes, re-sent with every inventory report. Lost on
         // a reload by design: a config write is what triggers one.
@@ -127,6 +140,14 @@ export function registerFilamentChannel(
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
         };
 
+        const mutateConfig = async (
+          mutate: (draft: Record<string, unknown>) => void,
+        ): Promise<void> => {
+          const write = api.runtime?.config?.mutateConfigFile;
+          if (!write) throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+          await write({ afterWrite: { mode: "auto" }, mutate });
+        };
+
         const handleControl = async (item: WorkItem): Promise<void> => {
           if (!connection) return;
           const client = connection.client;
@@ -142,12 +163,7 @@ export function registerFilamentChannel(
                 { signal: abortSignal },
               );
             },
-            mutateConfig: async (mutate) => {
-              const write = api.runtime?.config?.mutateConfigFile;
-              if (!write)
-                throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
-              await write({ afterWrite: { mode: "auto" }, mutate });
-            },
+            mutateConfig,
             report: async (entries) => {
               statuses.unshift(...[...entries].reverse());
               statuses.splice(MAX_REPORTED_STATUSES);
@@ -155,6 +171,99 @@ export function registerFilamentChannel(
             },
             log: accountLog,
           });
+        };
+
+        // A pending account's only job: find out which OpenClaw agent it is, then bind it.
+        const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
+        const bindPending = async (agentId: string): Promise<boolean> => {
+          let bound = false;
+          await mutateConfig((draft) => {
+            bound = applyPendingChoice(draft, accountId, agentId, token);
+          });
+          return bound;
+        };
+        /** Resolves true only when the message landed. */
+        const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {
+          if (!connection) return false;
+          const res = await connection.client.callTool(
+            "message_principal",
+            { markdown_body: markdownBody },
+            { signal: abortSignal },
+          );
+          if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
+          return res.ok;
+        };
+        // A connected agent takes `/filament connect <token>` from its principal: the app sends
+        // it here so a second Filament agent joins this gateway with no terminal step. Outcomes
+        // are said in the chat; this account's tool inventory stays its own.
+        const handleCommand = async (item: WorkItem): Promise<void> => {
+          if (!connection) return;
+          const client = connection.client;
+          await handleGatewayItem({
+            item,
+            scope: "connect",
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            gatewayConfig: liveGatewayConfig(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal },
+              );
+            },
+            mutateConfig,
+            report: async (entries) => {
+              const lines = entries.map((status) =>
+                status.state === "applied"
+                  ? status.command === "connect" && status.agentId === undefined
+                    ? "Connecting a new Filament agent to this gateway. It will ask in its own chat which OpenClaw agent should answer as it."
+                    : `Applied: ${status.command}${status.agentId ? ` ${status.agentId}` : ""}.`
+                  : `Couldn't ${status.command}: ${status.message ?? status.state}`,
+              );
+              if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
+            },
+            log: accountLog,
+          });
+        };
+        const handlePending = async (item: WorkItem): Promise<void> => {
+          if (!connection) return;
+          const client = connection.client;
+          await handlePendingItem({
+            item,
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            options: pendingOptions(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal },
+              );
+            },
+            say: async (body) => {
+              await sayToPrincipal(body);
+            },
+            bind: bindPending,
+            refreshOptions: pendingOptions,
+            log: accountLog,
+          });
+        };
+        const startPending = async (): Promise<void> => {
+          const options = pendingOptions();
+          const chosen = automaticChoice(options);
+          if (chosen) {
+            accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
+            await bindPending(chosen);
+          } else if (choiceAsked(accountId)) {
+            return;
+          } else if (freeOptions(options).length === 0) {
+            accountLog("filament-choose: this gateway has no free agent to bind");
+            // Marked only once said: a failed send must not silence every later start.
+            if (await sayToPrincipal(nothingFreeBody(options))) markChoiceAsked(accountId);
+          } else if (await sayToPrincipal(questionBody(options))) {
+            markChoiceAsked(accountId);
+          }
         };
 
         const runTurn = async (item: WorkItem): Promise<TurnResult> => {
@@ -244,10 +353,16 @@ export function registerFilamentChannel(
           refreshGatewayInventory();
         }
 
+        if (connection && pending) {
+          await startPending().catch((error) => {
+            accountLog(`filament-choose: could not start the choice: ${String(error)}`);
+          });
+        }
+
         if (connection) {
-          if (!control) setFilamentClient(connection.client, accountId);
+          if (!handlesOwnWork) setFilamentClient(connection.client, accountId);
           refreshOtherwise();
-          if (!control) {
+          if (!handlesOwnWork) {
             void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
               accountLog(`filament: tool drift check failed: ${String(error)}`);
             });
@@ -257,11 +372,12 @@ export function registerFilamentChannel(
             client: connection.client,
             identity: connection.identity,
             settings: mcp,
-            control,
+            control: handlesOwnWork,
             abortSignal,
             log: accountLog,
             runTurn,
-            handleControl,
+            handleControl: pending ? handlePending : handleControl,
+            ...(handlesOwnWork ? {} : { handleCommand }),
           });
           if (fatal) {
             // Report and hold open rather than throw: the gateway restarts an account that

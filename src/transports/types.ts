@@ -27,6 +27,12 @@ export interface TransportContext {
   runTurn: (item: WorkItem) => Promise<TurnResult>;
   /** Never throws. */
   handleControl: (item: WorkItem) => Promise<void>;
+  /**
+   * A connected agent's own answer to a `/filament` command from its principal in its backchannel
+   * (`isGatewayCommandItem`): the item never wakes a turn. Absent on control and pending accounts.
+   * Never throws.
+   */
+  handleCommand?: (item: WorkItem) => Promise<void>;
 }
 
 export interface TransportResult {

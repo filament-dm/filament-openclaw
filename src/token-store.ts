@@ -1,7 +1,7 @@
 /**
  * Plugin state in OpenClaw's keyed store, per channel account: the `get_self` identity, the FCM
- * registration (so a restart keeps the push token) and processed push ids (so Google does not
- * redeliver them).
+ * registration (so a restart keeps the push token), processed push ids (so Google does not
+ * redeliver them) and whether a pending account already asked which agent to be.
  *
  * Bearers are read only, keyed by a hash of the connect token they were exchanged for, so a new
  * token never reuses an old token's bearer or identity. Nothing writes new ones.
@@ -45,6 +45,7 @@ const RECEIVED_IDS_NAMESPACE = "fcm-received";
 const RECEIVED_IDS_MAX = 1_000;
 const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
+const CHOICE_ASKED_NAMESPACE = "choice-asked";
 
 // Structural: the store's runtime module is only present inside the gateway.
 type SyncStore<T> = {
@@ -56,6 +57,7 @@ let idStore: SyncStore<AgentIdentity> | null = null;
 let bearerStore: SyncStore<StoredBearer> | null = null;
 let fcmStore: SyncStore<StoredFcm> | null = null;
 let receivedStore: SyncStore<string[]> | null = null;
+let choiceAskedStore: SyncStore<number> | null = null;
 
 function fcmStoreInstance(): SyncStore<StoredFcm> {
   if (!fcmStore) {
@@ -77,6 +79,17 @@ function receivedStoreInstance(): SyncStore<string[]> {
     }) as SyncStore<string[]>;
   }
   return receivedStore;
+}
+
+function choiceAskedStoreInstance(): SyncStore<number> {
+  if (!choiceAskedStore) {
+    choiceAskedStore = createPluginStateSyncKeyedStore<number>(PLUGIN_ID, {
+      namespace: CHOICE_ASKED_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<number>;
+  }
+  return choiceAskedStore;
 }
 
 function identityStore(): SyncStore<AgentIdentity> {
@@ -153,4 +166,14 @@ export function recordReceivedId(accountId: string, id: string): boolean {
   if (next.length > RECEIVED_IDS_MAX) next.splice(0, next.length - RECEIVED_IDS_MAX);
   receivedStoreInstance().register(accountId, next);
   return true;
+}
+
+/** False when this pending account already asked; a config reload must not ask again. */
+export function choiceAsked(accountId: string): boolean {
+  return choiceAskedStoreInstance().lookup(accountId) !== undefined;
+}
+
+/** Record that the question was put to the principal. Call it after the send succeeded. */
+export function markChoiceAsked(accountId: string): void {
+  choiceAskedStoreInstance().register(accountId, Date.now());
 }

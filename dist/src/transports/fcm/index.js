@@ -1,5 +1,6 @@
 import { acceptPending } from "../../accept-pending.js";
 import { isFirstContact } from "../../onboarding-core.js";
+import { isGatewayCommandItem } from "../../gateway.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
   decodeDirectPusher,
@@ -63,6 +64,10 @@ async function runFcmTransport(ctx, deps = {}) {
     };
     if (ctx.control) {
       if (isBackchannel) await ctx.handleControl(item);
+      return;
+    }
+    if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
+      await ctx.handleCommand(item);
       return;
     }
     const decision = decideWake(push, {

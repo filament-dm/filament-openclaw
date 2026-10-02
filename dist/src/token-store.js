@@ -6,10 +6,12 @@ const RECEIVED_IDS_NAMESPACE = "fcm-received";
 const RECEIVED_IDS_MAX = 1e3;
 const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
+const CHOICE_ASKED_NAMESPACE = "choice-asked";
 let idStore = null;
 let bearerStore = null;
 let fcmStore = null;
 let receivedStore = null;
+let choiceAskedStore = null;
 function fcmStoreInstance() {
   if (!fcmStore) {
     fcmStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
@@ -29,6 +31,16 @@ function receivedStoreInstance() {
     });
   }
   return receivedStore;
+}
+function choiceAskedStoreInstance() {
+  if (!choiceAskedStore) {
+    choiceAskedStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
+      namespace: CHOICE_ASKED_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest"
+    });
+  }
+  return choiceAskedStore;
 }
 function identityStore() {
   if (!idStore) {
@@ -86,12 +98,20 @@ function recordReceivedId(accountId, id) {
   receivedStoreInstance().register(accountId, next);
   return true;
 }
+function choiceAsked(accountId) {
+  return choiceAskedStoreInstance().lookup(accountId) !== void 0;
+}
+function markChoiceAsked(accountId) {
+  choiceAskedStoreInstance().register(accountId, Date.now());
+}
 export {
+  choiceAsked,
   hasFcmCredentialsForOtherProject,
   loadBearer,
   loadFcmCredentials,
   loadIdentity,
   loadReceivedIds,
+  markChoiceAsked,
   recordReceivedId,
   saveFcmCredentials,
   saveIdentity

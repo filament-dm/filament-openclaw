@@ -3,6 +3,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   GATEWAY_ACCOUNT_ID,
+  pendingAccountId,
   PLUGIN_ID
 } from "./accounts.js";
 const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
@@ -61,8 +62,9 @@ function parseGatewayCommand(body, fallbackRequestId) {
   const words = body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
   const verb = words[1];
-  const arity = verb === "connect" ? 2 : verb === "disconnect" ? 1 : 0;
   const args = words.slice(2);
+  const tokenOnly = verb === "connect" && (args[0]?.startsWith("fmcp_") ?? false) && !(args[1]?.startsWith("fmcp_") ?? false);
+  const arity = verb === "connect" ? tokenOnly ? 1 : 2 : verb === "disconnect" ? 1 : 0;
   const extra = args.slice(arity);
   const requestId = extra.length === 1 && REQUEST_ID_PATTERN.test(extra[0]) ? extra[0] : fallbackRequestId;
   const invalid = (reason) => ({ kind: "invalid", reason, requestId });
@@ -71,11 +73,12 @@ function parseGatewayCommand(body, fallbackRequestId) {
   }
   if (args.length < arity || extra.length > 1 || extra.length === 1 && requestId !== extra[0]) {
     return invalid(
-      `usage: /filament ${verb}${arity >= 1 ? " <agent-id>" : ""}${arity === 2 ? " <connect-token>" : ""} [<request-id>]`
+      verb === "connect" ? "usage: /filament connect [<agent-id>] <connect-token> [<request-id>]" : `usage: /filament ${verb}${arity >= 1 ? " <agent-id>" : ""} [<request-id>]`
     );
   }
   if (verb === "agents") return { kind: "agents", requestId };
   if (verb === "unpair") return { kind: "unpair", requestId };
+  if (tokenOnly) return { kind: "connect", token: args[0], requestId };
   const agentId = args[0];
   if (!AGENT_ID_PATTERN.test(agentId) || RESERVED_ACCOUNT_IDS.has(agentId)) {
     return invalid(`"${agentId}" is not a usable agent id`);
@@ -115,6 +118,20 @@ function applyAgentConnect(draft, agentId, token) {
   }
   accounts[agentId] = { ...asRecord(accounts[agentId]), connectToken: token };
   return { displaced: [...displaced] };
+}
+function applyPendingConnect(draft, token) {
+  const plugins = ensureRecord(draft, "plugins");
+  const entries = ensureRecord(plugins, "entries");
+  const entry = ensureRecord(entries, PLUGIN_ID);
+  const config = ensureRecord(entry, "config");
+  const accounts = ensureRecord(config, "accounts");
+  accounts[pendingAccountId(token)] = { connectToken: token, pending: true };
+}
+function isGatewayCommandItem(item, principal, ccRoomId) {
+  if (!item.is_backchannel || item.channel_id !== ccRoomId || principal === void 0) return false;
+  const last = item.messages[item.messages.length - 1];
+  if (!last || last.sender !== principal) return false;
+  return parseGatewayCommand(last.body, "x") !== null;
 }
 function applyAgentDisconnect(draft, agentId) {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
@@ -162,12 +179,20 @@ async function handleGatewayItem(ctx) {
   const { item, log } = ctx;
   const done = { kind: "silent" };
   if (item.messages.length === 0) return done;
-  const fromPrincipal = ctx.principal !== void 0 && item.messages.every((m) => m.sender === ctx.principal);
-  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || !fromPrincipal) {
+  const principalMessages = ctx.principal === void 0 ? [] : item.messages.filter((m) => m.sender === ctx.principal);
+  if (!item.is_backchannel || item.channel_id !== ctx.ccRoomId || principalMessages.length === 0) {
     log("filament-gateway: ignoring work outside the principal's backchannel");
     return done;
   }
-  const commands = item.messages.map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))).filter((parsed) => parsed !== null);
+  const commands = principalMessages.map((m) => parseGatewayCommand(m.body, m.event_id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64))).filter((parsed) => parsed !== null).map((command) => {
+    if (ctx.scope !== "connect" || command.kind === "invalid") return command;
+    if (command.kind === "connect" && command.agentId === void 0) return command;
+    return {
+      kind: "invalid",
+      requestId: command.requestId,
+      reason: "only `/filament connect <connect-token>` is accepted here"
+    };
+  });
   const last = item.messages[item.messages.length - 1];
   await ctx.consume(last.event_id).catch((error) => {
     log(`filament-gateway: could not mark the commands read: ${String(error)}`);
@@ -182,19 +207,27 @@ async function handleGatewayItem(ctx) {
       statuses.push({ ...base, command: "invalid", state: "rejected", message: command.reason });
     } else if (command.kind === "agents") {
       statuses.push({ ...base, command: "agents", state: "applied" });
-    } else if (command.kind === "connect" && !knownAgents.has(command.agentId)) {
-      statuses.push({
-        ...base,
-        command: "connect",
-        agentId: command.agentId,
-        state: "rejected",
-        message: `This gateway has no OpenClaw agent "${command.agentId}".`
-      });
-    } else if (command.kind === "connect") {
+    } else if (command.kind === "connect" && command.agentId === void 0) {
       mutations.push((draft) => {
-        applyAgentConnect(draft, command.agentId, command.token);
+        applyPendingConnect(draft, command.token);
       });
-      statuses.push({ ...base, command: "connect", agentId: command.agentId, state: "applied" });
+      statuses.push({ ...base, command: "connect", state: "applied" });
+    } else if (command.kind === "connect") {
+      const { agentId, token } = command;
+      if (!knownAgents.has(agentId)) {
+        statuses.push({
+          ...base,
+          command: "connect",
+          agentId,
+          state: "rejected",
+          message: `This gateway has no OpenClaw agent "${agentId}".`
+        });
+      } else {
+        mutations.push((draft) => {
+          applyAgentConnect(draft, agentId, token);
+        });
+        statuses.push({ ...base, command: "connect", agentId, state: "applied" });
+      }
     } else if (command.kind === "disconnect") {
       mutations.push((draft) => applyAgentDisconnect(draft, command.agentId));
       statuses.push({ ...base, command: "disconnect", agentId: command.agentId, state: "applied" });
@@ -235,9 +268,11 @@ export {
   STATUS_INVENTORY_ORIGIN,
   applyAgentConnect,
   applyAgentDisconnect,
+  applyPendingConnect,
   applyUnpair,
   handleGatewayItem,
   inventoryEntries,
+  isGatewayCommandItem,
   listGatewayAgents,
   parseGatewayCommand,
   wouldChange
