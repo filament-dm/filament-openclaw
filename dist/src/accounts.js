@@ -20,6 +20,9 @@ function listConfiguredAccountIds(pluginConfig, env = process.env) {
 function isControlAccount(pluginConfig, accountId) {
   return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
 }
+function isPendingAccount(pluginConfig, accountId) {
+  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pending === true;
+}
 function pluginConfigFrom(gatewayConfig) {
   const entry = asRecord(asRecord(asRecord(gatewayConfig).plugins).entries)[PLUGIN_ID];
   return entry === void 0 ? void 0 : asRecord(entry).config;
@@ -41,7 +44,7 @@ function resolveToolAccountId(ctx, fallbackPluginConfig, env = process.env) {
   if (ours.length > 0) return null;
   const pluginConfig = pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig;
   const configured = listConfiguredAccountIds(pluginConfig, env).filter(
-    (id) => !isControlAccount(pluginConfig, id)
+    (id) => !isControlAccount(pluginConfig, id) && !isPendingAccount(pluginConfig, id)
   );
   return configured.length === 1 ? configured[0] : null;
 }
@@ -53,6 +56,7 @@ export {
   asRecord,
   hasTokenInput,
   isControlAccount,
+  isPendingAccount,
   listConfiguredAccountIds,
   pluginConfigFrom,
   resolveToolAccountId

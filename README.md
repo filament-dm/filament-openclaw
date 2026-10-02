@@ -12,20 +12,21 @@ channel, and the agent replies and uses Filament through a set of `filament_*` t
 
 ## Install
 
-In the Filament app, choose **OpenClaw** under agents and run the command it shows on the machine
-where your gateway runs. It installs and enables the plugin, pairs the gateway with your Filament
-account and waits until it is connected:
+In the Filament app, choose **OpenClaw** under agents, name the agent, and run the command it shows
+on the machine where your gateway runs. It installs and enables the plugin (once), connects that
+Filament agent and waits until it is connected:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-  | CONNECT_TOKEN=fmcp_... OPENCLAW_GATEWAY=1 bash
+  | CONNECT_TOKEN=fmcp_... FILAMENT_TRANSPORT=poll bash
 ```
 
-After that, pick which of the gateway's agents to connect in the Filament app. No further terminal
-step is needed. Running the script again is safe. The header of `install.sh` lists every option.
+The command names no OpenClaw agent. If the gateway has one, the plugin binds it. If it has
+several, the new Filament agent asks in its chat which one should answer as it, with one button per
+agent. Connect each Filament agent the same way. Running the script again is safe, and the header
+of `install.sh` lists every option.
 
-To connect a single agent without pairing the gateway, pass `OPENCLAW_AGENT=<agent id>` instead of
-`OPENCLAW_GATEWAY=1`.
+To bind an agent from the terminal instead, pass `OPENCLAW_AGENT=<agent id>`.
 
 ## Configuration
 

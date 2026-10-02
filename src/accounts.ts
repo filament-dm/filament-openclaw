@@ -46,6 +46,11 @@ export function isControlAccount(pluginConfig: unknown, accountId: string): bool
   return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
 }
 
+/** install.sh added it without naming an OpenClaw agent; see choose-agent.ts. */
+export function isPendingAccount(pluginConfig: unknown, accountId: string): boolean {
+  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pending === true;
+}
+
 export function pluginConfigFrom(gatewayConfig: unknown): unknown {
   const entry = asRecord(asRecord(asRecord(gatewayConfig).plugins).entries)[PLUGIN_ID];
   return entry === undefined ? undefined : asRecord(entry).config;
@@ -86,7 +91,7 @@ export function resolveToolAccountId(
   if (ours.length > 0) return null;
   const pluginConfig = pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig;
   const configured = listConfiguredAccountIds(pluginConfig, env).filter(
-    (id) => !isControlAccount(pluginConfig, id),
+    (id) => !isControlAccount(pluginConfig, id) && !isPendingAccount(pluginConfig, id),
   );
   return configured.length === 1 ? configured[0]! : null;
 }

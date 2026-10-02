@@ -3,10 +3,18 @@ import {
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   isControlAccount,
+  isPendingAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
   pluginConfigFrom
 } from "./accounts.js";
+import {
+  applyPendingChoice,
+  automaticChoice,
+  choiceOptions,
+  handlePendingItem,
+  questionBody
+} from "./choose-agent.js";
 import { retryConnect, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
@@ -23,7 +31,7 @@ import {
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
-import { loadIdentity } from "./token-store.js";
+import { loadIdentity, markChoiceAsked } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -69,6 +77,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const accountLog = (message) => log(`[${accountId}] ${message}`);
         accountLog(`filament: transport ${mcp.transport}`);
         const control = isControlAccount(pluginConfig, accountId);
+        const pending = !control && isPendingAccount(pluginConfig, accountId);
+        const handlesOwnWork = control || pending;
         const liveGatewayConfig = () => api.runtime?.config?.current?.() ?? ctx.cfg;
         const statuses = [];
         const reportInventory = async () => {
@@ -81,6 +91,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             signal: abortSignal
           });
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
+        };
+        const mutateConfig = async (mutate) => {
+          const write = api.runtime?.config?.mutateConfigFile;
+          if (!write) throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
+          await write({ afterWrite: { mode: "auto" }, mutate });
         };
         const handleControl = async (item) => {
           if (!connection) return;
@@ -97,12 +112,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
                 { signal: abortSignal }
               );
             },
-            mutateConfig: async (mutate) => {
-              const write = api.runtime?.config?.mutateConfigFile;
-              if (!write)
-                throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
-              await write({ afterWrite: { mode: "auto" }, mutate });
-            },
+            mutateConfig,
             report: async (entries) => {
               statuses.unshift(...[...entries].reverse());
               statuses.splice(MAX_REPORTED_STATUSES);
@@ -110,6 +120,49 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             },
             log: accountLog
           });
+        };
+        const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
+        const bindPending = (agentId) => mutateConfig((draft) => applyPendingChoice(draft, accountId, agentId, token));
+        const sayToPrincipal = async (markdownBody) => {
+          if (!connection) return;
+          const res = await connection.client.callTool(
+            "message_principal",
+            { markdown_body: markdownBody },
+            { signal: abortSignal }
+          );
+          if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
+        };
+        const handlePending = async (item) => {
+          if (!connection) return;
+          const client = connection.client;
+          await handlePendingItem({
+            item,
+            principal: connection.identity.principal,
+            ccRoomId: connection.identity.ccRoomId,
+            options: pendingOptions(),
+            consume: async (upToEventId) => {
+              await client.callTool(
+                "mark_read",
+                { channel: item.channel_id, up_to: upToEventId },
+                { signal: abortSignal }
+              );
+            },
+            say: sayToPrincipal,
+            bind: bindPending,
+            log: accountLog
+          });
+        };
+        const startPending = async () => {
+          const options = pendingOptions();
+          const chosen = automaticChoice(options);
+          if (chosen) {
+            accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
+            await bindPending(chosen);
+          } else if (options.length === 0) {
+            accountLog("filament-choose: this gateway has no agent to bind");
+          } else if (markChoiceAsked(accountId)) {
+            await sayToPrincipal(questionBody(options));
+          }
         };
         const runTurn = async (item) => {
           if (!ctx.channelRuntime) {
@@ -191,10 +244,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           };
           refreshGatewayInventory();
         }
+        if (connection && pending) {
+          await startPending().catch((error) => {
+            accountLog(`filament-choose: could not start the choice: ${String(error)}`);
+          });
+        }
         if (connection) {
-          if (!control) setFilamentClient(connection.client, accountId);
+          if (!handlesOwnWork) setFilamentClient(connection.client, accountId);
           refreshOtherwise();
-          if (!control) {
+          if (!handlesOwnWork) {
             void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
               accountLog(`filament: tool drift check failed: ${String(error)}`);
             });
@@ -204,11 +262,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             client: connection.client,
             identity: connection.identity,
             settings: mcp,
-            control,
+            control: handlesOwnWork,
             abortSignal,
             log: accountLog,
             runTurn,
-            handleControl
+            handleControl: pending ? handlePending : handleControl
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);

@@ -137,6 +137,10 @@
               "type": "string",
               "description": "Overrides the top-level mcpUrl for this account."
             },
+            "pending": {
+              "type": "boolean",
+              "description": "Connected without naming an OpenClaw agent (install.sh with no OPENCLAW_AGENT): runs no agent turns and asks its principal in Filament which of this gateway's agents to become, then binds it."
+            },
             "control": {
               "type": "boolean",
               "description": "A gateway control account (install.sh OPENCLAW_GATEWAY=1): runs no agent turns, reports this gateway's agents to Filament and takes connect commands from its principal."
