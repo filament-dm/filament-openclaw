@@ -67,6 +67,12 @@ function applyPendingChoice(draft, pendingAccountId, agentId, token) {
   delete accounts[pendingAccountId];
   return true;
 }
+function greetingBody(label) {
+  return `Done \u2014 **${label}** answers here from now on.`;
+}
+function notAppliedBody(label) {
+  return `I saved **${label}** as the agent for this chat, but the gateway did not pick the change up. Run \`openclaw gateway restart\` on it and **${label}** will take over here.`;
+}
 async function handlePendingItem(ctx) {
   const { item, log } = ctx;
   const done = { kind: "silent" };
@@ -87,8 +93,8 @@ async function handlePendingItem(ctx) {
   }
   const label = ctx.options.find((option) => option.agentId === agentId).label;
   try {
-    const bound = await ctx.bind(agentId);
-    if (!bound) {
+    const outcome = await ctx.bind(agentId, label);
+    if (outcome === "taken") {
       log(`filament-choose: '${agentId}' was taken before the write`);
       await ctx.say(
         `**${label}** was just connected to another Filament agent.
@@ -97,10 +103,14 @@ ${questionBody(ctx.refreshOptions?.() ?? ctx.options, true)}`
       );
       return done;
     }
+    if (outcome === "written") {
+      log(`filament-choose: bound OpenClaw agent '${agentId}' but the gateway did not reload`);
+      await ctx.say(notAppliedBody(label));
+      return done;
+    }
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
-    await ctx.say(`Done \u2014 **${label}** answers here from now on.`).catch(() => {
-    });
   } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return done;
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);
   }
@@ -112,7 +122,9 @@ export {
   automaticChoice,
   choiceOptions,
   freeOptions,
+  greetingBody,
   handlePendingItem,
+  notAppliedBody,
   nothingFreeBody,
   questionBody,
   resolveChoice

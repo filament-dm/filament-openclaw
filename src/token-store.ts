@@ -46,6 +46,7 @@ const RECEIVED_IDS_MAX = 1_000;
 const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
 const CHOICE_ASKED_NAMESPACE = "choice-asked";
+const GREETING_NAMESPACE = "bound-greetings";
 
 // Structural: the store's runtime module is only present inside the gateway.
 type SyncStore<T> = {
@@ -58,6 +59,13 @@ let bearerStore: SyncStore<StoredBearer> | null = null;
 let fcmStore: SyncStore<StoredFcm> | null = null;
 let receivedStore: SyncStore<string[]> | null = null;
 let choiceAskedStore: SyncStore<number> | null = null;
+// Tagged with the account that left it, so a losing bind clears only its own.
+interface StoredGreeting {
+  from: string;
+  body: string;
+}
+
+let greetingStore: SyncStore<StoredGreeting> | null = null;
 
 function fcmStoreInstance(): SyncStore<StoredFcm> {
   if (!fcmStore) {
@@ -90,6 +98,17 @@ function choiceAskedStoreInstance(): SyncStore<number> {
     }) as SyncStore<number>;
   }
   return choiceAskedStore;
+}
+
+function greetingStoreInstance(): SyncStore<StoredGreeting> {
+  if (!greetingStore) {
+    greetingStore = createPluginStateSyncKeyedStore<StoredGreeting>(PLUGIN_ID, {
+      namespace: GREETING_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<StoredGreeting>;
+  }
+  return greetingStore;
 }
 
 function identityStore(): SyncStore<AgentIdentity> {
@@ -176,4 +195,27 @@ export function choiceAsked(accountId: string): boolean {
 /** Record that the question was put to the principal. Call it after the send succeeded. */
 export function markChoiceAsked(accountId: string): void {
   choiceAskedStoreInstance().register(accountId, Date.now());
+}
+
+/**
+ * What the account bound from a pending one says when it first connects. The pending account
+ * cannot say it: the reload that applies its choice replaces it.
+ */
+export function leaveGreeting(accountId: string, from: string, markdownBody: string): void {
+  greetingStoreInstance().register(accountId, { from, body: markdownBody });
+}
+
+/** Clears the greeting only if `from` left it: another account's successful bind keeps its own. */
+export function dropGreeting(accountId: string, from: string): void {
+  if (greetingStoreInstance().lookup(accountId)?.from === from) {
+    greetingStoreInstance().register(accountId, { from, body: "" });
+  }
+}
+
+/** The greeting left for this account, cleared on read so a later reload does not repeat it. */
+export function takeGreeting(accountId: string): string | undefined {
+  const stored = greetingStoreInstance().lookup(accountId);
+  if (!stored?.body) return undefined;
+  greetingStoreInstance().register(accountId, { from: stored.from, body: "" });
+  return stored.body;
 }
