@@ -142,11 +142,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             if (!bound) takeGreeting(agentId);
           }
           if (!bound) return "taken";
-          const applied = await awaitConfigApplied({
+          const wait = await awaitConfigApplied({
             applied: () => !isPendingAccount(pluginConfigOf(liveGatewayConfig()), accountId),
             abortSignal
           });
-          return applied ? "applied" : "written";
+          return wait === "timeout" ? "written" : "applied";
         };
         const sayToPrincipal = async (markdownBody) => {
           if (!connection) return false;

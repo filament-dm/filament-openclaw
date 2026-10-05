@@ -192,11 +192,11 @@ export function registerFilamentChannel(
             if (!bound) takeGreeting(agentId);
           }
           if (!bound) return "taken";
-          const applied = await awaitConfigApplied({
+          const wait = await awaitConfigApplied({
             applied: () => !isPendingAccount(pluginConfigOf(liveGatewayConfig()), accountId),
             abortSignal,
           });
-          return applied ? "applied" : "written";
+          return wait === "timeout" ? "written" : "applied";
         };
         /** Resolves true only when the message landed. */
         const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {

@@ -145,6 +145,26 @@ test("handlePendingItem: a bind the gateway did not pick up says how to finish i
   assert.match(h.said[0]!, /openclaw gateway restart/);
 });
 
+test("handlePendingItem: a bind cut short by the reload says nothing", async () => {
+  const said: string[] = [];
+  const run = handlePendingItem({
+    item: item("✍️ Writer"),
+    principal: "@owner:x",
+    ccRoomId: "!cc",
+    options: choiceOptions([writer, researcher]),
+    consume: async () => {},
+    say: async (body) => {
+      said.push(body);
+    },
+    bind: async () => {
+      throw new DOMException("This operation was aborted", "AbortError");
+    },
+    log: () => {},
+  });
+  assert.deepEqual(await run, { kind: "silent" });
+  assert.deepEqual(said, []);
+});
+
 test("handlePendingItem: an agent taken before the write is reported and the question re-asked", async () => {
   const h = harness("✍️ Writer", {}, "taken");
   assert.deepEqual(await h.run, { kind: "silent" });

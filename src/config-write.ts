@@ -119,22 +119,24 @@ function pluginConfigOf(draft: Record<string, unknown>): unknown {
   return asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config;
 }
 
+export type ConfigApplyWait = "applied" | "aborted" | "timeout";
+
 /**
- * Resolves true once `applied` holds against the live gateway config, false at the deadline or on
- * abort. A reload replaces this account, so an abort is the usual way out when the write landed.
+ * Waits until `applied` holds against the live gateway config. The reload that applies a write
+ * aborts the writing account before the live config shows it, so an abort usually means applied.
  */
 export async function awaitConfigApplied(params: {
   applied: () => boolean;
   abortSignal: AbortSignal;
   timeoutMs?: number;
   intervalMs?: number;
-}): Promise<boolean> {
+}): Promise<ConfigApplyWait> {
   const deadline = Date.now() + (params.timeoutMs ?? 30_000);
   const interval = params.intervalMs ?? 500;
   for (;;) {
-    if (params.applied()) return true;
-    if (params.abortSignal.aborted) return params.applied();
-    if (Date.now() >= deadline) return false;
+    if (params.applied()) return "applied";
+    if (params.abortSignal.aborted) return "aborted";
+    if (Date.now() >= deadline) return "timeout";
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, interval);
       function done() {

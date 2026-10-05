@@ -101,16 +101,12 @@ test("writeGatewayConfig: a failed patch surfaces the CLI's stderr", async () =>
   );
 });
 
-test("awaitConfigApplied: true once the predicate holds, false at the deadline, abort re-checks", async () => {
+test("awaitConfigApplied: applied once the predicate holds, timeout at the deadline, aborted on abort", async () => {
   let n = 0;
   const idle = new AbortController();
   assert.equal(
-    await awaitConfigApplied({
-      applied: () => ++n >= 3,
-      abortSignal: idle.signal,
-      intervalMs: 1,
-    }),
-    true,
+    await awaitConfigApplied({ applied: () => ++n >= 3, abortSignal: idle.signal, intervalMs: 1 }),
+    "applied",
   );
   assert.equal(
     await awaitConfigApplied({
@@ -119,17 +115,15 @@ test("awaitConfigApplied: true once the predicate holds, false at the deadline, 
       timeoutMs: 5,
       intervalMs: 1,
     }),
-    false,
+    "timeout",
   );
   const aborted = new AbortController();
-  let applied = false;
   const waiting = awaitConfigApplied({
-    applied: () => applied,
+    applied: () => false,
     abortSignal: aborted.signal,
     timeoutMs: 10_000,
     intervalMs: 1_000,
   });
-  applied = true;
   aborted.abort();
-  assert.equal(await waiting, true);
+  assert.equal(await waiting, "aborted");
 });

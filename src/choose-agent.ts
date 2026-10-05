@@ -184,6 +184,8 @@ export async function handlePendingItem(ctx: PendingChoiceContext): Promise<Disp
     // Applied: the reload replaced this account, and the bound one greets on connect.
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
   } catch (error) {
+    // Aborted mid-way: the reload is replacing this account, and nothing it says would land.
+    if (error instanceof Error && error.name === "AbortError") return done;
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);
   }

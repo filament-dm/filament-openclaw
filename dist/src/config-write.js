@@ -82,9 +82,9 @@ async function awaitConfigApplied(params) {
   const deadline = Date.now() + (params.timeoutMs ?? 3e4);
   const interval = params.intervalMs ?? 500;
   for (; ; ) {
-    if (params.applied()) return true;
-    if (params.abortSignal.aborted) return params.applied();
-    if (Date.now() >= deadline) return false;
+    if (params.applied()) return "applied";
+    if (params.abortSignal.aborted) return "aborted";
+    if (Date.now() >= deadline) return "timeout";
     await new Promise((resolve) => {
       const timer = setTimeout(done, interval);
       function done() {

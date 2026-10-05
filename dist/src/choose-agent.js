@@ -110,6 +110,7 @@ ${questionBody(ctx.refreshOptions?.() ?? ctx.options, true)}`
     }
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
   } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return done;
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);
   }
