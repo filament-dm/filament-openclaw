@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   applyPendingChoice,
   automaticChoice,
+  type BindOutcome,
   choiceOptions,
   nothingFreeBody,
   handlePendingItem,
@@ -99,7 +100,11 @@ function item(body: string, overrides: Partial<WorkItem> = {}): WorkItem {
   } as WorkItem;
 }
 
-function harness(answer: string, overrides: Partial<WorkItem> = {}, bindResult = true) {
+function harness(
+  answer: string,
+  overrides: Partial<WorkItem> = {},
+  bindResult: BindOutcome = "applied",
+) {
   const said: string[] = [];
   const bound: string[] = [];
   const consumed: string[] = [];
@@ -123,16 +128,25 @@ function harness(answer: string, overrides: Partial<WorkItem> = {}, bindResult =
   return { run, said, bound, consumed };
 }
 
-test("handlePendingItem: a tap binds that agent, then says so", async () => {
+test("handlePendingItem: a tap binds that agent; once applied, the bound agent does the talking", async () => {
   const h = harness("✍️ Writer");
   assert.deepEqual(await h.run, { kind: "silent" });
   assert.deepEqual(h.consumed, ["$1"]);
   assert.deepEqual(h.bound, ["writer"]);
-  assert.match(h.said[0]!, /Writer\*\* answers here/);
+  assert.deepEqual(h.said, []);
+});
+
+test("handlePendingItem: a bind the gateway did not pick up says how to finish it", async () => {
+  const h = harness("✍️ Writer", {}, "written");
+  assert.deepEqual(await h.run, { kind: "silent" });
+  assert.deepEqual(h.bound, ["writer"]);
+  assert.equal(h.said.length, 1);
+  assert.match(h.said[0]!, /saved \*\*✍️ Writer\*\*/);
+  assert.match(h.said[0]!, /openclaw gateway restart/);
 });
 
 test("handlePendingItem: an agent taken before the write is reported and the question re-asked", async () => {
-  const h = harness("✍️ Writer", {}, false);
+  const h = harness("✍️ Writer", {}, "taken");
   assert.deepEqual(await h.run, { kind: "silent" });
   assert.deepEqual(h.bound, ["writer"]);
   assert.equal(h.said.length, 1);

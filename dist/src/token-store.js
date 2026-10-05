@@ -7,11 +7,13 @@ const RECEIVED_IDS_MAX = 1e3;
 const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
 const CHOICE_ASKED_NAMESPACE = "choice-asked";
+const GREETING_NAMESPACE = "bound-greetings";
 let idStore = null;
 let bearerStore = null;
 let fcmStore = null;
 let receivedStore = null;
 let choiceAskedStore = null;
+let greetingStore = null;
 function fcmStoreInstance() {
   if (!fcmStore) {
     fcmStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
@@ -41,6 +43,16 @@ function choiceAskedStoreInstance() {
     });
   }
   return choiceAskedStore;
+}
+function greetingStoreInstance() {
+  if (!greetingStore) {
+    greetingStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
+      namespace: GREETING_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest"
+    });
+  }
+  return greetingStore;
 }
 function identityStore() {
   if (!idStore) {
@@ -104,9 +116,19 @@ function choiceAsked(accountId) {
 function markChoiceAsked(accountId) {
   choiceAskedStoreInstance().register(accountId, Date.now());
 }
+function leaveGreeting(accountId, markdownBody) {
+  greetingStoreInstance().register(accountId, markdownBody);
+}
+function takeGreeting(accountId) {
+  const body = greetingStoreInstance().lookup(accountId);
+  if (!body) return void 0;
+  greetingStoreInstance().register(accountId, "");
+  return body;
+}
 export {
   choiceAsked,
   hasFcmCredentialsForOtherProject,
+  leaveGreeting,
   loadBearer,
   loadFcmCredentials,
   loadIdentity,
@@ -114,5 +136,6 @@ export {
   markChoiceAsked,
   recordReceivedId,
   saveFcmCredentials,
-  saveIdentity
+  saveIdentity,
+  takeGreeting
 };

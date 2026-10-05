@@ -119,6 +119,8 @@ export function applyPendingChoice(
   return true;
 }
 
+export type BindOutcome = "taken" | "applied" | "written";
+
 export interface PendingChoiceContext {
   item: WorkItem;
   principal: string | undefined;
@@ -126,11 +128,22 @@ export interface PendingChoiceContext {
   options: readonly ChoiceOption[];
   consume: (upToEventId: string) => Promise<void>;
   say: (markdownBody: string) => Promise<void>;
-  /** Resolves false when the agent was taken by another account meanwhile. */
-  bind: (agentId: string) => Promise<boolean>;
+  /**
+   * `taken`: another account bound the agent meanwhile. `applied`: the gateway reloaded with the
+   * choice, which replaces this account. `written`: saved, but the gateway did not pick it up.
+   */
+  bind: (agentId: string, label: string) => Promise<BindOutcome>;
   /** The options as they stand now, for a second question. */
   refreshOptions?: () => readonly ChoiceOption[];
   log: (message: string) => void;
+}
+
+export function greetingBody(label: string): string {
+  return `Done — **${label}** answers here from now on.`;
+}
+
+export function notAppliedBody(label: string): string {
+  return `I saved **${label}** as the agent for this chat, but the gateway did not pick the change up. Run \`openclaw gateway restart\` on it and **${label}** will take over here.`;
 }
 
 /** Never "error": the account has to stay up until the principal answers. */
@@ -155,18 +168,21 @@ export async function handlePendingItem(ctx: PendingChoiceContext): Promise<Disp
   }
   const label = ctx.options.find((option) => option.agentId === agentId)!.label;
   try {
-    // The write restarts this account under the agent's own id, so a refused
-    // bind is the only outcome this account can still report on.
-    const bound = await ctx.bind(agentId);
-    if (!bound) {
+    const outcome = await ctx.bind(agentId, label);
+    if (outcome === "taken") {
       log(`filament-choose: '${agentId}' was taken before the write`);
       await ctx.say(
         `**${label}** was just connected to another Filament agent.\n\n${questionBody(ctx.refreshOptions?.() ?? ctx.options, true)}`,
       );
       return done;
     }
+    if (outcome === "written") {
+      log(`filament-choose: bound OpenClaw agent '${agentId}' but the gateway did not reload`);
+      await ctx.say(notAppliedBody(label));
+      return done;
+    }
+    // Applied: the reload replaced this account, and the bound one greets on connect.
     log(`filament-choose: bound OpenClaw agent '${agentId}'`);
-    await ctx.say(`Done — **${label}** answers here from now on.`).catch(() => {});
   } catch (error) {
     log(`filament-choose: config write failed: ${String(error)}`);
     await ctx.say(`I couldn't save that on the gateway: ${String(error)}`);

@@ -13,10 +13,13 @@ import {
   automaticChoice,
   choiceOptions,
   freeOptions,
+  greetingBody,
   handlePendingItem,
+  notAppliedBody,
   nothingFreeBody,
   questionBody
 } from "./choose-agent.js";
+import { awaitConfigApplied, writeGatewayConfig } from "./config-write.js";
 import { retryConnect, runConnect } from "./connect.js";
 import {
   beginFilamentTurn,
@@ -33,7 +36,13 @@ import {
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
-import { choiceAsked, loadIdentity, markChoiceAsked } from "./token-store.js";
+import {
+  choiceAsked,
+  leaveGreeting,
+  loadIdentity,
+  markChoiceAsked,
+  takeGreeting
+} from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -95,9 +104,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
         };
         const mutateConfig = async (mutate) => {
-          const write = api.runtime?.config?.mutateConfigFile;
-          if (!write) throw new Error("this OpenClaw has no api.runtime.config.mutateConfigFile");
-          await write({ afterWrite: { mode: "auto" }, mutate });
+          await writeGatewayConfig(mutate);
         };
         const handleControl = async (item) => {
           if (!connection) return;
@@ -124,12 +131,22 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
         };
         const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
-        const bindPending = async (agentId) => {
+        const bindPending = async (agentId, label) => {
           let bound = false;
-          await mutateConfig((draft) => {
-            bound = applyPendingChoice(draft, accountId, agentId, token);
+          leaveGreeting(agentId, greetingBody(label));
+          try {
+            await mutateConfig((draft) => {
+              bound = applyPendingChoice(draft, accountId, agentId, token);
+            });
+          } finally {
+            if (!bound) takeGreeting(agentId);
+          }
+          if (!bound) return "taken";
+          const applied = await awaitConfigApplied({
+            applied: () => !isPendingAccount(pluginConfigOf(liveGatewayConfig()), accountId),
+            abortSignal
           });
-          return bound;
+          return applied ? "applied" : "written";
         };
         const sayToPrincipal = async (markdownBody) => {
           if (!connection) return false;
@@ -195,7 +212,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           const chosen = automaticChoice(options);
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
-            await bindPending(chosen);
+            const label = options.find((option) => option.agentId === chosen).label;
+            if (await bindPending(chosen, label) === "written") {
+              accountLog("filament-choose: the gateway did not reload after the bind");
+              await sayToPrincipal(notAppliedBody(label));
+            }
           } else if (choiceAsked(accountId)) {
             return;
           } else if (freeOptions(options).length === 0) {
@@ -289,6 +310,12 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           await startPending().catch((error) => {
             accountLog(`filament-choose: could not start the choice: ${String(error)}`);
           });
+        }
+        if (connection && !handlesOwnWork) {
+          const greeting = takeGreeting(accountId);
+          if (greeting && !await sayToPrincipal(greeting)) {
+            accountLog("filament-choose: could not greet as the bound agent");
+          }
         }
         if (connection) {
           if (!handlesOwnWork) setFilamentClient(connection.client, accountId);
