@@ -76,6 +76,58 @@ test("writeGatewayConfig: reads the file's values, patches only what the mutatio
   for (const call of cli.calls) assert.ok(!call.args.join(" ").includes("fmcp_x"));
 });
 
+test("writeGatewayConfig: a path the file does not set reads as empty, not as a failure", async () => {
+  const unset = (path: string): CliResult => ({
+    code: 1,
+    stdout: JSON.stringify({
+      ok: false,
+      error: { type: "cli_error", message: `Config path is valid but unset: ${path}.` },
+    }),
+    stderr: "",
+  });
+  const calls: string[][] = [];
+  const run = async (args: string[]): Promise<CliResult> => {
+    calls.push(args);
+    if (args[1] === "get") return unset(args[2]!);
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const wrote = await writeGatewayConfig((draft) => {
+    (draft as any).bindings.push({ agentId: "w", match: { channel: "filament", accountId: "w" } });
+  }, run);
+  assert.equal(wrote, true);
+  assert.ok(calls.some((args) => args[1] === "patch"));
+});
+
+test("writeGatewayConfig: writes queue, so the second one reads what the first one wrote", async () => {
+  const file = { pluginConfig: { accounts: {} } as any, bindings: [] as unknown[] };
+  let inFlight = 0;
+  let overlapped = false;
+  const run = async (args: string[], stdin?: string): Promise<CliResult> => {
+    inFlight += 1;
+    if (inFlight > 1) overlapped = true;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    inFlight -= 1;
+    if (args[1] === "get" && args[2] === "bindings") {
+      return { code: 0, stdout: JSON.stringify(file.bindings), stderr: "" };
+    }
+    if (args[1] === "get")
+      return { code: 0, stdout: JSON.stringify(file.pluginConfig), stderr: "" };
+    const patch = JSON.parse(stdin!);
+    if (patch.bindings) file.bindings = patch.bindings;
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const bind = (id: string) => (draft: any) => {
+    draft.bindings.push({ agentId: id, match: { channel: "filament", accountId: id } });
+  };
+  await Promise.all([writeGatewayConfig(bind("a"), run), writeGatewayConfig(bind("b"), run)]);
+  assert.deepEqual(
+    file.bindings.map((b: any) => b.agentId),
+    ["a", "b"],
+  );
+  // Each write's own two reads still run in parallel; only writes do not overlap each other.
+  assert.equal(overlapped, true);
+});
+
 test("writeGatewayConfig: a mutation that changes nothing writes nothing", async () => {
   const cli = fakeCli({
     pluginConfig: { accounts: { writer: { connectToken: "t" } } },

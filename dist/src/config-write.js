@@ -37,13 +37,22 @@ function configPatch(before, after) {
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isUnsetPath(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed.ok === false && /valid but unset/.test(String(parsed.error?.message ?? ""));
+  } catch {
+    return false;
+  }
+}
 function parseJson(label, result) {
+  const text = result.stdout.trim();
   if (result.code !== 0) {
+    if (isUnsetPath(text)) return void 0;
     throw new Error(
-      `openclaw config get ${label} failed (exit ${result.code}): ${result.stderr.trim()}`
+      `openclaw config get ${label} failed (exit ${result.code}): ${(result.stderr || text).trim()}`
     );
   }
-  const text = result.stdout.trim();
   if (!text || text === "undefined" || text === "null") return void 0;
   try {
     return JSON.parse(text);
@@ -51,7 +60,14 @@ function parseJson(label, result) {
     throw new Error(`openclaw config get ${label} returned something that is not JSON`);
   }
 }
-async function writeGatewayConfig(mutate, run = runOpenclawCli) {
+let writeQueue = Promise.resolve();
+function writeGatewayConfig(mutate, run = runOpenclawCli) {
+  const next = writeQueue.then(() => writeGatewayConfigNow(mutate, run));
+  writeQueue = next.catch(() => {
+  });
+  return next;
+}
+async function writeGatewayConfigNow(mutate, run) {
   const [pluginConfig, bindings] = await Promise.all([
     run(["config", "get", PLUGIN_CONFIG_PATH, "--json"]).then(
       (r) => parseJson(PLUGIN_CONFIG_PATH, r)

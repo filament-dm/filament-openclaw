@@ -68,13 +68,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** `config get` exits 1 for a path the file does not set, with its reason in a JSON envelope. */
+function isUnsetPath(stdout: string): boolean {
+  try {
+    const parsed = JSON.parse(stdout) as { ok?: unknown; error?: { message?: unknown } };
+    return parsed.ok === false && /valid but unset/.test(String(parsed.error?.message ?? ""));
+  } catch {
+    return false;
+  }
+}
+
 function parseJson(label: string, result: CliResult): unknown {
+  const text = result.stdout.trim();
   if (result.code !== 0) {
+    if (isUnsetPath(text)) return undefined;
     throw new Error(
-      `openclaw config get ${label} failed (exit ${result.code}): ${result.stderr.trim()}`,
+      `openclaw config get ${label} failed (exit ${result.code}): ${(result.stderr || text).trim()}`,
     );
   }
-  const text = result.stdout.trim();
   if (!text || text === "undefined" || text === "null") return undefined;
   try {
     return JSON.parse(text);
@@ -83,13 +94,26 @@ function parseJson(label: string, result: CliResult): unknown {
   }
 }
 
+// Writes queue behind each other: each one's read must see the previous one's patch, or the
+// later `bindings` array would be built from a stale snapshot and drop what the earlier one added.
+let writeQueue: Promise<unknown> = Promise.resolve();
+
 /**
  * Applies `mutate` to the plugin's config and the bindings as the file has them, then writes the
  * difference through the CLI. False when the mutation changes nothing. The token travels on stdin.
  */
-export async function writeGatewayConfig(
+export function writeGatewayConfig(
   mutate: (draft: Record<string, unknown>) => void,
   run: RunCli = runOpenclawCli,
+): Promise<boolean> {
+  const next = writeQueue.then(() => writeGatewayConfigNow(mutate, run));
+  writeQueue = next.catch(() => {});
+  return next;
+}
+
+async function writeGatewayConfigNow(
+  mutate: (draft: Record<string, unknown>) => void,
+  run: RunCli,
 ): Promise<boolean> {
   const [pluginConfig, bindings] = await Promise.all([
     run(["config", "get", PLUGIN_CONFIG_PATH, "--json"]).then((r) =>

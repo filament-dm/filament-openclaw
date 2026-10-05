@@ -116,17 +116,23 @@ function choiceAsked(accountId) {
 function markChoiceAsked(accountId) {
   choiceAskedStoreInstance().register(accountId, Date.now());
 }
-function leaveGreeting(accountId, markdownBody) {
-  greetingStoreInstance().register(accountId, markdownBody);
+function leaveGreeting(accountId, from, markdownBody) {
+  greetingStoreInstance().register(accountId, { from, body: markdownBody });
+}
+function dropGreeting(accountId, from) {
+  if (greetingStoreInstance().lookup(accountId)?.from === from) {
+    greetingStoreInstance().register(accountId, { from, body: "" });
+  }
 }
 function takeGreeting(accountId) {
-  const body = greetingStoreInstance().lookup(accountId);
-  if (!body) return void 0;
-  greetingStoreInstance().register(accountId, "");
-  return body;
+  const stored = greetingStoreInstance().lookup(accountId);
+  if (!stored?.body) return void 0;
+  greetingStoreInstance().register(accountId, { from: stored.from, body: "" });
+  return stored.body;
 }
 export {
   choiceAsked,
+  dropGreeting,
   hasFcmCredentialsForOtherProject,
   leaveGreeting,
   loadBearer,

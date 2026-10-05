@@ -38,6 +38,7 @@ import {
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import {
   choiceAsked,
+  dropGreeting,
   leaveGreeting,
   loadIdentity,
   markChoiceAsked,
@@ -133,13 +134,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
         const bindPending = async (agentId, label) => {
           let bound = false;
-          leaveGreeting(agentId, greetingBody(label));
+          let written = false;
+          leaveGreeting(agentId, accountId, greetingBody(label));
           try {
             await mutateConfig((draft) => {
               bound = applyPendingChoice(draft, accountId, agentId, token);
             });
+            written = true;
           } finally {
-            if (!bound) takeGreeting(agentId);
+            if (!written || !bound) dropGreeting(agentId, accountId);
           }
           if (!bound) return "taken";
           const wait = await awaitConfigApplied({
@@ -208,16 +211,21 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
         };
         const startPending = async () => {
-          const options = pendingOptions();
+          let options = pendingOptions();
           const chosen = automaticChoice(options);
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
             const label = options.find((option) => option.agentId === chosen).label;
-            if (await bindPending(chosen, label) === "written") {
+            const outcome = await bindPending(chosen, label);
+            if (outcome === "written") {
               accountLog("filament-choose: the gateway did not reload after the bind");
               await sayToPrincipal(notAppliedBody(label));
             }
-          } else if (choiceAsked(accountId)) {
+            if (outcome !== "taken") return;
+            accountLog(`filament-choose: '${chosen}' was taken before the write`);
+            options = pendingOptions();
+          }
+          if (choiceAsked(accountId)) {
             return;
           } else if (freeOptions(options).length === 0) {
             accountLog("filament-choose: this gateway has no free agent to bind");

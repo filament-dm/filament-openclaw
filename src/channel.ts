@@ -47,6 +47,7 @@ import {
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
 import {
   choiceAsked,
+  dropGreeting,
   leaveGreeting,
   loadIdentity,
   markChoiceAsked,
@@ -182,14 +183,16 @@ export function registerFilamentChannel(
         const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
         const bindPending = async (agentId: string, label: string): Promise<BindOutcome> => {
           let bound = false;
+          let written = false;
           // Left before the write: the reload that applies it ends this account.
-          leaveGreeting(agentId, greetingBody(label));
+          leaveGreeting(agentId, accountId, greetingBody(label));
           try {
             await mutateConfig((draft) => {
               bound = applyPendingChoice(draft, accountId, agentId, token);
             });
+            written = true;
           } finally {
-            if (!bound) takeGreeting(agentId);
+            if (!written || !bound) dropGreeting(agentId, accountId);
           }
           if (!bound) return "taken";
           const wait = await awaitConfigApplied({
@@ -266,16 +269,22 @@ export function registerFilamentChannel(
           });
         };
         const startPending = async (): Promise<void> => {
-          const options = pendingOptions();
+          let options = pendingOptions();
           const chosen = automaticChoice(options);
           if (chosen) {
             accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
             const label = options.find((option) => option.agentId === chosen)!.label;
-            if ((await bindPending(chosen, label)) === "written") {
+            const outcome = await bindPending(chosen, label);
+            if (outcome === "written") {
               accountLog("filament-choose: the gateway did not reload after the bind");
               await sayToPrincipal(notAppliedBody(label));
             }
-          } else if (choiceAsked(accountId)) {
+            if (outcome !== "taken") return;
+            // Lost the race for the lone agent: ask with whatever is free now.
+            accountLog(`filament-choose: '${chosen}' was taken before the write`);
+            options = pendingOptions();
+          }
+          if (choiceAsked(accountId)) {
             return;
           } else if (freeOptions(options).length === 0) {
             accountLog("filament-choose: this gateway has no free agent to bind");
