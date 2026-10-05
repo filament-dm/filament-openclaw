@@ -232,14 +232,12 @@ export function registerFilamentChannel(
               );
             },
             mutateConfig,
+            // Success is silent here: the new agent asks in its own chat. Only a
+            // refusal has nowhere else to show.
             report: async (entries) => {
-              const lines = entries.map((status) =>
-                status.state === "applied"
-                  ? status.command === "connect" && status.agentId === undefined
-                    ? "Connecting a new Filament agent to this gateway. It will ask in its own chat which OpenClaw agent should answer as it."
-                    : `Applied: ${status.command}${status.agentId ? ` ${status.agentId}` : ""}.`
-                  : `Couldn't ${status.command}: ${status.message ?? status.state}`,
-              );
+              const lines = entries
+                .filter((status) => status.state !== "applied")
+                .map((status) => `Couldn't ${status.command}: ${status.message ?? status.state}`);
               if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
             },
             log: accountLog,
