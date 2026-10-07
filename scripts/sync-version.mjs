@@ -10,9 +10,8 @@ const { version } = JSON.parse(readFileSync(path.join(root, "package.json"), "ut
 
 const replace = (file, pattern, replacement) => {
   const text = readFileSync(file, "utf8");
-  const next = text.replace(pattern, replacement);
-  if (next === text) throw new Error(`${file}: nothing to replace`);
-  writeFileSync(file, next);
+  if (!pattern.test(text)) throw new Error(`${file}: no version field to replace`);
+  writeFileSync(file, text.replace(pattern, replacement));
 };
 replace(path.join(root, "openclaw.plugin.json"), /"version":\s*"[^"]+"/, `"version": "${version}"`);
 replace(
