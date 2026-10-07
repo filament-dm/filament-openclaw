@@ -130,15 +130,18 @@ export type GatewayCommand = { requestId: string } &
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-/** The update notice's button: a suggested message sends its own text, so the text is the command. */
-export const UPDATE_NOW_LABEL = "/filament update";
+/** The update notice's button sends its own label back; it reads as `/filament update`. */
+export const UPDATE_NOW_LABEL = "Update now";
 
 /** A trailing request id keys the reported outcome; a hand-typed command gets the event id. */
 export function parseGatewayCommand(
   body: string,
   fallbackRequestId: string,
 ): GatewayCommand | null {
-  const words = body.trim().split(/\s+/);
+  const words =
+    body.trim().toLowerCase() === UPDATE_NOW_LABEL.toLowerCase()
+      ? ["/filament", "update"]
+      : body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
   const verb = words[1];
   const args = words.slice(2);
