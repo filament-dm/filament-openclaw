@@ -9,7 +9,7 @@ import { PLUGIN_ID } from "./accounts.js";
 import { type CliResult, type RunCli, runOpenclawCli } from "./config-write.js";
 import { UPDATE_NOW_LABEL } from "./gateway.js";
 import type { UpdateCheckState } from "./state/updates.js";
-import { isNewerVersion, PLUGIN_VERSION } from "./version.js";
+import { PLUGIN_VERSION } from "./version.js";
 
 export { UPDATE_NOW_LABEL, type UpdateCheckState };
 
@@ -17,6 +17,23 @@ export const UPDATE_CHECK_URL =
   "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
 
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** Dotted numeric compare, missing parts read as 0; anything unparsable is never newer. */
+export function isNewerVersion(candidate: string, installed: string): boolean {
+  const parse = (v: string): number[] | null => {
+    const numbers = v.trim().replace(/^v/, "").split(".").map(Number);
+    return numbers.every((n) => Number.isInteger(n) && n >= 0) ? numbers : null;
+  };
+  const a = parse(candidate);
+  const b = parse(installed);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
 
 export const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
 

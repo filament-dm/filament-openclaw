@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   checkForUpdate,
+  isNewerVersion,
   startPluginUpdate,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
@@ -85,6 +86,18 @@ test("checkForUpdate: a failed fetch is logged, counted as a check, and never an
   assert.deepEqual(h.said, []);
   assert.equal(h.state().lastCheckedAt, 1_000_000);
   assert.match(logs[0]!, /HTTP 500/);
+});
+
+test("isNewerVersion: numeric per part, short versions pad, garbage is never newer", () => {
+  assert.equal(isNewerVersion("0.2.0", "0.1.9"), true);
+  assert.equal(isNewerVersion("0.10.0", "0.9.9"), true);
+  assert.equal(isNewerVersion("1.0", "0.9.9"), true);
+  assert.equal(isNewerVersion("v0.1.1", "0.1.0"), true);
+  assert.equal(isNewerVersion("0.1.1", "0.1.1"), false);
+  assert.equal(isNewerVersion("0.2", "0.2.0"), false);
+  assert.equal(isNewerVersion("0.1.0", "0.1.1"), false);
+  assert.equal(isNewerVersion("unknown", "0.1.1"), false);
+  assert.equal(isNewerVersion("0.2.0", "unknown"), false);
 });
 
 test("updatedBody: says the new version, or that it already was the latest", () => {

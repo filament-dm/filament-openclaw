@@ -1,9 +1,24 @@
 import { PLUGIN_ID } from "./accounts.js";
 import { runOpenclawCli } from "./config-write.js";
 import { UPDATE_NOW_LABEL } from "./gateway.js";
-import { isNewerVersion, PLUGIN_VERSION } from "./version.js";
+import { PLUGIN_VERSION } from "./version.js";
 const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
+function isNewerVersion(candidate, installed) {
+  const parse = (v) => {
+    const numbers = v.trim().replace(/^v/, "").split(".").map(Number);
+    return numbers.every((n) => Number.isInteger(n) && n >= 0) ? numbers : null;
+  };
+  const a = parse(candidate);
+  const b = parse(installed);
+  if (!a || !b) return false;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
 const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
 async function fetchLatestVersion(url, fetchImpl = fetch) {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
@@ -82,6 +97,7 @@ export {
   UPDATE_NOW_LABEL,
   checkForUpdate,
   fetchLatestVersion,
+  isNewerVersion,
   runUpdateChecks,
   startPluginUpdate,
   updateFailureMessage,
