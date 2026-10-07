@@ -2,19 +2,9 @@ import { PLUGIN_ID } from "./accounts.js";
 import { runOpenclawCli } from "./config-write.js";
 import { UPDATE_NOW_LABEL } from "./gateway.js";
 import { isNewerVersion, PLUGIN_VERSION } from "./version.js";
-const DEFAULT_UPDATE_CHECK_URL = "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
+const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
-function resolveUpdatePolicy(pluginConfig, env = process.env) {
-  const raw = pluginConfig?.updates;
-  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (value === "notify" || value === "auto" || value === "off") return value;
-  const disabled = env.FILAMENT_DISABLE_UPDATE_CHECK?.trim().toLowerCase();
-  return disabled === "true" || disabled === "1" ? "off" : "notify";
-}
-function resolveUpdateCheckUrl(env = process.env) {
-  return env.FILAMENT_UPDATE_CHECK_URL?.trim() || DEFAULT_UPDATE_CHECK_URL;
-}
 async function fetchLatestVersion(url, fetchImpl = fetch) {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -37,7 +27,6 @@ function updatedBody(previous, current) {
   return isNewerVersion(current, previous) ? `Updated the Filament plugin to v${current} (from v${previous}).` : `The Filament plugin is already on the latest version, v${current}.`;
 }
 async function checkForUpdate(ctx) {
-  if (ctx.policy === "off") return "skipped";
   const now = ctx.now?.() ?? Date.now();
   const state = ctx.load();
   if (state.lastCheckedAt !== void 0 && now - state.lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) {
@@ -47,7 +36,7 @@ async function checkForUpdate(ctx) {
   const installed = ctx.installed ?? PLUGIN_VERSION;
   let latest;
   try {
-    latest = await fetchLatestVersion(ctx.url, ctx.fetchImpl);
+    latest = await fetchLatestVersion(ctx.url ?? UPDATE_CHECK_URL, ctx.fetchImpl);
   } catch (error) {
     ctx.log(`filament-update: could not read the latest version: ${String(error)}`);
     return "failed";
@@ -55,11 +44,6 @@ async function checkForUpdate(ctx) {
   if (!isNewerVersion(latest, installed)) {
     ctx.log(`filament-update: v${installed} is current`);
     return "current";
-  }
-  if (ctx.policy === "auto") {
-    ctx.log(`filament-update: v${latest} is available; updating from v${installed}`);
-    await ctx.update();
-    return "updating";
   }
   if (state.notifiedVersion === latest) return "already-notified";
   ctx.log(`filament-update: v${latest} is available (installed v${installed})`);
@@ -97,14 +81,12 @@ async function runPluginUpdate(run = runOpenclawCli) {
   return result;
 }
 export {
-  DEFAULT_UPDATE_CHECK_URL,
   UPDATE_CHECK_INTERVAL_MS,
+  UPDATE_CHECK_URL,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
   checkForUpdate,
   fetchLatestVersion,
-  resolveUpdateCheckUrl,
-  resolveUpdatePolicy,
   runPluginUpdate,
   runUpdateChecks,
   updateNoticeBody,

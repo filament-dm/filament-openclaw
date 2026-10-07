@@ -1,11 +1,11 @@
 ---
 name: Bump version
 
-# Manually-triggered release step. Bumps the plugin version in the three places
-# that must agree (package.json, openclaw.plugin.json, src/version.ts), rebuilds
-# dist/ (which is committed: gateways install from the git ref), commits to main
-# and tags vX.Y.Z. Running gateways notice the new manifest on `main` within a
-# day and offer the update in the principal's backchannel.
+# Manually-triggered release step: `npm version` on main. Its `version` lifecycle
+# script copies the number into openclaw.plugin.json and src/version.ts and
+# rebuilds dist/ (committed: gateways install from the git ref); npm commits
+# "Release vX.Y.Z" and tags it. Running gateways see the new manifest on main
+# within a day and offer the update in the principal's backchannel.
 
 on:
   workflow_dispatch:
@@ -33,23 +33,10 @@ jobs:
 
       - run: npm ci
 
-      - name: Bump
-        id: bump
-        run: |
-          out="$(node scripts/bump-version.mjs "${{ inputs.level }}")"
-          echo "$out"
-          echo "version=${out##* }" >> "$GITHUB_OUTPUT"
-
-      - name: Rebuild dist and verify
-        run: |
-          npm run build
-          npm test
-
-      - name: Commit and tag
+      - name: Bump, rebuild, commit, tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json openclaw.plugin.json src/version.ts dist
-          git commit -m "Release v${{ steps.bump.outputs.version }}"
-          git tag "v${{ steps.bump.outputs.version }}"
-          git push origin main "v${{ steps.bump.outputs.version }}"
+          npm version "${{ inputs.level }}" -m "Release v%s"
+
+      - run: git push --follow-tags origin main

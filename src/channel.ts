@@ -61,13 +61,7 @@ import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
-import {
-  resolveUpdateCheckUrl,
-  resolveUpdatePolicy,
-  runPluginUpdate,
-  runUpdateChecks,
-  updatedBody,
-} from "./update-check.js";
+import { runPluginUpdate, runUpdateChecks, updatedBody } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 import type { WorkItem } from "./work-item.js";
 
@@ -422,23 +416,12 @@ export function registerFilamentChannel(
             );
             await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION));
           }
-          const policy = resolveUpdatePolicy(pluginConfig);
-          if (policy !== "off") {
-            void runUpdateChecks(
-              {
-                policy,
-                url: resolveUpdateCheckUrl(),
-                load: loadUpdateState,
-                save: saveUpdateState,
-                say: sayToPrincipal,
-                update: runUpdate,
-                log: accountLog,
-              },
-              abortSignal,
-            ).catch((error) => {
-              accountLog(`filament-update: checks stopped: ${String(error)}`);
-            });
-          }
+          void runUpdateChecks(
+            { load: loadUpdateState, save: saveUpdateState, say: sayToPrincipal, log: accountLog },
+            abortSignal,
+          ).catch((error) => {
+            accountLog(`filament-update: checks stopped: ${String(error)}`);
+          });
         }
 
         if (connection) {

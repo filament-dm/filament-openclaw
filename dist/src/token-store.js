@@ -11,95 +11,27 @@ const GREETING_NAMESPACE = "bound-greetings";
 const UPDATE_STATE_NAMESPACE = "update-state";
 const UPDATE_REQUEST_NAMESPACE = "update-requests";
 const UPDATE_STATE_KEY = "gateway";
-let idStore = null;
-let bearerStore = null;
-let fcmStore = null;
-let receivedStore = null;
-let choiceAskedStore = null;
-let greetingStore = null;
-let updateStateStore = null;
-let updateRequestStore = null;
-function fcmStoreInstance() {
-  if (!fcmStore) {
-    fcmStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: FCM_NAMESPACE,
-      maxEntries: 32,
+const stores = /* @__PURE__ */ new Map();
+function store(namespace, maxEntries = 32) {
+  let instance = stores.get(namespace);
+  if (!instance) {
+    instance = createPluginStateSyncKeyedStore(PLUGIN_ID, {
+      namespace,
+      maxEntries,
       overflowPolicy: "evict-oldest"
     });
+    stores.set(namespace, instance);
   }
-  return fcmStore;
+  return instance;
 }
-function receivedStoreInstance() {
-  if (!receivedStore) {
-    receivedStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: RECEIVED_IDS_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return receivedStore;
-}
-function choiceAskedStoreInstance() {
-  if (!choiceAskedStore) {
-    choiceAskedStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: CHOICE_ASKED_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return choiceAskedStore;
-}
-function greetingStoreInstance() {
-  if (!greetingStore) {
-    greetingStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: GREETING_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return greetingStore;
-}
-function updateStateStoreInstance() {
-  if (!updateStateStore) {
-    updateStateStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: UPDATE_STATE_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return updateStateStore;
-}
-function updateRequestStoreInstance() {
-  if (!updateRequestStore) {
-    updateRequestStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: UPDATE_REQUEST_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return updateRequestStore;
-}
-function identityStore() {
-  if (!idStore) {
-    idStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: IDENTITY_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return idStore;
-}
-function bearerStoreInstance() {
-  if (!bearerStore) {
-    bearerStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
-      namespace: BEARER_NAMESPACE,
-      // Read only, but the options must not change: see FCM_NAMESPACE.
-      maxEntries: 16,
-      overflowPolicy: "evict-oldest"
-    });
-  }
-  return bearerStore;
-}
+const fcmStoreInstance = () => store(FCM_NAMESPACE);
+const receivedStoreInstance = () => store(RECEIVED_IDS_NAMESPACE);
+const choiceAskedStoreInstance = () => store(CHOICE_ASKED_NAMESPACE);
+const greetingStoreInstance = () => store(GREETING_NAMESPACE);
+const updateStateStoreInstance = () => store(UPDATE_STATE_NAMESPACE, 4);
+const updateRequestStoreInstance = () => store(UPDATE_REQUEST_NAMESPACE);
+const identityStore = () => store(IDENTITY_NAMESPACE);
+const bearerStoreInstance = () => store(BEARER_NAMESPACE, 16);
 function bearerKey(connectToken) {
   return createHash("sha256").update(connectToken).digest("hex").slice(0, 16);
 }

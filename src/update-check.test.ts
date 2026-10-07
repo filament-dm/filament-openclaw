@@ -3,7 +3,6 @@ import { test } from "node:test";
 
 import {
   checkForUpdate,
-  resolveUpdatePolicy,
   runPluginUpdate,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
@@ -25,9 +24,7 @@ function manifest(version: string): typeof fetch {
 function harness(overrides: Partial<UpdateCheckContext> = {}) {
   let state: UpdateCheckState = {};
   const said: string[] = [];
-  const updates: number[] = [];
   const ctx: UpdateCheckContext = {
-    policy: "notify",
     installed: "0.1.0",
     url: "https://example.test/openclaw.plugin.json",
     fetchImpl: manifest("0.2.0"),
@@ -39,23 +36,12 @@ function harness(overrides: Partial<UpdateCheckContext> = {}) {
       said.push(body);
       return true;
     },
-    update: async () => {
-      updates.push(1);
-    },
     log: () => {},
     now: () => 1_000_000,
     ...overrides,
   };
-  return { ctx, said, updates, state: () => state };
+  return { ctx, said, state: () => state };
 }
-
-test("resolveUpdatePolicy: config wins, then the disable env, then notify", () => {
-  assert.equal(resolveUpdatePolicy({ updates: "auto" }, {}), "auto");
-  assert.equal(resolveUpdatePolicy({ updates: "OFF" }, {}), "off");
-  assert.equal(resolveUpdatePolicy({}, { FILAMENT_DISABLE_UPDATE_CHECK: "true" }), "off");
-  assert.equal(resolveUpdatePolicy({ updates: "nonsense" }, {}), "notify");
-  assert.equal(resolveUpdatePolicy(undefined, {}), "notify");
-});
 
 test("checkForUpdate: a newer version is announced once, with the button and the command", async () => {
   const h = harness();
@@ -84,15 +70,6 @@ test("checkForUpdate: at most one fetch a day across the gateway, whichever acco
   h.ctx.now = () => 1_000_000 + DAY / 2;
   assert.equal(await checkForUpdate(h.ctx), "skipped");
   assert.equal(fetches, 1);
-});
-
-test("checkForUpdate: off never fetches; auto updates instead of asking", async () => {
-  const off = harness({ policy: "off" });
-  assert.equal(await checkForUpdate(off.ctx), "skipped");
-  const auto = harness({ policy: "auto" });
-  assert.equal(await checkForUpdate(auto.ctx), "updating");
-  assert.deepEqual(auto.updates, [1]);
-  assert.deepEqual(auto.said, []);
 });
 
 test("checkForUpdate: a failed fetch is logged, counted as a check, and never announced", async () => {

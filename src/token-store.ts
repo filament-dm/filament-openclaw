@@ -59,109 +59,37 @@ type SyncStore<T> = {
   register(key: string, value: T): void;
 };
 
-let idStore: SyncStore<AgentIdentity> | null = null;
-let bearerStore: SyncStore<StoredBearer> | null = null;
-let fcmStore: SyncStore<StoredFcm> | null = null;
-let receivedStore: SyncStore<string[]> | null = null;
-let choiceAskedStore: SyncStore<number> | null = null;
 // Tagged with the account that left it, so a losing bind clears only its own.
 interface StoredGreeting {
   from: string;
   body: string;
 }
 
-let greetingStore: SyncStore<StoredGreeting> | null = null;
-let updateStateStore: SyncStore<UpdateCheckState> | null = null;
-let updateRequestStore: SyncStore<{ fromVersion: string }> | null = null;
+const stores = new Map<string, SyncStore<unknown>>();
 
-function fcmStoreInstance(): SyncStore<StoredFcm> {
-  if (!fcmStore) {
-    fcmStore = createPluginStateSyncKeyedStore<StoredFcm>(PLUGIN_ID, {
-      namespace: FCM_NAMESPACE,
-      maxEntries: 32,
+/** One store per namespace, opened on first use and kept for the life of the module. */
+function store<T>(namespace: string, maxEntries = 32): SyncStore<T> {
+  let instance = stores.get(namespace);
+  if (!instance) {
+    instance = createPluginStateSyncKeyedStore<T>(PLUGIN_ID, {
+      namespace,
+      maxEntries,
       overflowPolicy: "evict-oldest",
-    }) as SyncStore<StoredFcm>;
+    }) as SyncStore<unknown>;
+    stores.set(namespace, instance);
   }
-  return fcmStore;
+  return instance as SyncStore<T>;
 }
 
-function receivedStoreInstance(): SyncStore<string[]> {
-  if (!receivedStore) {
-    receivedStore = createPluginStateSyncKeyedStore<string[]>(PLUGIN_ID, {
-      namespace: RECEIVED_IDS_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<string[]>;
-  }
-  return receivedStore;
-}
-
-function choiceAskedStoreInstance(): SyncStore<number> {
-  if (!choiceAskedStore) {
-    choiceAskedStore = createPluginStateSyncKeyedStore<number>(PLUGIN_ID, {
-      namespace: CHOICE_ASKED_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<number>;
-  }
-  return choiceAskedStore;
-}
-
-function greetingStoreInstance(): SyncStore<StoredGreeting> {
-  if (!greetingStore) {
-    greetingStore = createPluginStateSyncKeyedStore<StoredGreeting>(PLUGIN_ID, {
-      namespace: GREETING_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<StoredGreeting>;
-  }
-  return greetingStore;
-}
-
-function updateStateStoreInstance(): SyncStore<UpdateCheckState> {
-  if (!updateStateStore) {
-    updateStateStore = createPluginStateSyncKeyedStore<UpdateCheckState>(PLUGIN_ID, {
-      namespace: UPDATE_STATE_NAMESPACE,
-      maxEntries: 4,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<UpdateCheckState>;
-  }
-  return updateStateStore;
-}
-
-function updateRequestStoreInstance(): SyncStore<{ fromVersion: string }> {
-  if (!updateRequestStore) {
-    updateRequestStore = createPluginStateSyncKeyedStore<{ fromVersion: string }>(PLUGIN_ID, {
-      namespace: UPDATE_REQUEST_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<{ fromVersion: string }>;
-  }
-  return updateRequestStore;
-}
-
-function identityStore(): SyncStore<AgentIdentity> {
-  if (!idStore) {
-    idStore = createPluginStateSyncKeyedStore<AgentIdentity>(PLUGIN_ID, {
-      namespace: IDENTITY_NAMESPACE,
-      maxEntries: 32,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<AgentIdentity>;
-  }
-  return idStore;
-}
-
-function bearerStoreInstance(): SyncStore<StoredBearer> {
-  if (!bearerStore) {
-    bearerStore = createPluginStateSyncKeyedStore<StoredBearer>(PLUGIN_ID, {
-      namespace: BEARER_NAMESPACE,
-      // Read only, but the options must not change: see FCM_NAMESPACE.
-      maxEntries: 16,
-      overflowPolicy: "evict-oldest",
-    }) as SyncStore<StoredBearer>;
-  }
-  return bearerStore;
-}
+const fcmStoreInstance = () => store<StoredFcm>(FCM_NAMESPACE);
+const receivedStoreInstance = () => store<string[]>(RECEIVED_IDS_NAMESPACE);
+const choiceAskedStoreInstance = () => store<number>(CHOICE_ASKED_NAMESPACE);
+const greetingStoreInstance = () => store<StoredGreeting>(GREETING_NAMESPACE);
+const updateStateStoreInstance = () => store<UpdateCheckState>(UPDATE_STATE_NAMESPACE, 4);
+const updateRequestStoreInstance = () => store<{ fromVersion: string }>(UPDATE_REQUEST_NAMESPACE);
+const identityStore = () => store<AgentIdentity>(IDENTITY_NAMESPACE);
+// Read only, but the options must not change: see FCM_NAMESPACE.
+const bearerStoreInstance = () => store<StoredBearer>(BEARER_NAMESPACE, 16);
 
 /** Never store or log the connect token itself. */
 function bearerKey(connectToken: string): string {

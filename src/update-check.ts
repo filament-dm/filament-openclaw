@@ -3,7 +3,7 @@
  * Once a day one account fetches the plugin manifest from GitHub and compares it with the
  * installed version. A newer one is announced once, in the principal's backchannel, with a button
  * that runs `openclaw plugins update` through the CLI; the gateway hot-reloads the plugin and the
- * account comes back on the new version and says so. With `updates: auto` the update runs at once.
+ * account comes back on the new version and says so.
  */
 import { PLUGIN_ID } from "./accounts.js";
 import { type CliResult, type RunCli, runOpenclawCli } from "./config-write.js";
@@ -12,30 +12,12 @@ import { isNewerVersion, PLUGIN_VERSION } from "./version.js";
 
 export { UPDATE_NOW_LABEL };
 
-export type UpdatePolicy = "notify" | "auto" | "off";
-
-export const DEFAULT_UPDATE_CHECK_URL =
+export const UPDATE_CHECK_URL =
   "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
 
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
-
-/** Config `updates`, then `FILAMENT_DISABLE_UPDATE_CHECK`, then `notify`. */
-export function resolveUpdatePolicy(
-  pluginConfig: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): UpdatePolicy {
-  const raw = (pluginConfig as { updates?: unknown } | null)?.updates;
-  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (value === "notify" || value === "auto" || value === "off") return value;
-  const disabled = env.FILAMENT_DISABLE_UPDATE_CHECK?.trim().toLowerCase();
-  return disabled === "true" || disabled === "1" ? "off" : "notify";
-}
-
-export function resolveUpdateCheckUrl(env: NodeJS.ProcessEnv = process.env): string {
-  return env.FILAMENT_UPDATE_CHECK_URL?.trim() || DEFAULT_UPDATE_CHECK_URL;
-}
 
 export async function fetchLatestVersion(
   url: string,
@@ -73,29 +55,19 @@ export interface UpdateCheckState {
 }
 
 export interface UpdateCheckContext {
-  policy: UpdatePolicy;
   installed?: string;
-  url: string;
+  url?: string;
   fetchImpl?: typeof fetch;
   load: () => UpdateCheckState;
   save: (state: UpdateCheckState) => void;
   say: (markdownBody: string) => Promise<boolean>;
-  /** Runs the update; the reload that follows replaces the calling account. */
-  update: () => Promise<void>;
   log: (message: string) => void;
   now?: () => number;
 }
 
-export type UpdateCheckOutcome =
-  | "skipped"
-  | "current"
-  | "notified"
-  | "already-notified"
-  | "updating"
-  | "failed";
+export type UpdateCheckOutcome = "skipped" | "current" | "notified" | "already-notified" | "failed";
 
 export async function checkForUpdate(ctx: UpdateCheckContext): Promise<UpdateCheckOutcome> {
-  if (ctx.policy === "off") return "skipped";
   const now = ctx.now?.() ?? Date.now();
   const state = ctx.load();
   if (state.lastCheckedAt !== undefined && now - state.lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) {
@@ -106,7 +78,7 @@ export async function checkForUpdate(ctx: UpdateCheckContext): Promise<UpdateChe
   const installed = ctx.installed ?? PLUGIN_VERSION;
   let latest: string;
   try {
-    latest = await fetchLatestVersion(ctx.url, ctx.fetchImpl);
+    latest = await fetchLatestVersion(ctx.url ?? UPDATE_CHECK_URL, ctx.fetchImpl);
   } catch (error) {
     ctx.log(`filament-update: could not read the latest version: ${String(error)}`);
     return "failed";
@@ -114,11 +86,6 @@ export async function checkForUpdate(ctx: UpdateCheckContext): Promise<UpdateChe
   if (!isNewerVersion(latest, installed)) {
     ctx.log(`filament-update: v${installed} is current`);
     return "current";
-  }
-  if (ctx.policy === "auto") {
-    ctx.log(`filament-update: v${latest} is available; updating from v${installed}`);
-    await ctx.update();
-    return "updating";
   }
   if (state.notifiedVersion === latest) return "already-notified";
   ctx.log(`filament-update: v${latest} is available (installed v${installed})`);
