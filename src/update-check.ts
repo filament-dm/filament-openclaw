@@ -38,8 +38,6 @@ export function updateNoticeBody(latest: string, installed: string): string {
     `📦 A new version of the Filament plugin is available: v${latest} (this gateway runs v${installed}).`,
     "",
     `- [${UPDATE_NOW_LABEL}](filament:message-send)`,
-    "",
-    `Or run it on the machine hosting the gateway: \`${UPDATE_COMMAND}\`. The gateway reloads the plugin in place; no restart.`,
   ].join("\n");
 }
 

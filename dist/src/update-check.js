@@ -18,9 +18,7 @@ function updateNoticeBody(latest, installed) {
   return [
     `\u{1F4E6} A new version of the Filament plugin is available: v${latest} (this gateway runs v${installed}).`,
     "",
-    `- [${UPDATE_NOW_LABEL}](filament:message-send)`,
-    "",
-    `Or run it on the machine hosting the gateway: \`${UPDATE_COMMAND}\`. The gateway reloads the plugin in place; no restart.`
+    `- [${UPDATE_NOW_LABEL}](filament:message-send)`
   ].join("\n");
 }
 function updatedBody(previous, current) {

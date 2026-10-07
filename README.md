@@ -58,6 +58,7 @@ the installed version. A newer one is announced once, in the principal's backcha
 **Update now** button. Tapping it (or sending `/filament update` there) runs
 `openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
 reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+A bump on `main` takes a few minutes to show: `raw.githubusercontent.com` caches the manifest.
 
 The update is the whole plugin, dependencies included. If it reports a problem, run the connect
 command from the Filament app again: it replaces the plugin outright.
@@ -75,6 +76,8 @@ gateways install; the bump is what tells running ones about it.
 - **Follow the gateway log** with `openclaw logs --follow`. A connected agent logs a
   `[<account>] filament-connect: identity …` line.
 - **An agent you just connected stays "connecting".** Run `openclaw gateway restart`.
+- **`Plugin activation or recovery failed` in the gateway log, and the agent is gone.** Run
+  `openclaw plugins reload filament-openclaw`; no restart needed.
 - **`bearer rejected`.** The agent was deleted in Filament, or its token was revoked. Connect it
   again from the app.
 - **Upgrading from the `filament-fcm` plugin id.** Run `openclaw plugins uninstall filament-fcm`,

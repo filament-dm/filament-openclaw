@@ -44,14 +44,14 @@ function harness(overrides: Partial<UpdateCheckContext> = {}) {
   return { ctx, said, state: () => state };
 }
 
-test("checkForUpdate: a newer version is announced once, with the button and the command", async () => {
+test("checkForUpdate: a newer version is announced once, with the button and nothing to type", async () => {
   const h = harness();
   assert.equal(await checkForUpdate(h.ctx), "notified");
   assert.equal(h.said.length, 1);
   assert.match(h.said[0]!, /v0\.2\.0/);
   assert.match(h.said[0]!, /v0\.1\.0/);
   assert.ok(h.said[0]!.includes(`[${UPDATE_NOW_LABEL}](filament:message-send)`));
-  assert.ok(h.said[0]!.includes(UPDATE_COMMAND));
+  assert.ok(!h.said[0]!.includes(UPDATE_COMMAND));
   assert.deepEqual(h.state(), { lastCheckedAt: 1_000_000, notifiedVersion: "0.2.0" });
   // A day later, the same version is not announced again.
   h.ctx.now = () => 1_000_000 + DAY;
