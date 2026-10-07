@@ -7,11 +7,13 @@
  */
 import { PLUGIN_ID } from "./accounts.js";
 import { type CliResult, type RunCli, runOpenclawCli } from "./config-write.js";
-import { UPDATE_NOW_LABEL } from "./gateway.js";
 import type { UpdateCheckState } from "./state/updates.js";
 import { PLUGIN_VERSION } from "./version.js";
 
-export { UPDATE_NOW_LABEL, type UpdateCheckState };
+export type { UpdateCheckState };
+
+/** The notice's button: a suggested message sends its own text, so the text is what the gateway parses. */
+export const UPDATE_NOW_LABEL = "Update now";
 
 export const UPDATE_CHECK_URL =
   "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";

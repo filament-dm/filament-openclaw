@@ -6,6 +6,7 @@ import {
   pendingAccountId,
   PLUGIN_ID
 } from "./accounts.js";
+import { UPDATE_NOW_LABEL } from "./update-check.js";
 const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
 const IMPLICIT_AGENT_ID = "main";
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -58,7 +59,6 @@ function inventoryEntries(agents, statuses = []) {
 const STATUS_INVENTORY_ORIGIN = "openclaw-gateway-status";
 const MAX_REPORTED_STATUSES = 10;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const UPDATE_NOW_LABEL = "Update now";
 function parseGatewayCommand(body, fallbackRequestId) {
   const words = body.trim().toLowerCase() === UPDATE_NOW_LABEL.toLowerCase() ? ["/filament", "update"] : body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
@@ -289,7 +289,6 @@ export {
   AGENT_INVENTORY_ORIGIN,
   MAX_REPORTED_STATUSES,
   STATUS_INVENTORY_ORIGIN,
-  UPDATE_NOW_LABEL,
   applyAgentConnect,
   applyAgentDisconnect,
   applyPendingConnect,

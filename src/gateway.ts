@@ -18,6 +18,7 @@ import {
   pendingAccountId,
   PLUGIN_ID,
 } from "./accounts.js";
+import { UPDATE_NOW_LABEL } from "./update-check.js";
 import type { DispatchOutcome, WorkItem } from "./work-item.js";
 
 export const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
@@ -129,9 +130,6 @@ export type GatewayCommand = { requestId: string } &
   );
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-
-/** The update notice's button sends its own label back; it reads as `/filament update`. */
-export const UPDATE_NOW_LABEL = "Update now";
 
 /** A trailing request id keys the reported outcome; a hand-typed command gets the event id. */
 export function parseGatewayCommand(

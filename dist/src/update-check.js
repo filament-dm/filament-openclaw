@@ -1,7 +1,7 @@
 import { PLUGIN_ID } from "./accounts.js";
 import { runOpenclawCli } from "./config-write.js";
-import { UPDATE_NOW_LABEL } from "./gateway.js";
 import { PLUGIN_VERSION } from "./version.js";
+const UPDATE_NOW_LABEL = "Update now";
 const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 function isNewerVersion(candidate, installed) {
