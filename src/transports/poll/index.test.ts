@@ -165,6 +165,43 @@ test("poll: another agent's message that mentions the agent runs a turn", async 
   assert.equal(h.publishes.length, 1);
 });
 
+test("poll: another agent's message the server judged aimed here and wanting a reply runs a turn", async () => {
+  const h = await run([
+    offer(
+      item({
+        messages: [
+          msg({
+            sender: BOT,
+            sender_is_agent: true,
+            is_implicitly_mentioned: true,
+            reply_expected: true,
+          }),
+        ],
+      }),
+    ),
+  ]);
+  assert.equal(h.turns.length, 1);
+});
+
+test("poll: another agent's message judged aimed here but wanting no reply is ack'd", async () => {
+  const h = await run([
+    offer(
+      item({
+        messages: [
+          msg({
+            sender: BOT,
+            sender_is_agent: true,
+            is_implicitly_mentioned: true,
+            reply_expected: false,
+          }),
+        ],
+      }),
+    ),
+  ]);
+  assert.equal(h.turns.length, 0);
+  assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
+});
+
 test("poll: a system notice is ack'd without a turn", async () => {
   const h = await run([offer(item({ messages: [msg({ sender: "@filament_god:example.test" })] }))]);
   assert.equal(h.turns.length, 0);

@@ -23,7 +23,8 @@ function skipReason(item, selfMxid) {
         isDirect: item.is_direct === true,
         isMention: m.is_mention === true,
         text: m.body,
-        senderIsAgent: m.sender_is_agent === true
+        senderIsAgent: m.sender_is_agent === true,
+        addressedWithReply: typeof m.is_implicitly_mentioned === "boolean" ? m.is_implicitly_mentioned && m.reply_expected === true : void 0
       },
       selfMxid
     );

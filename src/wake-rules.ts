@@ -2,7 +2,8 @@
  * The per-message wake rules both transports share, applied before asking whether a channel
  * message was addressed to the agent. System notices match `@filament_god` on the agent's own
  * homeserver only, so an impersonator from another server is not treated as system. Another agent
- * never wakes this one without an explicit @-mention.
+ * wakes this one only with an explicit @-mention, or when the server's addressing judgement says
+ * the message is aimed at this agent and wants a reply.
  */
 
 export type WakeDecision = { wake: boolean; reason: string };
@@ -14,6 +15,8 @@ export interface WakeFacts {
   isMention: boolean;
   text: string | null | undefined;
   senderIsAgent: boolean;
+  /** The server judged the message addressed to this agent and wanting a reply; absent unjudged. */
+  addressedWithReply?: boolean;
 }
 
 function serverOf(mxid: string): string {
@@ -36,11 +39,15 @@ export function decideWakeBeforeAddressing(
   }
   if (isSystemSender(facts.senderId, selfMxid)) return { wake: false, reason: "system notice" };
   if (facts.isBackchannel) return { wake: true, reason: "backchannel" };
-  if (facts.isDirect && !facts.senderIsAgent) return { wake: true, reason: "direct message" };
+  const agentAsksUs = facts.senderIsAgent && facts.addressedWithReply === true;
+  if (facts.isDirect && (!facts.senderIsAgent || agentAsksUs)) {
+    return { wake: true, reason: "direct message" };
+  }
   const mentioned =
     facts.isMention ||
     (!!selfMxid && typeof facts.text === "string" && facts.text.includes(selfMxid));
   if (mentioned) return { wake: true, reason: "mention" };
+  if (agentAsksUs) return { wake: true, reason: "addressed by another agent" };
   if (facts.senderIsAgent) return { wake: false, reason: "agent sender, no mention" };
   return null;
 }

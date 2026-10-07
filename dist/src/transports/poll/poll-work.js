@@ -23,7 +23,9 @@ function parsePollWorkResponse(data) {
       body: typeof m.body === "string" && m.body ? m.body : m.has_media === true ? ATTACHMENT_ONLY_BODY : "",
       ts: typeof m.ts === "number" ? m.ts : 0,
       is_mention: m.is_mention === true,
-      sender_is_agent: m.sender_is_agent === true
+      sender_is_agent: m.sender_is_agent === true,
+      ...typeof m.is_implicitly_mentioned === "boolean" ? { is_implicitly_mentioned: m.is_implicitly_mentioned } : {},
+      ...typeof m.reply_expected === "boolean" ? { reply_expected: m.reply_expected } : {}
     }));
     const rw = r.reply_with;
     const replyWith = rw && typeof rw === "object" && typeof rw.tool === "string" ? {

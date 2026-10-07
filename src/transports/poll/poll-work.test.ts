@@ -400,6 +400,8 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
             is_reply_to_recipient: false,
             sender_is_agent: true,
             has_media: true,
+            is_implicitly_mentioned: true,
+            reply_expected: false,
           },
         ],
         reply_with: { tool: "post_message", args: { channel: "!dm:server" } },
@@ -412,6 +414,8 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
   assert.equal(parsed.work[0]!.is_direct, true);
   assert.equal(parsed.work[0]!.messages[0]!.is_mention, true);
   assert.equal(parsed.work[0]!.messages[0]!.sender_is_agent, true);
+  assert.equal(parsed.work[0]!.messages[0]!.is_implicitly_mentioned, true);
+  assert.equal(parsed.work[0]!.messages[0]!.reply_expected, false);
   assert.equal(parsed.work[0]!.messages[0]!.body, ATTACHMENT_ONLY_BODY);
   assert.deepEqual(parsed.invites, [{ room_id: "!loop:server" }]);
 });
