@@ -45,18 +45,20 @@ import {
   MAX_REPORTED_STATUSES,
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
+import { loadIdentity } from "./state/identities.js";
 import {
   choiceAsked,
   dropGreeting,
   leaveGreeting,
-  loadIdentity,
-  loadUpdateState,
   markChoiceAsked,
+  takeGreeting,
+} from "./state/pending.js";
+import {
+  loadUpdateState,
   markUpdateRequested,
   saveUpdateState,
-  takeGreeting,
   takeUpdateRequest,
-} from "./token-store.js";
+} from "./state/updates.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";

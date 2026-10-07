@@ -7,7 +7,7 @@ import { resolveBearer } from "./credentials.js";
 import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
-import { saveIdentity } from "./token-store.js";
+import { saveIdentity } from "./state/identities.js";
 
 const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;

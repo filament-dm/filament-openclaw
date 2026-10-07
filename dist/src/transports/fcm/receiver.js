@@ -5,7 +5,7 @@ import {
   loadReceivedIds,
   recordReceivedId,
   saveFcmCredentials
-} from "../../token-store.js";
+} from "../../state/fcm.js";
 import { sleepAbortable } from "../../util.js";
 const DEFAULT_CONNECT_ATTEMPTS = 12;
 const RETRY_BASE_MS = 1500;

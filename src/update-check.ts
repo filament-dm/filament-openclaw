@@ -8,9 +8,10 @@
 import { PLUGIN_ID } from "./accounts.js";
 import { type CliResult, type RunCli, runOpenclawCli } from "./config-write.js";
 import { UPDATE_NOW_LABEL } from "./gateway.js";
+import type { UpdateCheckState } from "./state/updates.js";
 import { isNewerVersion, PLUGIN_VERSION } from "./version.js";
 
-export { UPDATE_NOW_LABEL };
+export { UPDATE_NOW_LABEL, type UpdateCheckState };
 
 export const UPDATE_CHECK_URL =
   "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
@@ -46,12 +47,6 @@ export function updatedBody(previous: string, current: string): string {
   return isNewerVersion(current, previous)
     ? `Updated the Filament plugin to v${current} (from v${previous}).`
     : `The Filament plugin is already on the latest version, v${current}.`;
-}
-
-/** One record per gateway, shared by every account, so one check and one notice a day. */
-export interface UpdateCheckState {
-  lastCheckedAt?: number;
-  notifiedVersion?: string;
 }
 
 export interface UpdateCheckContext {
