@@ -73,6 +73,7 @@ async function runUpdateChecks(ctx, abortSignal, tickMs = 60 * 60 * 1e3) {
     } catch (error) {
       ctx.log(`filament-update: check failed: ${String(error)}`);
     }
+    if (abortSignal.aborted) break;
     await new Promise((resolve) => {
       const timer = setTimeout(done, tickMs);
       function done() {

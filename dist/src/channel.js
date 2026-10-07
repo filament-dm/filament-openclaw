@@ -164,11 +164,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           return wait === "timeout" ? "written" : "applied";
         };
+        let updateInFlight = false;
         const runUpdate = async () => {
+          if (updateInFlight) return;
+          updateInFlight = true;
           markUpdateRequested(accountId, PLUGIN_VERSION);
           const finished = startPluginUpdate();
           void finished.then((result) => {
             if (result.code === 0) return;
+            updateInFlight = false;
             takeUpdateRequest(accountId);
             const message = updateFailureMessage(result);
             accountLog(`filament-update: ${message}`);

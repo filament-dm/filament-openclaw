@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   checkForUpdate,
   isNewerVersion,
+  runUpdateChecks,
   startPluginUpdate,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
@@ -122,6 +123,19 @@ test("startPluginUpdate: starts the CLI update at once; the result is read later
     stderr: "not installed",
   }));
   assert.match(updateFailureMessage(failed), /failed \(exit 1\): not installed/);
+});
+
+test("runUpdateChecks: an abort during the check ends the loop without a sleep", async () => {
+  const aborted = new AbortController();
+  const h = harness({
+    fetchImpl: (async (...args: Parameters<typeof fetch>) => {
+      aborted.abort();
+      return manifest("0.1.0")(...args);
+    }) as typeof fetch,
+  });
+  const started = Date.now();
+  await runUpdateChecks(h.ctx, aborted.signal, 60 * 60 * 1000);
+  assert.ok(Date.now() - started < 1000);
 });
 
 test("updateNoticeBody: the button's label is the exact text the gateway reads as the command", () => {

@@ -544,6 +544,26 @@ test("handleGatewayItem: update runs the updater last, after any write, and repo
   assert.deepEqual(h.drafts, []);
 });
 
+test("handleGatewayItem: several update commands in one item start one update and share its outcome", async () => {
+  const h = harness("/filament update a1", {
+    messages: [
+      { event_id: "$e1", sender: PRINCIPAL, body: "/filament update a1", ts: 1 },
+      { event_id: "$e2", sender: PRINCIPAL, body: "/filament update a2", ts: 2 },
+    ],
+  });
+  let started = 0;
+  h.ctx.update = async () => {
+    started += 1;
+    throw new Error("no git");
+  };
+  await handleGatewayItem(h.ctx);
+  assert.equal(started, 1);
+  assert.deepEqual(
+    h.statuses.filter((s) => s.state === "failed").map((s) => s.requestId),
+    ["a1", "a2"],
+  );
+});
+
 test("handleGatewayItem: an update that fails is reported as failed; without an updater it is rejected", async () => {
   const failing = harness("/filament update");
   failing.ctx.update = async () => {

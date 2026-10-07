@@ -42,8 +42,9 @@ jobs:
           # The github-actions[bot] account (user id 41898282), so GitHub attributes the commit to it.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          version="$(npm version "${{ inputs.level }}" -m "Release v%s")"
-          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
+          npm version "${{ inputs.level }}" -m "Release v%s"
+          version="$(node -p 'require("./package.json").version')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Push v${{ steps.bump.outputs.version }}
         run: |

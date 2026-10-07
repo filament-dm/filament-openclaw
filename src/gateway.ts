@@ -369,16 +369,16 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
   const knownAgents = new Set(listGatewayAgents(ctx.gatewayConfig).map((a) => a.id));
   const statuses: GatewayStatus[] = [];
   const mutations: Array<(draft: Record<string, unknown>) => void> = [];
-  let update: GatewayStatus | undefined;
   for (const command of commands) {
     const base = { requestId: command.requestId };
     if (command.kind === "invalid") {
       statuses.push({ ...base, command: "invalid", state: "rejected", message: command.reason });
     } else if (command.kind === "update") {
-      update = ctx.update
-        ? { ...base, command: "update", state: "applied" }
-        : { ...base, command: "update", state: "rejected", message: "updates are off here" };
-      statuses.push(update);
+      statuses.push(
+        ctx.update
+          ? { ...base, command: "update", state: "applied" }
+          : { ...base, command: "update", state: "rejected", message: "updates are off here" },
+      );
     } else if (command.kind === "agents") {
       statuses.push({ ...base, command: "agents", state: "applied" });
     } else if (command.kind === "connect" && command.agentId === undefined) {
@@ -436,7 +436,9 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
         statuses
           .filter(
             (status) =>
-              status.state === "applied" && status.command !== "agents" && status !== update,
+              status.state === "applied" &&
+              status.command !== "agents" &&
+              status.command !== "update",
           )
           .map((status) =>
             failed(status, `Couldn't save the change on the gateway: ${String(error)}`),
@@ -446,14 +448,16 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
   } else if (mutations.length > 0) {
     log("filament-gateway: commands change nothing; skipping the write");
   }
-  // Last: the update reloads the plugin, and a write before it would be cut off.
-  if (update?.state === "applied" && ctx.update) {
+  // Last: the update reloads the plugin, and a write before it would be cut off. Several
+  // update commands in one item start one update and share its outcome.
+  const updates = statuses.filter((s) => s.command === "update" && s.state === "applied");
+  if (updates.length > 0 && ctx.update) {
     try {
       await ctx.update();
       log("filament-gateway: plugin update started");
     } catch (error) {
       log(`filament-gateway: plugin update failed: ${String(error)}`);
-      await report([failed(update, `Couldn't update the plugin: ${String(error)}`)]);
+      await report(updates.map((s) => failed(s, `Couldn't update the plugin: ${String(error)}`)));
     }
   }
   return done;

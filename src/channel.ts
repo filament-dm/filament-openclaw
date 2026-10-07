@@ -217,11 +217,15 @@ export function registerFilamentChannel(
         // Started, not awaited: the update reloads the plugin, and the reload needs this account
         // to stop. The marker outlives the account; the one that comes back reads it and says
         // what happened. Only a failure, which leaves this account alive, is reported from here.
+        let updateInFlight = false;
         const runUpdate = async (): Promise<void> => {
+          if (updateInFlight) return;
+          updateInFlight = true;
           markUpdateRequested(accountId, PLUGIN_VERSION);
           const finished = startPluginUpdate();
           void finished.then((result) => {
             if (result.code === 0) return;
+            updateInFlight = false;
             takeUpdateRequest(accountId);
             const message = updateFailureMessage(result);
             accountLog(`filament-update: ${message}`);
