@@ -41,12 +41,24 @@ import {
   dropGreeting,
   leaveGreeting,
   loadIdentity,
+  loadUpdateState,
   markChoiceAsked,
-  takeGreeting
+  markUpdateRequested,
+  saveUpdateState,
+  takeGreeting,
+  takeUpdateRequest
 } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
+import {
+  resolveUpdateCheckUrl,
+  resolveUpdatePolicy,
+  runPluginUpdate,
+  runUpdateChecks,
+  updatedBody
+} from "./update-check.js";
+import { PLUGIN_VERSION } from "./version.js";
 const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
@@ -151,6 +163,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           return wait === "timeout" ? "written" : "applied";
         };
+        const runUpdate = async () => {
+          markUpdateRequested(accountId, PLUGIN_VERSION);
+          try {
+            await runPluginUpdate();
+          } catch (error) {
+            takeUpdateRequest(accountId);
+            throw error;
+          }
+        };
         const sayToPrincipal = async (markdownBody) => {
           if (!connection) return false;
           const res = await connection.client.callTool(
@@ -178,8 +199,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               );
             },
             mutateConfig,
-            // Success is silent here: the new agent asks in its own chat. Only a
-            // refusal has nowhere else to show.
+            update: runUpdate,
+            // Success is silent here: the new agent asks in its own chat, and an
+            // updated plugin says so on reconnect. Only a refusal has nowhere else to show.
             report: async (entries) => {
               const lines = entries.filter((status) => status.state !== "applied").map((status) => `Couldn't ${status.command}: ${status.message ?? status.state}`);
               if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
@@ -323,6 +345,30 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           const greeting = takeGreeting(accountId);
           if (greeting && !await sayToPrincipal(greeting)) {
             accountLog("filament-choose: could not greet as the bound agent");
+          }
+          const updateRequest = takeUpdateRequest(accountId);
+          if (updateRequest) {
+            accountLog(
+              `filament-update: back on v${PLUGIN_VERSION} (was v${updateRequest.fromVersion})`
+            );
+            await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION));
+          }
+          const policy = resolveUpdatePolicy(pluginConfig);
+          if (policy !== "off") {
+            void runUpdateChecks(
+              {
+                policy,
+                url: resolveUpdateCheckUrl(),
+                load: loadUpdateState,
+                save: saveUpdateState,
+                say: sayToPrincipal,
+                update: runUpdate,
+                log: accountLog
+              },
+              abortSignal
+            ).catch((error) => {
+              accountLog(`filament-update: checks stopped: ${String(error)}`);
+            });
           }
         }
         if (connection) {

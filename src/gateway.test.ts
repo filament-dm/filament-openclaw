@@ -516,3 +516,46 @@ test("isGatewayCommandItem: only a principal's /filament line in this backchanne
     false,
   );
 });
+
+test("parseGatewayCommand: update, by verb or by the notice's button label", () => {
+  assert.deepEqual(parseGatewayCommand("/filament update", "x"), {
+    kind: "update",
+    requestId: "x",
+  });
+  assert.deepEqual(parseGatewayCommand("/filament update r1", "x"), {
+    kind: "update",
+    requestId: "r1",
+  });
+  assert.deepEqual(parseGatewayCommand("Update now", "x"), { kind: "update", requestId: "x" });
+  assert.deepEqual(parseGatewayCommand("  update NOW ", "x"), { kind: "update", requestId: "x" });
+  assert.equal(parseGatewayCommand("update it now please", "x"), null);
+});
+
+test("handleGatewayItem: update runs the updater last, after any write, and reports applied", async () => {
+  const h = harness("/filament update");
+  const order: string[] = [];
+  h.ctx.update = async () => {
+    order.push("update");
+  };
+  h.ctx.scope = "connect";
+  assert.deepEqual(await handleGatewayItem(h.ctx), { kind: "silent" });
+  assert.deepEqual(order, ["update"]);
+  assert.deepEqual(h.statuses, [{ requestId: "e1", command: "update", state: "applied" }]);
+  assert.deepEqual(h.drafts, []);
+});
+
+test("handleGatewayItem: an update that fails is reported as failed; without an updater it is rejected", async () => {
+  const failing = harness("/filament update");
+  failing.ctx.update = async () => {
+    throw new Error("git: cannot reach origin");
+  };
+  await handleGatewayItem(failing.ctx);
+  assert.equal(failing.statuses.at(-1)?.state, "failed");
+  assert.match(failing.statuses.at(-1)?.message ?? "", /cannot reach origin/);
+  const none = harness("Update now");
+  await handleGatewayItem(none.ctx);
+  assert.deepEqual(
+    none.statuses.map((s) => s.state),
+    ["rejected"],
+  );
+});

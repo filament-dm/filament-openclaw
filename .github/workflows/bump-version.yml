@@ -1,0 +1,55 @@
+---
+name: Bump version
+
+# Manually-triggered release step. Bumps the plugin version in the three places
+# that must agree (package.json, openclaw.plugin.json, src/version.ts), rebuilds
+# dist/ (which is committed: gateways install from the git ref), commits to main
+# and tags vX.Y.Z. Running gateways notice the new manifest on `main` within a
+# day and offer the update in the principal's backchannel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "patch, minor, major, or an explicit x.y.z"
+        required: true
+        default: patch
+
+permissions:
+  contents: write # push the bump commit and its tag
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Bump
+        id: bump
+        run: |
+          out="$(node scripts/bump-version.mjs "${{ inputs.level }}")"
+          echo "$out"
+          echo "version=${out##* }" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild dist and verify
+        run: |
+          npm run build
+          npm test
+
+      - name: Commit and tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json openclaw.plugin.json src/version.ts dist
+          git commit -m "Release v${{ steps.bump.outputs.version }}"
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin main "v${{ steps.bump.outputs.version }}"

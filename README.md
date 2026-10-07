@@ -44,12 +44,37 @@ it. Each connected agent is an entry under `accounts`.
 | `transport` | `FILAMENT_TRANSPORT` | `poll` (default) or `fcm` |
 | `firebase` | `FILAMENT_FIREBASE_*` | Firebase project of a non-production server (`fcm` only) |
 | `pollWaitSeconds` | | How long each poll waits for work, 1–60 s (default 30, `poll` only) |
+| `updates` | `FILAMENT_DISABLE_UPDATE_CHECK` | `notify` (default), `auto`, or `off`; see Updates |
 
 ## Transports
 
 By default the agent long-polls Filament for work (`poll`), which needs no push registration and
 no connection to Google. With `transport: fcm` it receives messages as push notifications instead,
 registered with the Firebase project the server names. Both use the same token, tools and replies.
+
+## Updates
+
+Once a day the plugin reads `openclaw.plugin.json` from this repo's `main` and compares it with
+the installed version. A newer one is announced once, in the principal's backchannel, with an
+**Update now** button. Tapping it (or sending `/filament update` there) runs
+`openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
+reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+
+- `updates: auto` applies a newer version as soon as the check finds it, without asking.
+- `updates: off` (or `FILAMENT_DISABLE_UPDATE_CHECK=true`) turns the check off: air-gapped
+  gateways, or a developer running a checkout.
+- `FILAMENT_UPDATE_CHECK_URL` points the check at another manifest, for tests.
+
+The update is the whole plugin, dependencies included. If it reports a problem, run the connect
+command from the Filament app again: it replaces the plugin outright.
+
+### Releasing
+
+The version lives in `package.json`, `openclaw.plugin.json` and `src/version.ts`, and a test
+keeps them equal. Bump it with the **Bump version** workflow (Actions → Bump version → Run
+workflow → `patch`, `minor`, `major` or `x.y.z`): it rebuilds `dist/`, commits `Release vX.Y.Z` to
+`main` and tags it. Locally, `npm run version:bump patch` does the same edit without committing.
+A merge to `main` is already what gateways install; the bump is what tells running ones about it.
 
 ## Troubleshooting
 

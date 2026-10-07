@@ -8,12 +8,17 @@ const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
 const CHOICE_ASKED_NAMESPACE = "choice-asked";
 const GREETING_NAMESPACE = "bound-greetings";
+const UPDATE_STATE_NAMESPACE = "update-state";
+const UPDATE_REQUEST_NAMESPACE = "update-requests";
+const UPDATE_STATE_KEY = "gateway";
 let idStore = null;
 let bearerStore = null;
 let fcmStore = null;
 let receivedStore = null;
 let choiceAskedStore = null;
 let greetingStore = null;
+let updateStateStore = null;
+let updateRequestStore = null;
 function fcmStoreInstance() {
   if (!fcmStore) {
     fcmStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
@@ -53,6 +58,26 @@ function greetingStoreInstance() {
     });
   }
   return greetingStore;
+}
+function updateStateStoreInstance() {
+  if (!updateStateStore) {
+    updateStateStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
+      namespace: UPDATE_STATE_NAMESPACE,
+      maxEntries: 4,
+      overflowPolicy: "evict-oldest"
+    });
+  }
+  return updateStateStore;
+}
+function updateRequestStoreInstance() {
+  if (!updateRequestStore) {
+    updateRequestStore = createPluginStateSyncKeyedStore(PLUGIN_ID, {
+      namespace: UPDATE_REQUEST_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest"
+    });
+  }
+  return updateRequestStore;
 }
 function identityStore() {
   if (!idStore) {
@@ -130,6 +155,21 @@ function takeGreeting(accountId) {
   greetingStoreInstance().register(accountId, { from: stored.from, body: "" });
   return stored.body;
 }
+function loadUpdateState() {
+  return updateStateStoreInstance().lookup(UPDATE_STATE_KEY) ?? {};
+}
+function saveUpdateState(state) {
+  updateStateStoreInstance().register(UPDATE_STATE_KEY, state);
+}
+function markUpdateRequested(accountId, fromVersion) {
+  updateRequestStoreInstance().register(accountId, { fromVersion });
+}
+function takeUpdateRequest(accountId) {
+  const stored = updateRequestStoreInstance().lookup(accountId);
+  if (!stored?.fromVersion) return void 0;
+  updateRequestStoreInstance().register(accountId, { fromVersion: "" });
+  return stored;
+}
 export {
   choiceAsked,
   dropGreeting,
@@ -139,9 +179,13 @@ export {
   loadFcmCredentials,
   loadIdentity,
   loadReceivedIds,
+  loadUpdateState,
   markChoiceAsked,
+  markUpdateRequested,
   recordReceivedId,
   saveFcmCredentials,
   saveIdentity,
-  takeGreeting
+  saveUpdateState,
+  takeGreeting,
+  takeUpdateRequest
 };

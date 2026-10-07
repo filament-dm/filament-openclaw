@@ -1,3 +1,4 @@
+import { PLUGIN_VERSION } from "./version.js";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_TIMEOUT_MS = 15e3;
 const POLL_TIMEOUT_MARGIN_MS = 15e3;
@@ -43,7 +44,7 @@ function classifyJsonRpcError(error) {
 class FilamentMcpClient {
   constructor(mcpUrl, token, clientInfo = {
     name: "filament-openclaw",
-    version: "0.1.0"
+    version: PLUGIN_VERSION
   }, fetchImpl = fetch) {
     this.mcpUrl = mcpUrl;
     this.token = token;

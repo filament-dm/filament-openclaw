@@ -111,7 +111,7 @@ export const MAX_REPORTED_STATUSES = 10;
  */
 export interface GatewayStatus {
   requestId: string;
-  command: "connect" | "disconnect" | "unpair" | "agents" | "invalid";
+  command: "connect" | "disconnect" | "unpair" | "agents" | "update" | "invalid";
   agentId?: string;
   state: "applied" | "rejected" | "failed";
   message?: string;
@@ -124,17 +124,24 @@ export type GatewayCommand = { requestId: string } &
     | { kind: "disconnect"; agentId: string }
     | { kind: "unpair" }
     | { kind: "agents" }
+    | { kind: "update" }
     | { kind: "invalid"; reason: string }
   );
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The update notice's button sends its own label back; it reads as `/filament update`. */
+export const UPDATE_NOW_LABEL = "Update now";
 
 /** A trailing request id keys the reported outcome; a hand-typed command gets the event id. */
 export function parseGatewayCommand(
   body: string,
   fallbackRequestId: string,
 ): GatewayCommand | null {
-  const words = body.trim().split(/\s+/);
+  const words =
+    body.trim().toLowerCase() === UPDATE_NOW_LABEL.toLowerCase()
+      ? ["/filament", "update"]
+      : body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
   const verb = words[1];
   const args = words.slice(2);
@@ -149,8 +156,10 @@ export function parseGatewayCommand(
   const requestId =
     extra.length === 1 && REQUEST_ID_PATTERN.test(extra[0]!) ? extra[0]! : fallbackRequestId;
   const invalid = (reason: string): GatewayCommand => ({ kind: "invalid", reason, requestId });
-  if (!["connect", "disconnect", "unpair", "agents"].includes(verb ?? "")) {
-    return invalid("commands: agents, connect <agent-id> <token>, disconnect <agent-id>, unpair");
+  if (!["connect", "disconnect", "unpair", "agents", "update"].includes(verb ?? "")) {
+    return invalid(
+      "commands: agents, connect <agent-id> <token>, disconnect <agent-id>, unpair, update",
+    );
   }
   if (args.length < arity || extra.length > 1 || (extra.length === 1 && requestId !== extra[0])) {
     return invalid(
@@ -161,6 +170,7 @@ export function parseGatewayCommand(
   }
   if (verb === "agents") return { kind: "agents", requestId };
   if (verb === "unpair") return { kind: "unpair", requestId };
+  if (verb === "update") return { kind: "update", requestId };
   if (tokenOnly) return { kind: "connect", token: args[0]!, requestId };
   const agentId = args[0]!;
   if (!AGENT_ID_PATTERN.test(agentId) || RESERVED_ACCOUNT_IDS.has(agentId)) {
@@ -300,8 +310,9 @@ function ensureRecord(parent: Record<string, unknown>, key: string): Record<stri
 export interface GatewayItemContext {
   item: WorkItem;
   /**
-   * `control`: every command. `connect`: only `/filament connect <token>`; a connected agent's
-   * account must not disconnect or unpair what other accounts, or other principals, own.
+   * `control`: every command. `connect`: only `/filament connect <token>` and `/filament update`; a
+   * connected agent's account must not disconnect or unpair what other accounts, or other
+   * principals, own.
    */
   scope?: "control" | "connect";
   principal: string | undefined;
@@ -309,6 +320,8 @@ export interface GatewayItemContext {
   gatewayConfig: unknown;
   consume: (upToEventId: string) => Promise<void>;
   mutateConfig: (mutate: (draft: Record<string, unknown>) => void) => Promise<void>;
+  /** Updates the plugin; the reload that follows replaces this account. Absent: `update` is rejected. */
+  update?: () => Promise<void>;
   report: (statuses: GatewayStatus[]) => Promise<void>;
   log: (message: string) => void;
 }
@@ -337,10 +350,11 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
     .map((command): GatewayCommand => {
       if (ctx.scope !== "connect" || command.kind === "invalid") return command;
       if (command.kind === "connect" && command.agentId === undefined) return command;
+      if (command.kind === "update") return command;
       return {
         kind: "invalid",
         requestId: command.requestId,
-        reason: "only `/filament connect <connect-token>` is accepted here",
+        reason: "only `/filament connect <connect-token>` and `/filament update` are accepted here",
       };
     });
   // Consume first: a config write reloads the plugin, this account included,
@@ -354,10 +368,16 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
   const knownAgents = new Set(listGatewayAgents(ctx.gatewayConfig).map((a) => a.id));
   const statuses: GatewayStatus[] = [];
   const mutations: Array<(draft: Record<string, unknown>) => void> = [];
+  let update: GatewayStatus | undefined;
   for (const command of commands) {
     const base = { requestId: command.requestId };
     if (command.kind === "invalid") {
       statuses.push({ ...base, command: "invalid", state: "rejected", message: command.reason });
+    } else if (command.kind === "update") {
+      update = ctx.update
+        ? { ...base, command: "update", state: "applied" }
+        : { ...base, command: "update", state: "rejected", message: "updates are off here" };
+      statuses.push(update);
     } else if (command.kind === "agents") {
       statuses.push({ ...base, command: "agents", state: "applied" });
     } else if (command.kind === "connect" && command.agentId === undefined) {
@@ -400,24 +420,40 @@ export async function handleGatewayItem(ctx: GatewayItemContext): Promise<Dispat
   const mutate = (draft: Record<string, unknown>) => {
     for (const apply of mutations) apply(draft);
   };
-  if (mutations.length === 0 || !wouldChange(ctx.gatewayConfig, mutate)) {
-    if (mutations.length > 0) log("filament-gateway: commands change nothing; skipping the write");
-    return done;
+  const failed = (status: GatewayStatus, message: string): GatewayStatus => ({
+    ...status,
+    state: "failed",
+    message,
+  });
+  if (mutations.length > 0 && wouldChange(ctx.gatewayConfig, mutate)) {
+    try {
+      await ctx.mutateConfig(mutate);
+      log(`filament-gateway: wrote ${commands.map((c) => c.kind).join(", ")}`);
+    } catch (error) {
+      log(`filament-gateway: config write failed: ${String(error)}`);
+      await report(
+        statuses
+          .filter(
+            (status) =>
+              status.state === "applied" && status.command !== "agents" && status !== update,
+          )
+          .map((status) =>
+            failed(status, `Couldn't save the change on the gateway: ${String(error)}`),
+          ),
+      );
+    }
+  } else if (mutations.length > 0) {
+    log("filament-gateway: commands change nothing; skipping the write");
   }
-  try {
-    await ctx.mutateConfig(mutate);
-    log(`filament-gateway: wrote ${commands.map((c) => c.kind).join(", ")}`);
-  } catch (error) {
-    log(`filament-gateway: config write failed: ${String(error)}`);
-    await report(
-      statuses
-        .filter((status) => status.state === "applied" && status.command !== "agents")
-        .map((status) => ({
-          ...status,
-          state: "failed" as const,
-          message: `Couldn't save the change on the gateway: ${String(error)}`,
-        })),
-    );
+  // Last: the update reloads the plugin, and a write before it would be cut off.
+  if (update?.state === "applied" && ctx.update) {
+    try {
+      await ctx.update();
+      log("filament-gateway: plugin update started");
+    } catch (error) {
+      log(`filament-gateway: plugin update failed: ${String(error)}`);
+      await report([failed(update, `Couldn't update the plugin: ${String(error)}`)]);
+    }
   }
   return done;
 }

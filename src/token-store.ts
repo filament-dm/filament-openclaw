@@ -10,6 +10,8 @@ import { createHash } from "node:crypto";
 
 import { createPluginStateSyncKeyedStore } from "openclaw/plugin-sdk/runtime-doctor";
 
+import type { UpdateCheckState } from "./update-check.js";
+
 export interface AgentIdentity {
   mxid: string;
   principal: string;
@@ -47,6 +49,9 @@ const IDENTITY_NAMESPACE = "identities";
 const BEARER_NAMESPACE = "bearers";
 const CHOICE_ASKED_NAMESPACE = "choice-asked";
 const GREETING_NAMESPACE = "bound-greetings";
+const UPDATE_STATE_NAMESPACE = "update-state";
+const UPDATE_REQUEST_NAMESPACE = "update-requests";
+const UPDATE_STATE_KEY = "gateway";
 
 // Structural: the store's runtime module is only present inside the gateway.
 type SyncStore<T> = {
@@ -66,6 +71,8 @@ interface StoredGreeting {
 }
 
 let greetingStore: SyncStore<StoredGreeting> | null = null;
+let updateStateStore: SyncStore<UpdateCheckState> | null = null;
+let updateRequestStore: SyncStore<{ fromVersion: string }> | null = null;
 
 function fcmStoreInstance(): SyncStore<StoredFcm> {
   if (!fcmStore) {
@@ -109,6 +116,28 @@ function greetingStoreInstance(): SyncStore<StoredGreeting> {
     }) as SyncStore<StoredGreeting>;
   }
   return greetingStore;
+}
+
+function updateStateStoreInstance(): SyncStore<UpdateCheckState> {
+  if (!updateStateStore) {
+    updateStateStore = createPluginStateSyncKeyedStore<UpdateCheckState>(PLUGIN_ID, {
+      namespace: UPDATE_STATE_NAMESPACE,
+      maxEntries: 4,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<UpdateCheckState>;
+  }
+  return updateStateStore;
+}
+
+function updateRequestStoreInstance(): SyncStore<{ fromVersion: string }> {
+  if (!updateRequestStore) {
+    updateRequestStore = createPluginStateSyncKeyedStore<{ fromVersion: string }>(PLUGIN_ID, {
+      namespace: UPDATE_REQUEST_NAMESPACE,
+      maxEntries: 32,
+      overflowPolicy: "evict-oldest",
+    }) as SyncStore<{ fromVersion: string }>;
+  }
+  return updateRequestStore;
 }
 
 function identityStore(): SyncStore<AgentIdentity> {
@@ -218,4 +247,25 @@ export function takeGreeting(accountId: string): string | undefined {
   if (!stored?.body) return undefined;
   greetingStoreInstance().register(accountId, { from: stored.from, body: "" });
   return stored.body;
+}
+
+/** Shared by every account on the gateway: when the version was last checked and which was announced. */
+export function loadUpdateState(): UpdateCheckState {
+  return updateStateStoreInstance().lookup(UPDATE_STATE_KEY) ?? {};
+}
+
+export function saveUpdateState(state: UpdateCheckState): void {
+  updateStateStoreInstance().register(UPDATE_STATE_KEY, state);
+}
+
+/** Left by the account that ran the update, read back by the same account after the reload. */
+export function markUpdateRequested(accountId: string, fromVersion: string): void {
+  updateRequestStoreInstance().register(accountId, { fromVersion });
+}
+
+export function takeUpdateRequest(accountId: string): { fromVersion: string } | undefined {
+  const stored = updateRequestStoreInstance().lookup(accountId);
+  if (!stored?.fromVersion) return undefined;
+  updateRequestStoreInstance().register(accountId, { fromVersion: "" });
+  return stored;
 }

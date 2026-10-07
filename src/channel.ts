@@ -50,13 +50,25 @@ import {
   dropGreeting,
   leaveGreeting,
   loadIdentity,
+  loadUpdateState,
   markChoiceAsked,
+  markUpdateRequested,
+  saveUpdateState,
   takeGreeting,
+  takeUpdateRequest,
 } from "./token-store.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
+import {
+  resolveUpdateCheckUrl,
+  resolveUpdatePolicy,
+  runPluginUpdate,
+  runUpdateChecks,
+  updatedBody,
+} from "./update-check.js";
+import { PLUGIN_VERSION } from "./version.js";
 import type { WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
@@ -201,6 +213,17 @@ export function registerFilamentChannel(
           });
           return wait === "timeout" ? "written" : "applied";
         };
+        // The request outlives this account: the reload that applies the update replaces it,
+        // and the account that comes back reads the marker and says what happened.
+        const runUpdate = async (): Promise<void> => {
+          markUpdateRequested(accountId, PLUGIN_VERSION);
+          try {
+            await runPluginUpdate();
+          } catch (error) {
+            takeUpdateRequest(accountId);
+            throw error;
+          }
+        };
         /** Resolves true only when the message landed. */
         const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {
           if (!connection) return false;
@@ -232,8 +255,9 @@ export function registerFilamentChannel(
               );
             },
             mutateConfig,
-            // Success is silent here: the new agent asks in its own chat. Only a
-            // refusal has nowhere else to show.
+            update: runUpdate,
+            // Success is silent here: the new agent asks in its own chat, and an
+            // updated plugin says so on reconnect. Only a refusal has nowhere else to show.
             report: async (entries) => {
               const lines = entries
                 .filter((status) => status.state !== "applied")
@@ -390,6 +414,30 @@ export function registerFilamentChannel(
           const greeting = takeGreeting(accountId);
           if (greeting && !(await sayToPrincipal(greeting))) {
             accountLog("filament-choose: could not greet as the bound agent");
+          }
+          const updateRequest = takeUpdateRequest(accountId);
+          if (updateRequest) {
+            accountLog(
+              `filament-update: back on v${PLUGIN_VERSION} (was v${updateRequest.fromVersion})`,
+            );
+            await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION));
+          }
+          const policy = resolveUpdatePolicy(pluginConfig);
+          if (policy !== "off") {
+            void runUpdateChecks(
+              {
+                policy,
+                url: resolveUpdateCheckUrl(),
+                load: loadUpdateState,
+                save: saveUpdateState,
+                say: sayToPrincipal,
+                update: runUpdate,
+                log: accountLog,
+              },
+              abortSignal,
+            ).catch((error) => {
+              accountLog(`filament-update: checks stopped: ${String(error)}`);
+            });
           }
         }
 
