@@ -111,6 +111,6 @@ test("startPluginUpdate: starts the CLI update at once; the result is read later
   assert.match(updateFailureMessage(failed), /failed \(exit 1\): not installed/);
 });
 
-test("updateNoticeBody: the button's label is the exact text the gateway reads as the command", () => {
+test("updateNoticeBody: the button sends the command itself", () => {
   assert.ok(updateNoticeBody("0.2.0", "0.1.0").includes(`[${UPDATE_NOW_LABEL}]`));
 });

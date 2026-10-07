@@ -13,6 +13,7 @@ import {
   applyAgentDisconnect,
   applyUnpair,
   parseGatewayCommand,
+  UPDATE_NOW_LABEL,
   wouldChange,
   type GatewayItemContext,
   type GatewayStatus,
@@ -517,7 +518,7 @@ test("isGatewayCommandItem: only a principal's /filament line in this backchanne
   );
 });
 
-test("parseGatewayCommand: update, by verb or by the notice's button label", () => {
+test("parseGatewayCommand: update, which is also what the notice's button sends", () => {
   assert.deepEqual(parseGatewayCommand("/filament update", "x"), {
     kind: "update",
     requestId: "x",
@@ -526,9 +527,8 @@ test("parseGatewayCommand: update, by verb or by the notice's button label", () 
     kind: "update",
     requestId: "r1",
   });
-  assert.deepEqual(parseGatewayCommand("Update now", "x"), { kind: "update", requestId: "x" });
-  assert.deepEqual(parseGatewayCommand("  update NOW ", "x"), { kind: "update", requestId: "x" });
-  assert.equal(parseGatewayCommand("update it now please", "x"), null);
+  assert.deepEqual(parseGatewayCommand(UPDATE_NOW_LABEL, "x"), { kind: "update", requestId: "x" });
+  assert.equal(parseGatewayCommand("Update now", "x"), null);
 });
 
 test("handleGatewayItem: update runs the updater last, after any write, and reports applied", async () => {
@@ -552,7 +552,7 @@ test("handleGatewayItem: an update that fails is reported as failed; without an 
   await handleGatewayItem(failing.ctx);
   assert.equal(failing.statuses.at(-1)?.state, "failed");
   assert.match(failing.statuses.at(-1)?.message ?? "", /cannot reach origin/);
-  const none = harness("Update now");
+  const none = harness("/filament update");
   await handleGatewayItem(none.ctx);
   assert.deepEqual(
     none.statuses.map((s) => s.state),

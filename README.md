@@ -55,10 +55,9 @@ registered with the Firebase project the server names. Both use the same token, 
 
 Once a day the plugin reads `openclaw.plugin.json` from this repo's `main` and compares it with
 the installed version. A newer one is announced once, in the principal's backchannel, with an
-**Update now** button. Tapping it (or sending `/filament update` there) runs
+button that sends `/filament update`. That runs
 `openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
 reloads the plugin in place, no restart, and the agent reports the new version when it is back.
-A bump on `main` takes a few minutes to show: `raw.githubusercontent.com` caches the manifest.
 
 The update is the whole plugin, dependencies included. If it reports a problem, run the connect
 command from the Filament app again: it replaces the plugin outright.

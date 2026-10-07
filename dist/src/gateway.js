@@ -58,9 +58,9 @@ function inventoryEntries(agents, statuses = []) {
 const STATUS_INVENTORY_ORIGIN = "openclaw-gateway-status";
 const MAX_REPORTED_STATUSES = 10;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const UPDATE_NOW_LABEL = "Update now";
+const UPDATE_NOW_LABEL = "/filament update";
 function parseGatewayCommand(body, fallbackRequestId) {
-  const words = body.trim().toLowerCase() === UPDATE_NOW_LABEL.toLowerCase() ? ["/filament", "update"] : body.trim().split(/\s+/);
+  const words = body.trim().split(/\s+/);
   if (words[0] !== "/filament") return null;
   const verb = words[1];
   const args = words.slice(2);
