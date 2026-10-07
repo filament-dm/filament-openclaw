@@ -52,7 +52,7 @@ import {
   leaveGreeting,
   markChoiceAsked,
   takeGreeting,
-} from "./state/pending.js";
+} from "./state/agent-choice.js";
 import {
   loadUpdateState,
   markUpdateRequested,

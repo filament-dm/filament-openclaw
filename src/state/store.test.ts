@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dropGreeting, leaveGreeting, takeGreeting } from "./pending.js";
+import { dropGreeting, leaveGreeting, takeGreeting } from "./agent-choice.js";
 import { openTable, useMemoryState } from "./store.js";
 import { markUpdateRequested, takeUpdateRequest } from "./updates.js";
 

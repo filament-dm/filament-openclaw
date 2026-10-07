@@ -1,9 +1,10 @@
 import { openTable } from "./store.js";
 
 /**
- * The pending-account flow: whether the question "which OpenClaw agent are you?" was already put
- * to the principal, and what the account bound by the answer says when it first connects. The
- * pending account cannot say it: the reload that applies its choice replaces it.
+ * Choosing the OpenClaw agent a new Filament agent answers as (choose-agent.ts): whether the
+ * question was already put to the principal, and what the account bound by the answer says when
+ * it first connects. The account that asked cannot say it: the reload that applies the choice
+ * replaces it.
  */
 const asked = openTable<number>("choice-asked");
 

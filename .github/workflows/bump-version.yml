@@ -22,11 +22,11 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -35,6 +35,7 @@ jobs:
 
       - name: Bump, rebuild, commit, tag
         run: |
+          # The github-actions[bot] account (user id 41898282), so GitHub attributes the commit to it.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           npm version "${{ inputs.level }}" -m "Release v%s"
