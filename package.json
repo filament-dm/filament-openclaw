@@ -24,7 +24,8 @@
     "lint": "oxlint index.ts src",
     "typecheck": "tsc --noEmit",
     "snapshot:tools": "node scripts/snapshot-tools.mjs",
-    "version:bump": "node scripts/bump-version.mjs"
+    "preversion": "npm test",
+    "version": "node scripts/sync-version.mjs && npm run build && git add openclaw.plugin.json src/version.ts dist"
   },
   "devDependencies": {
     "@types/node": "22.20.4",

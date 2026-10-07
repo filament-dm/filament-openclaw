@@ -417,16 +417,23 @@ export function registerFilamentChannel(
         }
 
         if (connection && !handlesOwnWork) {
+          // Markers are taken before the send; a send that fails puts them back for the next connect.
           const greeting = takeGreeting(accountId);
           if (greeting && !(await sayToPrincipal(greeting))) {
-            accountLog("filament-choose: could not greet as the bound agent");
+            accountLog(
+              "filament-choose: could not greet as the bound agent; will retry on connect",
+            );
+            leaveGreeting(accountId, accountId, greeting);
           }
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
             accountLog(
               `filament-update: back on v${PLUGIN_VERSION} (was v${updateRequest.fromVersion})`,
             );
-            await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION));
+            if (!(await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION)))) {
+              accountLog("filament-update: could not report the update; will retry on connect");
+              markUpdateRequested(accountId, updateRequest.fromVersion);
+            }
           }
           void runUpdateChecks(
             { load: loadUpdateState, save: saveUpdateState, say: sayToPrincipal, log: accountLog },
