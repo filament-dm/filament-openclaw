@@ -320,7 +320,10 @@ export interface GatewayItemContext {
   gatewayConfig: unknown;
   consume: (upToEventId: string) => Promise<void>;
   mutateConfig: (mutate: (draft: Record<string, unknown>) => void) => Promise<void>;
-  /** Updates the plugin; the reload that follows replaces this account. Absent: `update` is rejected. */
+  /**
+   * Starts the plugin update and returns at once; the reload that follows replaces this account,
+   * so nothing here may wait for it. Absent: `update` is rejected.
+   */
   update?: () => Promise<void>;
   report: (statuses: GatewayStatus[]) => Promise<void>;
   log: (message: string) => void;

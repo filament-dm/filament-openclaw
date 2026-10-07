@@ -115,13 +115,16 @@ export async function runUpdateChecks(
   }
 }
 
-/** `openclaw plugins update` from inside the gateway; it hot-reloads the plugin on success. */
-export async function runPluginUpdate(run: RunCli = runOpenclawCli): Promise<CliResult> {
-  const result = await run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
-  if (result.code !== 0) {
-    throw new Error(
-      `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`,
-    );
-  }
-  return result;
+/**
+ * Starts `openclaw plugins update` from inside the gateway and returns its result as a promise
+ * that the caller must not await from an account's call: the CLI waits for the gateway to apply
+ * the reload, and the reload waits for the account to stop. Awaiting it there deadlocks until the
+ * gateway's stop timeout kills the account with no replacement.
+ */
+export function startPluginUpdate(run: RunCli = runOpenclawCli): Promise<CliResult> {
+  return run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
+}
+
+export function updateFailureMessage(result: CliResult): string {
+  return `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`;
 }

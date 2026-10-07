@@ -53,7 +53,12 @@ import {
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
-import { runPluginUpdate, runUpdateChecks, updatedBody } from "./update-check.js";
+import {
+  runUpdateChecks,
+  startPluginUpdate,
+  updatedBody,
+  updateFailureMessage
+} from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 const TRANSPORTS = {
   fcm: runFcmTransport,
@@ -161,12 +166,17 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         };
         const runUpdate = async () => {
           markUpdateRequested(accountId, PLUGIN_VERSION);
-          try {
-            await runPluginUpdate();
-          } catch (error) {
+          const finished = startPluginUpdate();
+          void finished.then((result) => {
+            if (result.code === 0) return;
             takeUpdateRequest(accountId);
-            throw error;
-          }
+            const message = updateFailureMessage(result);
+            accountLog(`filament-update: ${message}`);
+            if (!abortSignal.aborted) {
+              sayToPrincipal(`Couldn't update the plugin: ${message}`).catch(() => {
+              });
+            }
+          });
         };
         const sayToPrincipal = async (markdownBody) => {
           if (!connection) return false;

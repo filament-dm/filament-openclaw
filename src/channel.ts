@@ -63,7 +63,12 @@ import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
-import { runPluginUpdate, runUpdateChecks, updatedBody } from "./update-check.js";
+import {
+  runUpdateChecks,
+  startPluginUpdate,
+  updatedBody,
+  updateFailureMessage,
+} from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 import type { WorkItem } from "./work-item.js";
 
@@ -209,16 +214,21 @@ export function registerFilamentChannel(
           });
           return wait === "timeout" ? "written" : "applied";
         };
-        // The request outlives this account: the reload that applies the update replaces it,
-        // and the account that comes back reads the marker and says what happened.
+        // Started, not awaited: the update reloads the plugin, and the reload needs this account
+        // to stop. The marker outlives the account; the one that comes back reads it and says
+        // what happened. Only a failure, which leaves this account alive, is reported from here.
         const runUpdate = async (): Promise<void> => {
           markUpdateRequested(accountId, PLUGIN_VERSION);
-          try {
-            await runPluginUpdate();
-          } catch (error) {
+          const finished = startPluginUpdate();
+          void finished.then((result) => {
+            if (result.code === 0) return;
             takeUpdateRequest(accountId);
-            throw error;
-          }
+            const message = updateFailureMessage(result);
+            accountLog(`filament-update: ${message}`);
+            if (!abortSignal.aborted) {
+              sayToPrincipal(`Couldn't update the plugin: ${message}`).catch(() => {});
+            }
+          });
         };
         /** Resolves true only when the message landed. */
         const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {

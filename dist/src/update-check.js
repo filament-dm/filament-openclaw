@@ -71,14 +71,11 @@ async function runUpdateChecks(ctx, abortSignal, tickMs = 60 * 60 * 1e3) {
     });
   }
 }
-async function runPluginUpdate(run = runOpenclawCli) {
-  const result = await run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
-  if (result.code !== 0) {
-    throw new Error(
-      `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`
-    );
-  }
-  return result;
+function startPluginUpdate(run = runOpenclawCli) {
+  return run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
+}
+function updateFailureMessage(result) {
+  return `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`;
 }
 export {
   UPDATE_CHECK_INTERVAL_MS,
@@ -87,8 +84,9 @@ export {
   UPDATE_NOW_LABEL,
   checkForUpdate,
   fetchLatestVersion,
-  runPluginUpdate,
   runUpdateChecks,
+  startPluginUpdate,
+  updateFailureMessage,
   updateNoticeBody,
   updatedBody
 };

@@ -3,12 +3,13 @@ import { test } from "node:test";
 
 import {
   checkForUpdate,
-  runPluginUpdate,
+  startPluginUpdate,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
   type UpdateCheckContext,
   type UpdateCheckState,
   updatedBody,
+  updateFailureMessage,
   updateNoticeBody,
 } from "./update-check.js";
 
@@ -91,17 +92,23 @@ test("updatedBody: says the new version, or that it already was the latest", () 
   assert.match(updatedBody("0.2.0", "0.2.0"), /already on the latest version, v0\.2\.0/);
 });
 
-test("runPluginUpdate: runs the CLI update and surfaces its failure", async () => {
+test("startPluginUpdate: starts the CLI update at once; the result is read later, never thrown", async () => {
   const calls: string[][] = [];
-  await runPluginUpdate(async (args) => {
+  let started = false;
+  const finished = startPluginUpdate(async (args) => {
+    started = true;
     calls.push(args);
     return { code: 0, stdout: "Updated filament-openclaw: 0.1.0 -> 0.2.0", stderr: "" };
   });
+  assert.equal(started, true);
   assert.deepEqual(calls, [["plugins", "update", "filament-openclaw", "--accept-capabilities"]]);
-  await assert.rejects(
-    runPluginUpdate(async () => ({ code: 1, stdout: "", stderr: "not installed" })),
-    /failed \(exit 1\): not installed/,
-  );
+  assert.equal((await finished).code, 0);
+  const failed = await startPluginUpdate(async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "not installed",
+  }));
+  assert.match(updateFailureMessage(failed), /failed \(exit 1\): not installed/);
 });
 
 test("updateNoticeBody: the button's label is the exact text the gateway reads as the command", () => {
