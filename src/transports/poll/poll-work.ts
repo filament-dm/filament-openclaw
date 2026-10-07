@@ -24,6 +24,8 @@ export type { DispatchOutcome };
 export interface PollWorkMessage extends WorkMessage {
   is_mention?: boolean;
   sender_is_agent?: boolean;
+  is_implicitly_mentioned?: boolean;
+  reply_expected?: boolean;
 }
 
 export interface ReplyWithSpec {
@@ -80,6 +82,10 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
         ts: typeof m.ts === "number" ? m.ts : 0,
         is_mention: m.is_mention === true,
         sender_is_agent: m.sender_is_agent === true,
+        ...(typeof m.is_implicitly_mentioned === "boolean"
+          ? { is_implicitly_mentioned: m.is_implicitly_mentioned }
+          : {}),
+        ...(typeof m.reply_expected === "boolean" ? { reply_expected: m.reply_expected } : {}),
       }));
     const rw = r.reply_with;
     const replyWith: ReplyWithSpec | null =

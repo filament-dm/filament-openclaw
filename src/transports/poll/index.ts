@@ -40,6 +40,10 @@ export function skipReason(item: PollWorkItem, selfMxid: string): string | null 
         isMention: m.is_mention === true,
         text: m.body,
         senderIsAgent: m.sender_is_agent === true,
+        addressedWithReply:
+          typeof m.is_implicitly_mentioned === "boolean"
+            ? m.is_implicitly_mentioned && m.reply_expected === true
+            : undefined,
       },
       selfMxid,
     );
