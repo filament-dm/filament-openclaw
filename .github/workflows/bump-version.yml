@@ -1,5 +1,6 @@
 ---
 name: Bump version
+run-name: "Bump version · ${{ inputs.level }} · by @${{ github.actor }}"
 
 # Manually-triggered release step: `npm version` on main. Its `version` lifecycle
 # script copies the number into openclaw.plugin.json and src/version.ts and
@@ -34,10 +35,15 @@ jobs:
       - run: npm ci
 
       - name: Bump, rebuild, commit, tag
+        id: bump
         run: |
           # The github-actions[bot] account (user id 41898282), so GitHub attributes the commit to it.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          npm version "${{ inputs.level }}" -m "Release v%s"
+          version="$(npm version "${{ inputs.level }}" -m "Release v%s")"
+          echo "version=${version#v}" >> "$GITHUB_OUTPUT"
 
-      - run: git push --follow-tags origin main
+      - name: Push v${{ steps.bump.outputs.version }}
+        run: |
+          git push --follow-tags origin main
+          echo "Released **v${{ steps.bump.outputs.version }}** (${{ inputs.level }})." >> "$GITHUB_STEP_SUMMARY"
