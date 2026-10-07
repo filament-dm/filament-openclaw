@@ -64,10 +64,10 @@ command from the Filament app again: it replaces the plugin outright.
 
 ### Releasing
 
-`npm version <patch|minor|major|x.y.z>` is the release: its `version` script copies the number
+`npm version <patch|minor|major>` is the release: its `version` script copies the number
 into `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal), rebuilds `dist/`,
 and npm commits `Release vX.Y.Z` and tags it. The **Bump version** workflow (Actions → Bump
-version → Run workflow) does exactly that on `main` and pushes. A merge to `main` is already what
+version → Run workflow → pick the level) does exactly that on `main` and pushes. A merge to `main` is already what
 gateways install; the bump is what tells running ones about it.
 
 ## Troubleshooting

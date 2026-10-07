@@ -12,7 +12,9 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: "patch, minor, major, or an explicit x.y.z"
+        description: "Which part of the version to bump"
+        type: choice
+        options: [patch, minor, major]
         required: true
         default: patch
 
