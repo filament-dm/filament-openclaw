@@ -73,6 +73,7 @@ function harness(
     instructions?: string;
     startFails?: boolean;
     registerThrows?: boolean;
+    holdTurns?: Promise<void>;
   } = {},
 ) {
   const { client, calls, pongs } = fakeClient({ instructions: overrides.instructions });
@@ -98,6 +99,7 @@ function harness(
     log: () => {},
     runTurn: async (item) => {
       turns.push(item);
+      await overrides.holdTurns;
       return {
         finalText: "the reply",
         sawFinal: true,
@@ -268,4 +270,41 @@ test("fcm: a register call that throws stops the receiver and is fatal", async (
   const result = await h.done;
   assert.match(result.fatal ?? "", /register_push_token threw/);
   assert.equal(h.receiverStops.length, 1);
+});
+
+function held() {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { hold, release };
+}
+
+const mention = (n: number) =>
+  chat({ event_id: `$m${n}`, content: { text: "hi" }, is_mention_of_recipient: true });
+
+test("fcm: a ping is answered while a turn is still running", async () => {
+  const { hold, release } = held();
+  const h = harness({ holdTurns: hold });
+  await h.push(mention(1));
+  await until(() => h.turns.length === 1);
+  await h.push({
+    persistentId: "ping",
+    message: { data: { body: JSON.stringify({ type: "io.filament.ping", nonce: "n1" }) } },
+  } as FcmMessageEnvelope);
+  await until(() => h.pongs.includes("n1"));
+  assert.equal(h.turns.length, 1);
+  release();
+  h.stop();
+});
+
+test("fcm: turns beyond the waiting limit are dropped", async () => {
+  const { hold, release } = held();
+  const h = harness({ holdTurns: hold });
+  for (let n = 1; n <= 25; n++) await h.push(mention(n));
+  release();
+  await until(() => h.turns.length === 20);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.turns.length, 20);
+  h.stop();
 });

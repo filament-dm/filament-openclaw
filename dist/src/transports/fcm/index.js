@@ -13,6 +13,7 @@ import { alreadyAnswered, routeReply } from "./reply-route.js";
 import { decideWake, EngagedThreads } from "./wake-policy.js";
 const PUSH_PLATFORM = "android";
 const MAX_SEEN_EVENTS = 500;
+const MAX_PENDING_TURNS = 20;
 const OPENING_STATUS = "reading a new message";
 const STATUS_TIMEOUT_MS = 6e4;
 function summarize(push) {
@@ -32,9 +33,17 @@ async function runFcmTransport(ctx, deps = {}) {
   const engaged = new EngagedThreads();
   const seenEvents = /* @__PURE__ */ new Set();
   let chain = Promise.resolve();
-  const enqueue = (work) => {
+  let pendingTurns = 0;
+  const enqueueTurn = (work) => {
+    if (pendingTurns >= MAX_PENDING_TURNS) {
+      log(`filament-fcm: ${pendingTurns} turns already waiting; dropping this one`);
+      return;
+    }
+    pendingTurns += 1;
     chain = chain.then(work).catch((error) => {
       log(`filament-fcm: push handling threw (continuing): ${String(error)}`);
+    }).finally(() => {
+      pendingTurns -= 1;
     });
   };
   const firstSighting = (eventId) => {
@@ -46,7 +55,7 @@ async function runFcmTransport(ctx, deps = {}) {
     }
     return true;
   };
-  const handleChat = async (push, roomId, eventId) => {
+  const admitChat = (push, roomId, eventId) => {
     const isBackchannel = !!identity.ccRoomId && roomId === identity.ccRoomId;
     const item = {
       channel_id: roomId,
@@ -63,8 +72,7 @@ async function runFcmTransport(ctx, deps = {}) {
       ]
     };
     if (ctx.control) {
-      if (isBackchannel) await ctx.handleControl(item);
-      return;
+      return isBackchannel ? () => ctx.handleControl(item) : null;
     }
     if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
       await ctx.handleCommand(item);
@@ -77,12 +85,15 @@ async function runFcmTransport(ctx, deps = {}) {
     });
     if (!decision.wake) {
       log(`filament-fcm: not waking for ${eventId} in ${roomId} (${decision.reason})`);
-      return;
+      return null;
     }
     if (!isBackchannel && push.branchType === "channel_message") {
       engaged.record(roomId, push.threadId ?? eventId);
     }
     log(`filament-fcm: waking for ${eventId} in ${roomId} (${decision.reason})`);
+    return () => runChatTurn(push, item, roomId, eventId, isBackchannel);
+  };
+  const runChatTurn = async (push, item, roomId, eventId, isBackchannel) => {
     const routable = {
       roomId,
       eventId,
@@ -148,20 +159,23 @@ async function runFcmTransport(ctx, deps = {}) {
       if (!abortSignal.aborted) log(`filament-fcm: status not published: ${String(error)}`);
     }
   };
-  const handlePush = async (push) => {
+  const handlePush = (push) => {
     if (push.branchType === "io.filament.ping") {
       if (!push.nonce) return;
-      const status = await client.pong(push.nonce, { signal: abortSignal });
-      log(`filament-fcm: pong sent (HTTP ${status})`);
+      void client.pong(push.nonce, { signal: abortSignal }).then((status) => log(`filament-fcm: pong sent (HTTP ${status})`)).catch((error) => log(`filament-fcm: pong failed: ${String(error)}`));
       return;
     }
     if (isInvite(push.branchType) || isVouch(push.branchType)) {
       if (ctx.control) return;
       const targetId = isVouch(push.branchType) ? push.loopId ?? push.roomId : push.roomId;
       if (!targetId) return;
-      const res = isVouch(push.branchType) ? await client.acceptVouch(targetId, { signal: abortSignal }) : await client.acceptInvite(targetId, { signal: abortSignal });
-      log(
-        `filament-fcm: ${push.branchType} ${targetId} ${res.ok ? "accepted" : `accept failed (${res.error?.code ?? "?"})`}`
+      const accept = isVouch(push.branchType) ? client.acceptVouch(targetId, { signal: abortSignal }) : client.acceptInvite(targetId, { signal: abortSignal });
+      void accept.then(
+        (res) => log(
+          `filament-fcm: ${push.branchType} ${targetId} ${res.ok ? "accepted" : `accept failed (${res.error?.code ?? "?"})`}`
+        )
+      ).catch(
+        (error) => log(`filament-fcm: ${push.branchType} ${targetId} failed: ${String(error)}`)
       );
       return;
     }
@@ -173,7 +187,8 @@ async function runFcmTransport(ctx, deps = {}) {
       log(`filament-fcm: event ${push.eventId} already handled; skipping`);
       return;
     }
-    await handleChat(push, push.roomId, push.eventId);
+    const turn = admitChat(push, push.roomId, push.eventId);
+    if (turn) enqueueTurn(turn);
   };
   if (!ctx.control) await acceptPending(client, log, abortSignal);
   const createReceiver = deps.createReceiver ?? ((opts) => new FcmReceiver(opts));
@@ -189,7 +204,11 @@ async function runFcmTransport(ctx, deps = {}) {
         return;
       }
       log(`filament-fcm: inbound ${summarize(push)}`);
-      enqueue(() => handlePush(push));
+      try {
+        handlePush(push);
+      } catch (error) {
+        log(`filament-fcm: push handling threw (continuing): ${String(error)}`);
+      }
     }
   });
   try {
