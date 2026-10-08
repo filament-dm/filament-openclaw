@@ -36,17 +36,30 @@ import {
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
+import { loadIdentity } from "./state/identities.js";
 import {
   choiceAsked,
   dropGreeting,
   leaveGreeting,
-  loadIdentity,
   markChoiceAsked,
   takeGreeting
-} from "./token-store.js";
+} from "./state/agent-choice.js";
+import {
+  loadUpdateState,
+  markUpdateRequested,
+  saveUpdateState,
+  takeUpdateRequest
+} from "./state/updates.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
+import {
+  runUpdateChecks,
+  startPluginUpdate,
+  updatedBody,
+  updateFailureMessage
+} from "./update-check.js";
+import { PLUGIN_VERSION } from "./version.js";
 const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
@@ -151,6 +164,24 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           return wait === "timeout" ? "written" : "applied";
         };
+        let updateInFlight = false;
+        const runUpdate = async () => {
+          if (updateInFlight) return;
+          updateInFlight = true;
+          markUpdateRequested(accountId, PLUGIN_VERSION);
+          const finished = startPluginUpdate();
+          void finished.then((result) => {
+            if (result.code === 0) return;
+            updateInFlight = false;
+            takeUpdateRequest(accountId);
+            const message = updateFailureMessage(result);
+            accountLog(`filament-update: ${message}`);
+            if (!abortSignal.aborted) {
+              sayToPrincipal(`Couldn't update the plugin: ${message}`).catch(() => {
+              });
+            }
+          });
+        };
         const sayToPrincipal = async (markdownBody) => {
           if (!connection) return false;
           const res = await connection.client.callTool(
@@ -178,8 +209,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               );
             },
             mutateConfig,
-            // Success is silent here: the new agent asks in its own chat. Only a
-            // refusal has nowhere else to show.
+            update: runUpdate,
+            // Success is silent here: the new agent asks in its own chat, and an
+            // updated plugin says so on reconnect. Only a refusal has nowhere else to show.
             report: async (entries) => {
               const lines = entries.filter((status) => status.state !== "applied").map((status) => `Couldn't ${status.command}: ${status.message ?? status.state}`);
               if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
@@ -322,8 +354,27 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         if (connection && !handlesOwnWork) {
           const greeting = takeGreeting(accountId);
           if (greeting && !await sayToPrincipal(greeting)) {
-            accountLog("filament-choose: could not greet as the bound agent");
+            accountLog(
+              "filament-choose: could not greet as the bound agent; will retry on connect"
+            );
+            leaveGreeting(accountId, accountId, greeting);
           }
+          const updateRequest = takeUpdateRequest(accountId);
+          if (updateRequest) {
+            accountLog(
+              `filament-update: back on v${PLUGIN_VERSION} (was v${updateRequest.fromVersion})`
+            );
+            if (!await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION))) {
+              accountLog("filament-update: could not report the update; will retry on connect");
+              markUpdateRequested(accountId, updateRequest.fromVersion);
+            }
+          }
+          void runUpdateChecks(
+            { load: loadUpdateState, save: saveUpdateState, say: sayToPrincipal, log: accountLog },
+            abortSignal
+          ).catch((error) => {
+            accountLog(`filament-update: checks stopped: ${String(error)}`);
+          });
         }
         if (connection) {
           if (!handlesOwnWork) setFilamentClient(connection.client, accountId);

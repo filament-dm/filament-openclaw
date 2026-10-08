@@ -51,11 +51,32 @@ By default the agent long-polls Filament for work (`poll`), which needs no push 
 no connection to Google. With `transport: fcm` it receives messages as push notifications instead,
 registered with the Firebase project the server names. Both use the same token, tools and replies.
 
+## Updates
+
+Once a day the plugin reads `openclaw.plugin.json` from this repo's `main` and compares it with
+the installed version. A newer one is announced once, in the principal's backchannel, with an
+**Update now** button. Tapping it (or sending `/filament update` there) runs
+`openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
+reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+
+The update is the whole plugin, dependencies included. If it reports a problem, run the connect
+command from the Filament app again: it replaces the plugin outright.
+
+### Releasing
+
+`npm version <patch|minor|major>` is the release: its `version` script copies the number
+into `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal), rebuilds `dist/`,
+and npm commits `Release vX.Y.Z` and tags it. The **Bump version** workflow (Actions → Bump
+version → Run workflow → pick the level) does exactly that on `main` and pushes. A merge to `main` is already what
+gateways install; the bump is what tells running ones about it.
+
 ## Troubleshooting
 
 - **Follow the gateway log** with `openclaw logs --follow`. A connected agent logs a
   `[<account>] filament-connect: identity …` line.
 - **An agent you just connected stays "connecting".** Run `openclaw gateway restart`.
+- **`Plugin activation or recovery failed` in the gateway log, and the agent is gone.** Run
+  `openclaw plugins reload filament-openclaw`; no restart needed.
 - **`bearer rejected`.** The agent was deleted in Filament, or its token was revoked. Connect it
   again from the app.
 - **Upgrading from the `filament-fcm` plugin id.** Run `openclaw plugins uninstall filament-fcm`,

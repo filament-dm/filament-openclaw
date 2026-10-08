@@ -16,7 +16,7 @@ import {
   loadReceivedIds,
   recordReceivedId,
   saveFcmCredentials,
-} from "../../token-store.js";
+} from "../../state/fcm.js";
 import { sleepAbortable } from "../../util.js";
 
 /** Structural subset of eneris `MessageEnvelope`; `persistentId` is the dedup key. */

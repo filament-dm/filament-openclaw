@@ -1,4 +1,4 @@
-import { loadBearer } from "./token-store.js";
+import { loadBearer } from "./state/bearers.js";
 function resolveBearer(configuredToken, log, loadPersisted = loadBearer) {
   const persisted = loadPersisted(configuredToken);
   if (persisted) {

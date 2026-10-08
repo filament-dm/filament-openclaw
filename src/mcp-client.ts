@@ -6,6 +6,8 @@
  * loop can tell stopping apart from a slow server.
  */
 
+import { PLUGIN_VERSION } from "./version.js";
+
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 
 /** The server sets `annotations.readOnlyHint` true on every read tool, false on every write tool. */
@@ -126,7 +128,7 @@ export class FilamentMcpClient {
     private readonly token: string,
     private readonly clientInfo: { name: string; version: string } = {
       name: "filament-openclaw",
-      version: "0.1.0",
+      version: PLUGIN_VERSION,
     },
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}

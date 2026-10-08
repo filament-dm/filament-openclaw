@@ -1,0 +1,52 @@
+---
+name: Bump version
+run-name: "Bump version · ${{ inputs.level }} · by @${{ github.actor }}"
+
+# Manually-triggered release step: `npm version` on main. Its `version` lifecycle
+# script copies the number into openclaw.plugin.json and src/version.ts and
+# rebuilds dist/ (committed: gateways install from the git ref); npm commits
+# "Release vX.Y.Z" and tags it. Running gateways see the new manifest on main
+# within a day and offer the update in the principal's backchannel.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Which part of the version to bump"
+        type: choice
+        options: [patch, minor, major]
+        required: true
+        default: patch
+
+permissions:
+  contents: write # push the bump commit and its tag
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Bump, rebuild, commit, tag
+        id: bump
+        run: |
+          # The github-actions[bot] account (user id 41898282), so GitHub attributes the commit to it.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "${{ inputs.level }}" -m "Release v%s"
+          version="$(node -p 'require("./package.json").version')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Push v${{ steps.bump.outputs.version }}
+        run: |
+          git push --follow-tags origin main
+          echo "Released **v${{ steps.bump.outputs.version }}** (${{ inputs.level }})." >> "$GITHUB_STEP_SUMMARY"

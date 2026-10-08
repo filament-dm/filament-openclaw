@@ -2,7 +2,7 @@
  * An account's bearer is its connect token, except for one whose token was exchanged for a
  * persisted bearer: the exchange revoked the token, so that bearer stays its credential.
  */
-import { loadBearer } from "./token-store.js";
+import { loadBearer } from "./state/bearers.js";
 
 export function resolveBearer(
   configuredToken: string,
