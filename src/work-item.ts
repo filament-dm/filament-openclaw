@@ -3,11 +3,21 @@
  * wire (snake_case) spelling, so the poll transport passes items through untouched.
  */
 
+/** An attachment on a message: fetch its bytes with `FilamentMcpClient.downloadMedia`. */
+export interface WorkMedia {
+  mxc_url: string;
+  mimetype?: string;
+  filename?: string;
+  size?: number;
+}
+
 export interface WorkMessage {
   event_id: string;
   sender: string;
   body: string;
   ts: number;
+  /** poll_work only: FCM pushes carry no attachment urls. */
+  media?: WorkMedia[];
 }
 
 export interface WorkItem {

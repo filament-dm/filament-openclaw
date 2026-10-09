@@ -5,7 +5,7 @@ import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
-import { classifyPublish, runPollTransport } from "./index.js";
+import { classifyPublish, type PollTransportDeps, runPollTransport } from "./index.js";
 
 const SELF = "@a_test1.1:example.test";
 const PRINCIPAL = "@u_test1:example.test";
@@ -34,12 +34,18 @@ function item(overrides: Record<string, unknown> = {}) {
 
 async function run(
   polls: unknown[],
-  opts: { control?: boolean; publish?: ToolCallResult; turn?: Partial<TurnResult> } = {},
+  opts: {
+    control?: boolean;
+    publish?: ToolCallResult;
+    turn?: Partial<TurnResult>;
+    deps?: PollTransportDeps;
+  } = {},
 ) {
   const controller = new AbortController();
   const pollArgs: Array<{ ack?: string[] }> = [];
   const publishes: unknown[] = [];
   const turns: WorkItem[] = [];
+  const turnMedia: unknown[] = [];
   const events: string[] = [];
   const client = {
     pollWork: async (args: { ack?: string[] }) => {
@@ -52,8 +58,8 @@ async function run(
       }
       return ok(next);
     },
-    replyWith: async (spec: unknown, body: string) => {
-      publishes.push({ spec, body });
+    replyWith: async (spec: unknown, body: string, _opts: unknown, attachments: unknown = []) => {
+      publishes.push({ spec, body, attachments });
       return opts.publish ?? ok({ event_id: "$reply" });
     },
     listPendingInvites: async () => {
@@ -75,10 +81,14 @@ async function run(
     control: opts.control ?? false,
     abortSignal: controller.signal,
     log: () => {},
-    runTurn: async (workItem) => {
+    runTurn: async (workItem, media) => {
       turns.push(workItem);
+      turnMedia.push(media);
       return {
         finalText: "the reply",
+        mediaUrls: [],
+        agentId: "writer",
+        mediaLocalRoots: [],
         sawFinal: true,
         sawSkip: false,
         sawError: false,
@@ -88,8 +98,8 @@ async function run(
     },
     handleControl: async () => {},
   };
-  const result = await runPollTransport(ctx);
-  return { result, pollArgs, publishes, turns, events };
+  const result = await runPollTransport(ctx, opts.deps);
+  return { result, pollArgs, publishes, turns, turnMedia, events };
 }
 
 const offer = (work: unknown) => ({ work: [work], cursor: "c:1" });
@@ -250,4 +260,52 @@ test("classifyPublish: what each publish result means for the item", () => {
   assert.equal(classifyPublish(failed("transient")).kind, "retry");
   assert.equal(classifyPublish(failed("protocol")).kind, "retry");
   assert.equal(classifyPublish(failed("auth")).kind, "fatal");
+});
+
+test("poll: an item's attachments are fetched and handed to the turn", async () => {
+  const fetched: unknown[] = [];
+  const saved = [{ path: "/media/cat.png", contentType: "image/png", messageId: "$e1" }];
+  const h = await run(
+    [offer(item({ messages: [msg({ body: "", media: [{ mxc_url: "mxc://s/cat" }] })] }))],
+    {
+      deps: {
+        fetchInboundMedia: async (_client, messages) => {
+          fetched.push(messages.map((m) => m.media));
+          return saved;
+        },
+      },
+    },
+  );
+  assert.deepEqual(fetched, [[[{ mxc_url: "mxc://s/cat" }]]]);
+  assert.deepEqual(h.turnMedia, [saved]);
+});
+
+test("poll: media in the reply is uploaded and sent as attachments", async () => {
+  const uploaded: unknown[] = [];
+  const h = await run([offer(item())], {
+    turn: { mediaUrls: ["/work/chart.png"], mediaLocalRoots: ["/work"] },
+    deps: {
+      uploadOutboundMedia: async (_client, urls, opts) => {
+        uploaded.push({ urls, roots: opts.mediaLocalRoots });
+        return [{ mxc_url: "mxc://s/chart", filename: "chart.png" }];
+      },
+    },
+  });
+  assert.deepEqual(uploaded, [{ urls: ["/work/chart.png"], roots: ["/work"] }]);
+  assert.deepEqual(h.publishes, [
+    {
+      spec: { tool: "reply_in_thread", args: { message_id: "$e1" } },
+      body: "the reply",
+      attachments: [{ mxc_url: "mxc://s/chart", filename: "chart.png" }],
+    },
+  ]);
+});
+
+test("poll: a media-only reply whose media all fails to send is dropped, not posted empty", async () => {
+  const h = await run([offer(item())], {
+    turn: { finalText: "", mediaUrls: ["/elsewhere/x.png"] },
+    deps: { uploadOutboundMedia: async () => [] },
+  });
+  assert.deepEqual(h.publishes, []);
+  assert.deepEqual(h.pollArgs[1]?.ack, ["$e1"]);
 });

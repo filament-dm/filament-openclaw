@@ -496,6 +496,32 @@ test("develop row: another agent's unmentioned message is skipped; one the serve
   assert.equal(skipReason(addressed.work[0]!, SELF), null);
 });
 
+test("parsePollWorkResponse: keeps attachment descriptors with an mxc url", () => {
+  const parsed = parsePollWorkResponse(
+    developResponse([
+      developRow({
+        body: "",
+        is_from_agent: false,
+        media: [
+          {
+            mxc_url: "mxc://s/1",
+            msgtype: "m.image",
+            filename: "cat.png",
+            mimetype: "image/png",
+            size: 12,
+          },
+          { mxc_url: "https://not-mxc" },
+          "junk",
+        ],
+      }),
+    ]),
+  );
+  assert.ok(parsed);
+  assert.deepEqual(parsed.work[0]!.messages[0]!.media, [
+    { mxc_url: "mxc://s/1", mimetype: "image/png", filename: "cat.png", size: 12 },
+  ]);
+});
+
 test("parsePollWorkResponse: an empty media list is not an attachment", () => {
   const parsed = parsePollWorkResponse(
     developResponse([developRow({ body: "", is_from_agent: false, media: [] })]),
