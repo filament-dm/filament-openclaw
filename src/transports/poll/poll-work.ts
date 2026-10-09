@@ -21,6 +21,11 @@ import {
 
 export type { DispatchOutcome };
 
+/**
+ * A message as the transport uses it. The server's row (`AgentMessage` in synapse) spells some
+ * fields differently; `parsePollWorkResponse` maps them: `is_from_agent` → `sender_is_agent`,
+ * `timestamp` → `ts`, a non-empty `media` → the attachment placeholder body.
+ */
 export interface PollWorkMessage extends WorkMessage {
   is_mention?: boolean;
   sender_is_agent?: boolean;
@@ -76,12 +81,12 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
         body:
           typeof m.body === "string" && m.body
             ? m.body
-            : m.has_media === true
+            : Array.isArray(m.media) && m.media.length > 0
               ? ATTACHMENT_ONLY_BODY
               : "",
-        ts: typeof m.ts === "number" ? m.ts : 0,
+        ts: typeof m.timestamp === "number" ? m.timestamp : 0,
         is_mention: m.is_mention === true,
-        sender_is_agent: m.sender_is_agent === true,
+        sender_is_agent: m.is_from_agent === true,
         ...(typeof m.is_implicitly_mentioned === "boolean"
           ? { is_implicitly_mentioned: m.is_implicitly_mentioned }
           : {}),

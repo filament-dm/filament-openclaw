@@ -12,6 +12,7 @@ import {
   type PollWorkItem,
   runPollLoop,
 } from "./poll-work.js";
+import { skipReason } from "./index.js";
 
 function okResult(data: unknown): ToolCallResult {
   return { ok: true, httpStatus: 200, data };
@@ -362,7 +363,7 @@ test("parsePollWorkResponse: flags an older server omits default to false, invit
       {
         channel_id: "!room:server",
         thread_id: null,
-        messages: [{ event_id: "$e1", sender: "@ada:server", body: "hi", ts: 1 }],
+        messages: [{ event_id: "$e1", sender: "@ada:server", body: "hi", timestamp: 1 }],
         reply_with: null,
       },
     ],
@@ -395,11 +396,10 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
             event_id: "$e1",
             sender: "@bot:server",
             body: "",
-            ts: 1,
+            timestamp: 1,
             is_mention: true,
-            is_reply_to_recipient: false,
-            sender_is_agent: true,
-            has_media: true,
+            is_from_agent: true,
+            media: [{ url: "mxc://server/abc" }],
             is_implicitly_mentioned: true,
             reply_expected: false,
           },
@@ -418,6 +418,90 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
   assert.equal(parsed.work[0]!.messages[0]!.reply_expected, false);
   assert.equal(parsed.work[0]!.messages[0]!.body, ATTACHMENT_ONLY_BODY);
   assert.deepEqual(parsed.invites, [{ room_id: "!loop:server" }]);
+});
+
+// A `poll_work` response in the shape synapse develop sends: rows are `AgentMessage`
+// (synapse/plugins/agents_mcp/message_model.py), dumped with exclude_unset, so optional
+// fields are absent rather than null.
+const SELF = "@agent:server";
+function developResponse(messages: Record<string, unknown>[]) {
+  return {
+    work: [
+      {
+        kind: "message",
+        channel_id: "!group:server",
+        thread_id: null,
+        is_backchannel: false,
+        messages,
+        reply_with: {
+          tool: "post_message",
+          args: { channel: "!group:server", in_reply_to: "$e1" },
+        },
+      },
+    ],
+    cursor: "c:1",
+    next_poll_ms: 0,
+    truncated: false,
+    acknowledged: 0,
+  };
+}
+function developRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    event_id: "$e1",
+    sender: "@other-agent:server",
+    body: "status update",
+    timestamp: 1760000000000,
+    type: "m.room.message",
+    msgtype: "m.text",
+    channel_id: "!group:server",
+    is_from_self: false,
+    is_from_principal: false,
+    is_from_agent: true,
+    is_system: false,
+    is_mention: false,
+    ...overrides,
+  };
+}
+
+test("parsePollWorkResponse: maps the develop row (is_from_agent, timestamp, media)", () => {
+  const parsed = parsePollWorkResponse(
+    developResponse([
+      developRow(),
+      developRow({
+        event_id: "$e2",
+        sender: "@ada:server",
+        body: "",
+        is_from_agent: false,
+        media: [{ url: "mxc://server/abc", mimetype: "image/png" }],
+      }),
+    ]),
+  );
+  assert.ok(parsed);
+  const [agentMsg, mediaMsg] = parsed.work[0]!.messages;
+  assert.equal(agentMsg!.sender_is_agent, true);
+  assert.equal(agentMsg!.ts, 1760000000000);
+  assert.equal(mediaMsg!.sender_is_agent, false);
+  assert.equal(mediaMsg!.body, ATTACHMENT_ONLY_BODY);
+});
+
+test("develop row: another agent's unmentioned message is skipped; one the server judged for us wakes", () => {
+  const skipped = parsePollWorkResponse(developResponse([developRow()]));
+  assert.ok(skipped);
+  assert.equal(skipReason(skipped.work[0]!, SELF), "agent sender, no mention");
+
+  const addressed = parsePollWorkResponse(
+    developResponse([developRow({ is_implicitly_mentioned: true, reply_expected: true })]),
+  );
+  assert.ok(addressed);
+  assert.equal(skipReason(addressed.work[0]!, SELF), null);
+});
+
+test("parsePollWorkResponse: an empty media list is not an attachment", () => {
+  const parsed = parsePollWorkResponse(
+    developResponse([developRow({ body: "", is_from_agent: false, media: [] })]),
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.work[0]!.messages[0]!.body, "");
 });
 
 test("auth error from poll_work stops the loop without retry", async () => {
