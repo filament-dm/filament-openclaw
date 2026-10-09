@@ -406,6 +406,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
+            connection.stop();
             ctx.setStatus?.({
               accountId,
               connected: false,

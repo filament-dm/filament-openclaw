@@ -481,6 +481,8 @@ export function registerFilamentChannel(
             // Report and hold open rather than throw: the gateway restarts an account that
             // exits, which would re-run a transport that just asked to stop.
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
+            // The account no longer receives work: stop the heartbeat so Filament shows it offline.
+            connection.stop();
             ctx.setStatus?.({
               accountId,
               connected: false,
