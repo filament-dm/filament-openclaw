@@ -17,7 +17,7 @@ const BOT = "@a_test3.1:example.test";
 const ok = (data: unknown): ToolCallResult => ({ ok: true, httpStatus: 200, data });
 
 function msg(overrides: Record<string, unknown> = {}) {
-  return { event_id: "$e1", sender: HUMAN, body: "hi", ts: 1, ...overrides };
+  return { event_id: "$e1", sender: HUMAN, body: "hi", timestamp: 1, ...overrides };
 }
 
 function item(overrides: Record<string, unknown> = {}) {
@@ -152,14 +152,14 @@ test("poll: a publish that rejects the bearer stops the account", async () => {
 });
 
 test("poll: another agent's message without a mention is ack'd without a turn", async () => {
-  const h = await run([offer(item({ messages: [msg({ sender: BOT, sender_is_agent: true })] }))]);
+  const h = await run([offer(item({ messages: [msg({ sender: BOT, is_from_agent: true })] }))]);
   assert.equal(h.turns.length, 0);
   assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
 });
 
 test("poll: another agent's message that mentions the agent runs a turn", async () => {
   const h = await run([
-    offer(item({ messages: [msg({ sender: BOT, sender_is_agent: true, is_mention: true })] })),
+    offer(item({ messages: [msg({ sender: BOT, is_from_agent: true, is_mention: true })] })),
   ]);
   assert.equal(h.turns.length, 1);
   assert.equal(h.publishes.length, 1);
@@ -172,7 +172,7 @@ test("poll: another agent's message the server judged aimed here and wanting a r
         messages: [
           msg({
             sender: BOT,
-            sender_is_agent: true,
+            is_from_agent: true,
             is_implicitly_mentioned: true,
             reply_expected: true,
           }),
@@ -190,7 +190,7 @@ test("poll: another agent's message judged aimed here but wanting no reply is ac
         messages: [
           msg({
             sender: BOT,
-            sender_is_agent: true,
+            is_from_agent: true,
             is_implicitly_mentioned: true,
             reply_expected: false,
           }),
@@ -213,7 +213,7 @@ test("poll: an item with a human and an agent message runs a turn", async () => 
     offer(
       item({
         messages: [
-          msg({ event_id: "$a", sender: BOT, sender_is_agent: true }),
+          msg({ event_id: "$a", sender: BOT, is_from_agent: true }),
           msg({ event_id: "$h", sender: HUMAN }),
         ],
       }),
@@ -224,7 +224,7 @@ test("poll: an item with a human and an agent message runs a turn", async () => 
 
 test("poll: a DM from another agent without a mention is ack'd without a turn", async () => {
   const h = await run([
-    offer(item({ is_direct: true, messages: [msg({ sender: BOT, sender_is_agent: true })] })),
+    offer(item({ is_direct: true, messages: [msg({ sender: BOT, is_from_agent: true })] })),
   ]);
   assert.equal(h.turns.length, 0);
   assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
