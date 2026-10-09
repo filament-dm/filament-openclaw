@@ -3,6 +3,23 @@ const MCP_PROTOCOL_VERSION = "2025-03-26";
 const DEFAULT_TIMEOUT_MS = 15e3;
 const MEDIA_TIMEOUT_MS = 12e4;
 const POLL_TIMEOUT_MARGIN_MS = 15e3;
+async function readCapped(res, maxBytes) {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (; ; ) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`media is over ${maxBytes} bytes (limit ${maxBytes})`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
 function parseToolResult(result) {
   if (!result || typeof result !== "object") return result;
   const asTextJson = (text) => {
@@ -328,11 +345,11 @@ class FilamentMcpClient {
     );
     if (!res.ok) throw new Error(`media download returned HTTP ${res.status}`);
     const declared = Number(res.headers.get("content-length"));
-    if (declared > maxBytes) throw new Error(`media is ${declared} bytes (limit ${maxBytes})`);
-    const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length > maxBytes)
-      throw new Error(`media is ${bytes.length} bytes (limit ${maxBytes})`);
-    return { bytes, contentType: res.headers.get("content-type") };
+    if (declared > maxBytes) {
+      await res.body?.cancel();
+      throw new Error(`media is ${declared} bytes (limit ${maxBytes})`);
+    }
+    return { bytes: await readCapped(res, maxBytes), contentType: res.headers.get("content-type") };
   }
   /** Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. */
   async uploadMedia(bytes, contentType, filename, opts) {

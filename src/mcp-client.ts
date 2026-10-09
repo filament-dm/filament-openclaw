@@ -52,6 +52,25 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MEDIA_TIMEOUT_MS = 120_000;
 export const POLL_TIMEOUT_MARGIN_MS = 15_000;
 
+/** The body, read in chunks and cancelled once it passes `maxBytes`, with or without Content-Length. */
+async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
+  if (!res.body) return Buffer.alloc(0);
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`media is over ${maxBytes} bytes (limit ${maxBytes})`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
 export interface CallOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -469,11 +488,11 @@ export class FilamentMcpClient {
     );
     if (!res.ok) throw new Error(`media download returned HTTP ${res.status}`);
     const declared = Number(res.headers.get("content-length"));
-    if (declared > maxBytes) throw new Error(`media is ${declared} bytes (limit ${maxBytes})`);
-    const bytes = Buffer.from(await res.arrayBuffer());
-    if (bytes.length > maxBytes)
-      throw new Error(`media is ${bytes.length} bytes (limit ${maxBytes})`);
-    return { bytes, contentType: res.headers.get("content-type") };
+    if (declared > maxBytes) {
+      await res.body?.cancel();
+      throw new Error(`media is ${declared} bytes (limit ${maxBytes})`);
+    }
+    return { bytes: await readCapped(res, maxBytes), contentType: res.headers.get("content-type") };
   }
 
   /** Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. */

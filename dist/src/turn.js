@@ -1,11 +1,20 @@
 import { createInboundEnvelopeBuilder } from "openclaw/plugin-sdk/inbound-envelope";
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { runPreparedInboundReply, toInboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  buildChannelInboundMediaPayload,
+  runPreparedInboundReply,
+  toInboundMediaFacts
+} from "openclaw/plugin-sdk/channel-inbound";
 import {
   normalizeOutboundReplyPayload,
   resolveOutboundMediaUrls
 } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
+function inboundMediaFields(media) {
+  if (!media?.length) return {};
+  const facts = toInboundMediaFacts(media);
+  return { media: facts, ...buildChannelInboundMediaPayload(facts) };
+}
 function renderMessages(messages) {
   return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
 }
@@ -60,7 +69,7 @@ async function dispatchWorkItemTurn(params) {
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
-    ...params.media?.length ? { media: toInboundMediaFacts(params.media) } : {}
+    ...inboundMediaFields(params.media)
   });
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,

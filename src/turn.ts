@@ -6,7 +6,11 @@
  */
 import { createInboundEnvelopeBuilder } from "openclaw/plugin-sdk/inbound-envelope";
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { runPreparedInboundReply, toInboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  buildChannelInboundMediaPayload,
+  runPreparedInboundReply,
+  toInboundMediaFacts,
+} from "openclaw/plugin-sdk/channel-inbound";
 import {
   normalizeOutboundReplyPayload,
   resolveOutboundMediaUrls,
@@ -48,6 +52,16 @@ export interface DispatchTurnResult {
   sawSkip: boolean;
   sawError: boolean;
   errorDetail?: string;
+}
+
+/**
+ * Attachments for the inbound context, in both shapes: `media` is what current gateways read, and
+ * the legacy `Media*` fields are all a gateway before 2026.9 reads (the plugin supports >=2026.7).
+ */
+function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, unknown> {
+  if (!media?.length) return {};
+  const facts = toInboundMediaFacts(media);
+  return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
 
 function renderMessages(messages: WorkMessage[]): string {
@@ -119,7 +133,7 @@ export async function dispatchWorkItemTurn(
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
-    ...(params.media?.length ? { media: toInboundMediaFacts(params.media) } : {}),
+    ...inboundMediaFields(params.media),
   });
 
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({

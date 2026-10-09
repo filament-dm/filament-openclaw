@@ -274,6 +274,24 @@ test("downloadMedia: refuses a file over the limit and an HTTP error", async () 
   await assert.rejects(missing.downloadMedia("mxc://server/abc", 5), /HTTP 404/);
 });
 
+test("downloadMedia: stops reading a stream with no Content-Length once it passes the limit", async () => {
+  let pulled = 0;
+  let cancelled = false;
+  const endless = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += 1;
+      controller.enqueue(new Uint8Array(4));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const c = sideChannelClient(() => new Response(endless));
+  await assert.rejects(c.downloadMedia("mxc://server/abc", 10), /limit 10/);
+  assert.ok(cancelled, "the body is cancelled");
+  assert.ok(pulled <= 4, `read only past the limit (pulled ${pulled})`);
+});
+
 test("uploadMedia: POSTs the bytes to /upload and returns the mxc url", async () => {
   let seen: { url: string; init?: RequestInit } | null = null;
   const c = sideChannelClient((url, init) => {
