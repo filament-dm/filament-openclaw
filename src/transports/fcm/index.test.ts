@@ -74,6 +74,7 @@ function harness(
     startFails?: boolean;
     registerThrows?: boolean;
     holdTurns?: Promise<void>;
+    commands?: boolean;
   } = {},
 ) {
   const { client, calls, pongs } = fakeClient({ instructions: overrides.instructions });
@@ -88,6 +89,7 @@ function harness(
   const controller = new AbortController();
   const turns: WorkItem[] = [];
   const controlItems: WorkItem[] = [];
+  const commandItems: WorkItem[] = [];
   let deliver: ((env: FcmMessageEnvelope) => void) | null = null;
   const ctx: TransportContext = {
     accountId: "writer",
@@ -112,6 +114,13 @@ function harness(
     handleControl: async (item) => {
       controlItems.push(item);
     },
+    ...(overrides.commands
+      ? {
+          handleCommand: async (item: WorkItem) => {
+            commandItems.push(item);
+          },
+        }
+      : {}),
   };
   const done = runFcmTransport(ctx, {
     createReceiver: (opts: FcmReceiverOptions) => ({
@@ -135,6 +144,7 @@ function harness(
     pongs,
     turns,
     controlItems,
+    commandItems,
     push,
     done,
     receiverStops,
@@ -256,6 +266,43 @@ test("fcm: a control account hands backchannel pushes to the gateway, never to a
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(h.controlItems.length, 1);
   assert.equal(h.turns.length, 0);
+  h.stop();
+});
+
+test("fcm: a /filament command from the principal goes to handleCommand, never to a turn", async () => {
+  const h = harness({ commands: true });
+  await h.push(
+    chat({ event_id: "$u1", sender_id: PRINCIPAL, content: { text: "/filament update" } }, CC),
+  );
+  await until(() => h.commandItems.length === 1);
+  assert.equal(h.commandItems[0]!.channel_id, CC);
+  assert.equal(h.commandItems[0]!.messages[0]!.body, "/filament update");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.turns.length, 0);
+  assert.equal(
+    h.calls.filter((c) => c.name !== "register_push_token").length,
+    0,
+    "a command makes no reply or status call of its own",
+  );
+  h.stop();
+});
+
+test("fcm: a command waits its turn behind a running turn", async () => {
+  let release!: () => void;
+  const holdTurns = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const h = harness({ commands: true, holdTurns });
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.turns.length === 1);
+  await h.push(
+    chat({ event_id: "$u1", sender_id: PRINCIPAL, content: { text: "/filament update" } }, CC),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(h.commandItems.length, 0);
+  release();
+  await until(() => h.commandItems.length === 1);
+  assert.equal(h.turns.length, 1);
   h.stop();
 });
 
