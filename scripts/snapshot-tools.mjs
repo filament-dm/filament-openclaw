@@ -4,6 +4,9 @@
  * tools the plugin never registers. Needs FILAMENT_MCP_URL (e.g.
  * https://<your-filament-host>/mcp/agents) and FILAMENT_MCP_BEARER.
  * Usage: FILAMENT_MCP_URL=... FILAMENT_MCP_BEARER=... npm run snapshot:tools
+ *
+ * `tools/list` hides flag-gated tools (`create_channel`, the settings tools) from a principal
+ * without the flag, so use a bearer whose principal has those flags, or the snapshot loses them.
  */
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";

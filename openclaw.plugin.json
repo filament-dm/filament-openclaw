@@ -37,7 +37,10 @@
       "filament_get_self",
       "filament_set_profile",
       "filament_set_channel_notification_level",
-      "filament_get_backchannel"
+      "filament_get_backchannel",
+      "filament_declare_settings",
+      "filament_set_setting",
+      "filament_get_settings"
     ]
   },
   "configSchema": {
