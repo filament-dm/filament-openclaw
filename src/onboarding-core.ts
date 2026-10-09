@@ -51,3 +51,18 @@ export function classifyGetSelf(result: ToolCallResult): OnboardingDecision {
 export function isFirstContact(instructions: string | null | undefined): boolean {
   return typeof instructions === "string" && instructions.includes("First contact:");
 }
+
+/**
+ * The server's `initialize` instructions as standing context for every turn. They are read once
+ * per connect, so the one-shot "First contact:" paragraph is left out: repeated on each turn it
+ * would have the agent greet its principal again and again.
+ */
+export function turnInstructions(instructions: string | null | undefined): string | undefined {
+  if (typeof instructions !== "string") return undefined;
+  const kept = instructions
+    .split("\n\n")
+    .filter((paragraph) => !paragraph.trimStart().startsWith("First contact:"))
+    .join("\n\n")
+    .trim();
+  return kept || undefined;
+}

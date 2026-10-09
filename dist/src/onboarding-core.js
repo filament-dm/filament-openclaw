@@ -26,7 +26,13 @@ function classifyGetSelf(result) {
 function isFirstContact(instructions) {
   return typeof instructions === "string" && instructions.includes("First contact:");
 }
+function turnInstructions(instructions) {
+  if (typeof instructions !== "string") return void 0;
+  const kept = instructions.split("\n\n").filter((paragraph) => !paragraph.trimStart().startsWith("First contact:")).join("\n\n").trim();
+  return kept || void 0;
+}
 export {
   classifyGetSelf,
-  isFirstContact
+  isFirstContact,
+  turnInstructions
 };

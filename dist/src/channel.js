@@ -22,6 +22,7 @@ import {
 } from "./choose-agent.js";
 import { awaitConfigApplied, writeGatewayConfig } from "./config-write.js";
 import { retryConnect, runConnect } from "./connect.js";
+import { turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -287,6 +288,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               threadId: item.thread_id,
               messages: item.messages,
               media,
+              systemPrompt: turnInstructions(connection?.client.instructions),
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: item.channel_id,
               // Filament, not OpenClaw, decides who can reach the agent; only the

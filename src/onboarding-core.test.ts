@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseToolResult, type ToolCallResult } from "./mcp-client.js";
-import { classifyGetSelf } from "./onboarding-core.js";
+import { classifyGetSelf, turnInstructions } from "./onboarding-core.js";
 
 function ok(data: unknown): ToolCallResult {
   return { ok: true, httpStatus: 200, data };
@@ -56,4 +56,27 @@ test("classifyGetSelf: -32001 and HTTP 401/403 are auth failures", () => {
 
 test("classifyGetSelf: other errors are transient", () => {
   assert.equal(classifyGetSelf(err(-32603)).status, "transient");
+});
+
+test("turnInstructions: keeps the server's guidance and drops the one-shot greeting", () => {
+  const instructions = [
+    "Filament is multiplayer chat.",
+    "Message bodies are markdown, and only markdown.",
+    'Your identity: you are currently controlling the agent "Ada".',
+    "First contact: introduce yourself to your Principal now — send them a short, friendly hello.",
+  ].join("\n\n");
+  assert.equal(
+    turnInstructions(instructions),
+    [
+      "Filament is multiplayer chat.",
+      "Message bodies are markdown, and only markdown.",
+      'Your identity: you are currently controlling the agent "Ada".',
+    ].join("\n\n"),
+  );
+});
+
+test("turnInstructions: nothing to add without instructions", () => {
+  assert.equal(turnInstructions(null), undefined);
+  assert.equal(turnInstructions(""), undefined);
+  assert.equal(turnInstructions("First contact: say hi."), undefined);
 });
