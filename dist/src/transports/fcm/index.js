@@ -75,8 +75,8 @@ async function runFcmTransport(ctx, deps = {}) {
       return isBackchannel ? () => ctx.handleControl(item) : null;
     }
     if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
-      await ctx.handleCommand(item);
-      return;
+      const handleCommand = ctx.handleCommand;
+      return () => handleCommand(item);
     }
     const decision = decideWake(push, {
       selfMxid: identity.mxid,

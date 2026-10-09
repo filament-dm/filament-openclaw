@@ -135,16 +135,33 @@ if [ "$FOUND_STATE" = "UNKNOWN" ]; then
   fi
 fi
 
+# The install's output is shown and kept, to tell a failed download from a
+# plugin that was downloaded but that the gateway would not load.
+INSTALL_LOG="$(mktemp)"
+trap 'rm -f "$INSTALL_LOG"' EXIT
+
+plugin_install() {
+  openclaw plugins install "$1" --accept-capabilities --force 2>&1 | tee "$INSTALL_LOG"
+}
+
+# Another source fetches the same code, so a load failure is not worth a retry.
+fail_if_load_failed() {
+  grep -qE 'plugin load failed|failed during activate' "$INSTALL_LOG" || return 0
+  err "$PLUGIN_ID was downloaded, but the gateway could not load it (see the error above). \
+This is a bug in the plugin version from $SPEC, not in your setup. Try a known-good \
+version with PLUGIN_REF=<tag or commit>, then run: openclaw plugins reload $PLUGIN_ID"
+}
+
 install_fresh() {
   info "Installing $PLUGIN_ID from $SPEC ..."
-  if openclaw plugins install "$SPEC" --accept-capabilities --force; then
-    return 0
-  fi
+  plugin_install "$SPEC" && return 0
+  fail_if_load_failed
   if [ "$SPEC" = "$REPO_HTTPS" ]; then
     warn "HTTPS install failed; retrying over SSH."
     SPEC="$REPO_SSH"
-    openclaw plugins install "$SPEC" --accept-capabilities --force \
-      || err "Could not install $PLUGIN_ID from either HTTPS or SSH."
+    plugin_install "$SPEC" && return 0
+    fail_if_load_failed
+    err "Could not install $PLUGIN_ID from either HTTPS or SSH."
   else
     err "Could not install $PLUGIN_ID from $SPEC."
   fi
