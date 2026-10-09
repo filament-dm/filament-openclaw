@@ -33,6 +33,8 @@ export interface DispatchWorkItemParams {
   channelId: string;
   threadId: string | null;
   messages: WorkMessage[];
+  /** Filament's standing instructions for the agent, added to the turn's system prompt. */
+  systemPrompt?: string;
   /** Attachments already saved for the turn (poll_work only). */
   media?: InboundMedia[];
   recipientAddress: string;
@@ -133,6 +135,8 @@ export async function dispatchWorkItemTurn(
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // Despite the name, the gateway adds this to the system prompt of direct turns too.
+    ...(params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {}),
     ...inboundMediaFields(params.media),
   });
 

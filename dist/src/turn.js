@@ -69,6 +69,8 @@ async function dispatchWorkItemTurn(params) {
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // Despite the name, the gateway adds this to the system prompt of direct turns too.
+    ...params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {},
     ...inboundMediaFields(params.media)
   });
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
