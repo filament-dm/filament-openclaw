@@ -5,6 +5,22 @@ import { nextBackoffMs, sleepAbortable } from "../../util.js";
 import {
   ATTACHMENT_ONLY_BODY
 } from "../../work-item.js";
+function withMedia(raw) {
+  if (!Array.isArray(raw)) return {};
+  const media = [];
+  for (const d of raw) {
+    if (!d || typeof d !== "object") continue;
+    const r = d;
+    if (typeof r.mxc_url !== "string" || !r.mxc_url.startsWith("mxc://")) continue;
+    media.push({
+      mxc_url: r.mxc_url,
+      ...typeof r.mimetype === "string" ? { mimetype: r.mimetype } : {},
+      ...typeof r.filename === "string" ? { filename: r.filename } : {},
+      ...typeof r.size === "number" ? { size: r.size } : {}
+    });
+  }
+  return media.length ? { media } : {};
+}
 function parsePollWorkResponse(data) {
   if (!data || typeof data !== "object") return null;
   const d = data;
@@ -18,6 +34,7 @@ function parsePollWorkResponse(data) {
     const messages = r.messages.filter(
       (m) => !!m && typeof m === "object" && typeof m.event_id === "string"
     ).map((m) => ({
+      ...withMedia(m.media),
       event_id: String(m.event_id),
       sender: typeof m.sender === "string" ? m.sender : "unknown",
       body: typeof m.body === "string" && m.body ? m.body : Array.isArray(m.media) && m.media.length > 0 ? ATTACHMENT_ONLY_BODY : "",

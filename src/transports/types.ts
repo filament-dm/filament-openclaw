@@ -4,6 +4,7 @@
  * never import each other.
  */
 import type { FilamentMcpClient } from "../mcp-client.js";
+import type { InboundMedia } from "../media.js";
 import type { ResolvedIdentity } from "../onboarding-core.js";
 import type { McpSettings } from "../settings.js";
 import type { DispatchTurnResult } from "../turn.js";
@@ -12,6 +13,8 @@ import type { WorkItem } from "../work-item.js";
 export interface TurnResult extends DispatchTurnResult {
   /** Where write tools replied: a room id, `"*"` for a thread reply, or `"backchannel"`. */
   repliedTo: ReadonlySet<string>;
+  /** Local directories the turn's agent may send files from (`mediaUrls` that are paths). */
+  mediaLocalRoots: readonly string[];
 }
 
 export interface TransportContext {
@@ -23,8 +26,8 @@ export interface TransportContext {
   control: boolean;
   abortSignal: AbortSignal;
   log: (message: string) => void;
-  /** Throws only when the dispatcher itself throws. */
-  runTurn: (item: WorkItem) => Promise<TurnResult>;
+  /** Throws only when the dispatcher itself throws. `media`: attachments saved for the turn. */
+  runTurn: (item: WorkItem, media?: InboundMedia[]) => Promise<TurnResult>;
   /** Never throws. */
   handleControl: (item: WorkItem) => Promise<void>;
   /**

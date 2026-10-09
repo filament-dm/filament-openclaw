@@ -1,3 +1,4 @@
+import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
   DEFAULT_ACCOUNT_ID,
@@ -266,7 +267,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             markChoiceAsked(accountId);
           }
         };
-        const runTurn = async (item) => {
+        const runTurn = async (item, media) => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
@@ -285,6 +286,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               channelId: item.channel_id,
               threadId: item.thread_id,
               messages: item.messages,
+              media,
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: item.channel_id,
               // Filament, not OpenClaw, decides who can reach the agent; only the
@@ -295,7 +297,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           } finally {
             repliedTo = endFilamentTurn(accountId);
           }
-          return { ...result, repliedTo };
+          return {
+            ...result,
+            repliedTo,
+            mediaLocalRoots: getAgentScopedMediaLocalRoots(ctx.cfg, result.agentId)
+          };
         };
         let token = "";
         if (mcp.tokenInput !== void 0) {

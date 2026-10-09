@@ -104,6 +104,9 @@ function harness(
       await overrides.holdTurns;
       return {
         finalText: "the reply",
+        mediaUrls: [],
+        agentId: "writer",
+        mediaLocalRoots: [],
         sawFinal: true,
         sawSkip: false,
         sawError: false,

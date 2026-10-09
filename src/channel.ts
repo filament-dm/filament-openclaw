@@ -2,6 +2,8 @@
  * The Filament channel. Per account: connect, run the transport the settings pick (`fcm` by
  * default, or `poll`) until it stops, then hold the account open until the gateway aborts it.
  */
+// `media-local-roots` is the newer home of this helper, but the SDK this builds against predates it.
+import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
@@ -28,6 +30,7 @@ import {
 } from "./choose-agent.js";
 import { awaitConfigApplied, writeGatewayConfig } from "./config-write.js";
 import { type ConnectHandle, retryConnect, runConnect } from "./connect.js";
+import type { InboundMedia } from "./media.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -327,7 +330,7 @@ export function registerFilamentChannel(
           }
         };
 
-        const runTurn = async (item: WorkItem): Promise<TurnResult> => {
+        const runTurn = async (item: WorkItem, media?: InboundMedia[]): Promise<TurnResult> => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
@@ -346,6 +349,7 @@ export function registerFilamentChannel(
               channelId: item.channel_id,
               threadId: item.thread_id,
               messages: item.messages,
+              media,
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: item.channel_id,
               // Filament, not OpenClaw, decides who can reach the agent; only the
@@ -356,7 +360,11 @@ export function registerFilamentChannel(
           } finally {
             repliedTo = endFilamentTurn(accountId);
           }
-          return { ...result, repliedTo };
+          return {
+            ...result,
+            repliedTo,
+            mediaLocalRoots: getAgentScopedMediaLocalRoots(ctx.cfg, result.agentId),
+          };
         };
 
         let token = "";

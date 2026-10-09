@@ -6,6 +6,7 @@
  */
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
+import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isGatewayCommandItem } from "../../gateway.js";
 import type { DispatchOutcome } from "../../work-item.js";
@@ -70,8 +71,18 @@ export function classifyPublish(res: ToolCallResult): DispatchOutcome {
   return { kind: "retry", diagnostic: `publish failed (${res.kind ?? "?"}: ${message})` };
 }
 
-export async function runPollTransport(ctx: TransportContext): Promise<TransportResult> {
+export interface PollTransportDeps {
+  fetchInboundMedia?: typeof fetchInboundMedia;
+  uploadOutboundMedia?: typeof uploadOutboundMedia;
+}
+
+export async function runPollTransport(
+  ctx: TransportContext,
+  deps: PollTransportDeps = {},
+): Promise<TransportResult> {
   const { client, abortSignal, log } = ctx;
+  const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
+  const uploadMedia = deps.uploadOutboundMedia ?? uploadOutboundMedia;
 
   const dispatchItem = async (item: PollWorkItem): Promise<DispatchOutcome> => {
     const replyWith = item.reply_with;
@@ -99,7 +110,8 @@ export async function runPollTransport(ctx: TransportContext): Promise<Transport
 
     let result;
     try {
-      result = await ctx.runTurn(item);
+      const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
+      result = await ctx.runTurn(item, media);
     } catch (error) {
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
@@ -109,11 +121,25 @@ export async function runPollTransport(ctx: TransportContext): Promise<Transport
     }
     if (result.sawFinal) {
       if (abortSignal.aborted) return { kind: "retry", diagnostic: "aborted before publish" };
+      const attachments = await uploadMedia(client, result.mediaUrls, {
+        mediaLocalRoots: result.mediaLocalRoots,
+        log,
+        signal: abortSignal,
+      });
+      if (!result.finalText.trim() && attachments.length === 0) {
+        return {
+          kind: "dropped",
+          diagnostic: "the reply was media only and none of it could be sent",
+        };
+      }
       let publishRes;
       try {
-        publishRes = await client.replyWith(replyWith, result.finalText, {
-          signal: abortSignal,
-        });
+        publishRes = await client.replyWith(
+          replyWith,
+          result.finalText,
+          { signal: abortSignal },
+          attachments,
+        );
       } catch (error) {
         return { kind: "retry", diagnostic: `publish threw: ${String(error)}` };
       }

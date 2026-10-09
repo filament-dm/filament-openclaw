@@ -125,7 +125,7 @@ async function runFcmTransport(ctx, deps = {}) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
       return;
     }
-    if (!result.sawFinal) {
+    if (!result.sawFinal || !result.finalText.trim()) {
       log(`filament-fcm: turn for ${eventId} produced no reply`);
       return;
     }

@@ -1,7 +1,10 @@
 import { createInboundEnvelopeBuilder } from "openclaw/plugin-sdk/inbound-envelope";
 import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-outbound";
-import { runPreparedInboundReply } from "openclaw/plugin-sdk/channel-inbound";
-import { normalizeOutboundReplyPayload } from "openclaw/plugin-sdk/reply-payload";
+import { runPreparedInboundReply, toInboundMediaFacts } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  normalizeOutboundReplyPayload,
+  resolveOutboundMediaUrls
+} from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 function renderMessages(messages) {
   return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
@@ -56,7 +59,8 @@ async function dispatchWorkItemTurn(params) {
     MessageSidFull: lastMessage?.event_id ?? params.channelId,
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
-    CommandAuthorized: params.commandAuthorized
+    CommandAuthorized: params.commandAuthorized,
+    ...params.media?.length ? { media: toInboundMediaFacts(params.media) } : {}
   });
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,
@@ -65,6 +69,7 @@ async function dispatchWorkItemTurn(params) {
     accountId
   });
   const finals = [];
+  const mediaUrls = [];
   let sawSkip = false;
   let sawError = false;
   let errorDetail;
@@ -89,6 +94,7 @@ async function dispatchWorkItemTurn(params) {
           const normalized = payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
           const text = normalized.text;
           if (typeof text === "string" && text.trim()) finals.push(text);
+          mediaUrls.push(...resolveOutboundMediaUrls(normalized));
         },
         onSkip: () => {
           sawSkip = true;
@@ -105,7 +111,9 @@ async function dispatchWorkItemTurn(params) {
   });
   return {
     finalText: finals.join("\n\n"),
-    sawFinal: finals.length > 0,
+    mediaUrls,
+    agentId: effectiveRoute.agentId,
+    sawFinal: finals.length > 0 || mediaUrls.length > 0,
     sawSkip,
     sawError,
     errorDetail

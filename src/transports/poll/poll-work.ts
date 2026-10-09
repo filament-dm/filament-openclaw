@@ -16,6 +16,7 @@ import {
   ATTACHMENT_ONLY_BODY,
   type DispatchOutcome,
   type WorkItem,
+  type WorkMedia,
   type WorkMessage,
 } from "../../work-item.js";
 
@@ -58,6 +59,24 @@ interface ParsedPollWorkResponse {
   busy: boolean;
 }
 
+/** The server's attachment descriptors (`mxc_url` plus optional metadata), as an optional field. */
+function withMedia(raw: unknown): { media?: WorkMedia[] } {
+  if (!Array.isArray(raw)) return {};
+  const media: WorkMedia[] = [];
+  for (const d of raw) {
+    if (!d || typeof d !== "object") continue;
+    const r = d as Record<string, unknown>;
+    if (typeof r.mxc_url !== "string" || !r.mxc_url.startsWith("mxc://")) continue;
+    media.push({
+      mxc_url: r.mxc_url,
+      ...(typeof r.mimetype === "string" ? { mimetype: r.mimetype } : {}),
+      ...(typeof r.filename === "string" ? { filename: r.filename } : {}),
+      ...(typeof r.size === "number" ? { size: r.size } : {}),
+    });
+  }
+  return media.length ? { media } : {};
+}
+
 export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -76,6 +95,7 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
           typeof (m as Record<string, unknown>).event_id === "string",
       )
       .map((m) => ({
+        ...withMedia(m.media),
         event_id: String(m.event_id),
         sender: typeof m.sender === "string" ? m.sender : "unknown",
         body:

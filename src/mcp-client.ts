@@ -48,6 +48,8 @@ export interface ToolCallResult {
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+// Attachments move whole files, so they get longer than a JSON-RPC call.
+const MEDIA_TIMEOUT_MS = 120_000;
 export const POLL_TIMEOUT_MARGIN_MS = 15_000;
 
 export interface CallOptions {
@@ -425,10 +427,15 @@ export class FilamentMcpClient {
     replyWithSpec: { tool: string; args: Record<string, unknown> },
     markdownBody: string,
     opts?: CallOptions,
+    attachments: Array<{ mxc_url: string; filename?: string }> = [],
   ): Promise<ToolCallResult> {
     return this.callTool(
       replyWithSpec.tool,
-      { ...replyWithSpec.args, markdown_body: markdownBody },
+      {
+        ...replyWithSpec.args,
+        markdown_body: markdownBody,
+        ...(attachments.length ? { attachments } : {}),
+      },
       opts,
     );
   }
@@ -436,6 +443,56 @@ export class FilamentMcpClient {
   private async sideChannelPost(path: string, body?: unknown, opts?: CallOptions): Promise<number> {
     const { status } = await this.post(`${this.mcpUrl}${path}`, body, false, opts);
     return status;
+  }
+
+  /** GET or POST on a side-channel that moves raw bytes; the timeout aborts it. */
+  private async sideChannelBytes(path: string, init: RequestInit, opts?: CallOptions) {
+    const signals = [AbortSignal.timeout(opts?.timeoutMs ?? MEDIA_TIMEOUT_MS)];
+    if (opts?.signal) signals.push(opts.signal);
+    return await this.fetchImpl(`${this.mcpUrl}${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${this.token}` },
+      signal: AbortSignal.any(signals),
+    });
+  }
+
+  /** An attachment's bytes, from the `/media` side-channel. Throws on HTTP errors and oversize. */
+  async downloadMedia(
+    mxcUrl: string,
+    maxBytes: number,
+    opts?: CallOptions,
+  ): Promise<{ bytes: Buffer; contentType: string | null }> {
+    const res = await this.sideChannelBytes(
+      `/media?mxc_url=${encodeURIComponent(mxcUrl)}`,
+      { method: "GET" },
+      opts,
+    );
+    if (!res.ok) throw new Error(`media download returned HTTP ${res.status}`);
+    const declared = Number(res.headers.get("content-length"));
+    if (declared > maxBytes) throw new Error(`media is ${declared} bytes (limit ${maxBytes})`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > maxBytes)
+      throw new Error(`media is ${bytes.length} bytes (limit ${maxBytes})`);
+    return { bytes, contentType: res.headers.get("content-type") };
+  }
+
+  /** Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. */
+  async uploadMedia(
+    bytes: Uint8Array,
+    contentType: string,
+    filename: string | undefined,
+    opts?: CallOptions,
+  ): Promise<string> {
+    const query = filename ? `?filename=${encodeURIComponent(filename)}` : "";
+    const res = await this.sideChannelBytes(
+      `/upload${query}`,
+      { method: "POST", headers: { "content-type": contentType }, body: bytes },
+      opts,
+    );
+    if (!res.ok) throw new Error(`media upload returned HTTP ${res.status}`);
+    const json = (await res.json().catch(() => null)) as { mxc_url?: unknown } | null;
+    if (typeof json?.mxc_url !== "string") throw new Error("media upload returned no mxc_url");
+    return json.mxc_url;
   }
 
   heartbeat(opts?: CallOptions): Promise<number> {

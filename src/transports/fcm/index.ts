@@ -167,6 +167,8 @@ export async function runFcmTransport(
 
     let result;
     try {
+      // Attachments are poll_work-only for now: a push carries no attachment url to fetch, so the
+      // turn gets the placeholder body instead.
       result = await ctx.runTurn(item);
     } catch (error) {
       log(`filament-fcm: turn for ${eventId} threw; dropping it: ${String(error)}`);
@@ -178,7 +180,9 @@ export async function runFcmTransport(
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
       return;
     }
-    if (!result.sawFinal) {
+    // Attachments in the reply (`result.mediaUrls`) are poll_work-only for now: only the text is
+    // posted, and a reply that is media alone posts nothing.
+    if (!result.sawFinal || !result.finalText.trim()) {
       log(`filament-fcm: turn for ${eventId} produced no reply`);
       return;
     }
