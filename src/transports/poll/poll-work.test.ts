@@ -285,41 +285,67 @@ test("pending sweep: once at start, before the first poll", async () => {
   assert.deepEqual(events, ["sweep", "poll"]);
 });
 
-test("pending sweep: a poll carrying invites triggers one, an empty invites list does not", async () => {
+test("offers: invite and vouch items are accepted in the same cycle, without a sweep", async () => {
   const controller = new AbortController();
   const events: string[] = [];
-  const poll = (data: unknown) => () => {
-    events.push("poll");
-    return Promise.resolve(okResult(data));
-  };
   const { client } = fakeClient([
-    poll({ work: [], cursor: "c:1", truncated: false, acknowledged: 0, invites: [] }),
-    poll({
-      work: [],
-      cursor: "c:2",
-      truncated: false,
-      acknowledged: 0,
-      invites: [{ room_id: "!loop:server", event_id: "$i1", inviter: "@ada:server" }],
-    }),
+    () => {
+      events.push("poll");
+      return Promise.resolve(
+        okResult({
+          work: [
+            {
+              kind: "invite",
+              loop_id: "!loop:server",
+              name: "Design",
+              invited_by: "@ada:server",
+              invite_event_id: "$i1",
+              reply_with: { tool: "accept_invite", args: { loop_id: "!loop:server" } },
+            },
+            {
+              kind: "vouch",
+              loop_id: "!other:server",
+              vouched_by: "@bob:server",
+              reply_with: { tool: "accept_vouch", args: { loop_id: "!other:server" } },
+            },
+          ],
+          cursor: "c:1",
+        }),
+      );
+    },
     () => {
       events.push("poll");
       controller.abort();
-      return Promise.resolve(okResult({ work: [], cursor: "c:3" }));
+      return Promise.resolve(okResult({ work: [], cursor: "c:2" }));
     },
   ]);
   await runPollLoop({
     client,
     abortSignal: controller.signal,
     log: () => {},
-    dispatchItem: async () => ({ kind: "published" }),
+    dispatchItem: async () => {
+      events.push("turn");
+      return { kind: "published" };
+    },
     sweepPending: async () => {
       events.push("sweep");
     },
+    acceptOffer: async (offer) => {
+      events.push(
+        `${offer.kind} ${offer.reply_with.tool} ${String(offer.reply_with.args.loop_id)}`,
+      );
+    },
   });
-  assert.deepEqual(events, ["sweep", "poll", "poll", "sweep", "poll"]);
+  assert.deepEqual(events, [
+    "sweep",
+    "poll",
+    "invite accept_invite !loop:server",
+    "vouch accept_vouch !other:server",
+    "poll",
+  ]);
 });
 
-test("pending sweep: the backstop runs once the interval has passed, with no invites hint", async () => {
+test("pending sweep: the backstop runs once the interval has passed", async () => {
   const controller = new AbortController();
   let clock = 0;
   let sweeps = 0;
@@ -357,7 +383,7 @@ test("pending sweep: the backstop runs once the interval has passed, with no inv
   assert.deepEqual(sweepsAtPoll, [1, 1, 2]);
 });
 
-test("parsePollWorkResponse: flags an older server omits default to false, invites to []", () => {
+test("parsePollWorkResponse: flags an older server omits default to false, no offers", () => {
   const parsed = parsePollWorkResponse({
     work: [
       {
@@ -371,7 +397,7 @@ test("parsePollWorkResponse: flags an older server omits default to false, invit
   });
   assert.ok(parsed);
   assert.equal(parsed.busy, false);
-  assert.deepEqual(parsed.invites, []);
+  assert.deepEqual(parsed.offers, []);
   assert.equal(parsed.work[0]!.is_direct, false);
   assert.deepEqual(parsed.work[0]!.messages[0], {
     event_id: "$e1",
@@ -408,7 +434,6 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
       },
     ],
     cursor: "c:1",
-    invites: [{ room_id: "!loop:server", event_id: "$i", inviter: "@ada:server" }, { bogus: 1 }],
   });
   assert.ok(parsed);
   assert.equal(parsed.work[0]!.is_direct, true);
@@ -417,7 +442,6 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
   assert.equal(parsed.work[0]!.messages[0]!.is_implicitly_mentioned, true);
   assert.equal(parsed.work[0]!.messages[0]!.reply_expected, false);
   assert.equal(parsed.work[0]!.messages[0]!.body, ATTACHMENT_ONLY_BODY);
-  assert.deepEqual(parsed.invites, [{ room_id: "!loop:server" }]);
 });
 
 // A `poll_work` response in the shape synapse develop sends: rows are `AgentMessage`
@@ -528,6 +552,48 @@ test("parsePollWorkResponse: an empty media list is not an attachment", () => {
   );
   assert.ok(parsed);
   assert.equal(parsed.work[0]!.messages[0]!.body, "");
+});
+
+test("parsePollWorkResponse: invite and vouch items become offers; reactions and malformed items are dropped", () => {
+  const parsed = parsePollWorkResponse({
+    work: [
+      {
+        kind: "invite",
+        loop_id: "!loop:server",
+        reply_with: { tool: "accept_invite", args: { loop_id: "!loop:server" } },
+      },
+      {
+        kind: "vouch",
+        loop_id: "!other:server",
+        reply_with: { tool: "accept_vouch", args: { loop_id: "!other:server" } },
+      },
+      { kind: "invite", loop_id: "!noreply:server", reply_with: null },
+      { kind: "vouch", reply_with: { tool: "accept_vouch", args: {} } },
+      {
+        kind: "reaction",
+        channel_id: "!room:server",
+        thread_id: null,
+        is_backchannel: false,
+        reactions: [{ event_id: "$r", sender: "@ada:server", key: "👍" }],
+        reply_with: null,
+      },
+    ],
+    cursor: "c:1",
+  });
+  assert.ok(parsed);
+  assert.deepEqual(parsed.work, []);
+  assert.deepEqual(parsed.offers, [
+    {
+      kind: "invite",
+      loop_id: "!loop:server",
+      reply_with: { tool: "accept_invite", args: { loop_id: "!loop:server" } },
+    },
+    {
+      kind: "vouch",
+      loop_id: "!other:server",
+      reply_with: { tool: "accept_vouch", args: { loop_id: "!other:server" } },
+    },
+  ]);
 });
 
 test("auth error from poll_work stops the loop without retry", async () => {

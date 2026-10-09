@@ -3,8 +3,9 @@
  * (`wait_seconds` blocks server-side); it waits only after a failure, a reply that may not have
  * landed, or a `busy` answer. The cursor is in memory only: a restart re-scans unread work.
  *
- * Pending invites and vouches are swept at start, on an `invites` hint, and every
- * `PENDING_SWEEP_INTERVAL_MS`: a vouch never shows up in `invites`.
+ * An invite or vouch arrives as a work item of its own kind and is accepted in the same cycle,
+ * with the tool its `reply_with` names. Pending invites and vouches are also swept at start
+ * (they predate the cursor) and every `PENDING_SWEEP_INTERVAL_MS` as a backstop.
  */
 import {
   type CallOptions,
@@ -44,9 +45,11 @@ export interface PollWorkItem extends WorkItem {
   reply_with: ReplyWithSpec | null;
 }
 
-/** A pending invite the server saw while scanning: a hint to sweep, not work. */
-export interface PollInvite {
-  room_id: string;
+/** An `invite` or `vouch` work item: no turn, only the accept call its `reply_with` names. */
+export interface PollOffer {
+  kind: "invite" | "vouch";
+  loop_id: string;
+  reply_with: ReplyWithSpec;
 }
 
 interface ParsedPollWorkResponse {
@@ -55,8 +58,16 @@ interface ParsedPollWorkResponse {
   next_poll_ms: number;
   truncated: boolean;
   acknowledged: number;
-  invites: PollInvite[];
+  offers: PollOffer[];
   busy: boolean;
+}
+
+function replyWithFrom(rw: unknown): ReplyWithSpec | null {
+  if (!rw || typeof rw !== "object") return null;
+  const r = rw as Record<string, unknown>;
+  if (typeof r.tool !== "string") return null;
+  const args = r.args && typeof r.args === "object" ? (r.args as Record<string, unknown>) : {};
+  return { tool: r.tool, args };
 }
 
 /** The server's attachment descriptors (`mxc_url` plus optional metadata), as an optional field. */
@@ -83,9 +94,18 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
   const busy = d.busy === true;
   if (!busy && (!Array.isArray(d.work) || typeof d.cursor !== "string")) return null;
   const work: PollWorkItem[] = [];
+  const offers: PollOffer[] = [];
   for (const raw of Array.isArray(d.work) ? d.work : []) {
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
+    if (r.kind === "invite" || r.kind === "vouch") {
+      const replyWith = replyWithFrom(r.reply_with);
+      if (typeof r.loop_id === "string" && replyWith) {
+        offers.push({ kind: r.kind, loop_id: r.loop_id, reply_with: replyWith });
+      }
+      continue;
+    }
+    // A `reaction` item has no messages: it is dropped here and the cursor consumes it.
     if (typeof r.channel_id !== "string" || !Array.isArray(r.messages)) continue;
     const messages: PollWorkMessage[] = r.messages
       .filter(
@@ -112,15 +132,7 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
           : {}),
         ...(typeof m.reply_expected === "boolean" ? { reply_expected: m.reply_expected } : {}),
       }));
-    const rw = r.reply_with;
-    const replyWith: ReplyWithSpec | null =
-      rw && typeof rw === "object" && typeof (rw as Record<string, unknown>).tool === "string"
-        ? {
-            tool: String((rw as Record<string, unknown>).tool),
-            args:
-              ((rw as Record<string, unknown>).args as Record<string, unknown> | undefined) ?? {},
-          }
-        : null;
+    const replyWith = replyWithFrom(r.reply_with);
     work.push({
       channel_id: r.channel_id,
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
@@ -130,19 +142,14 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
       reply_with: replyWith,
     });
   }
-  const invites: PollInvite[] = (Array.isArray(d.invites) ? d.invites : [])
-    .filter(
-      (i): i is Record<string, unknown> =>
-        !!i && typeof i === "object" && typeof (i as Record<string, unknown>).room_id === "string",
-    )
-    .map((i) => ({ room_id: String(i.room_id) }));
+
   return {
     work,
     cursor: typeof d.cursor === "string" ? d.cursor : "",
     next_poll_ms: typeof d.next_poll_ms === "number" ? d.next_poll_ms : 0,
     truncated: d.truncated === true,
     acknowledged: typeof d.acknowledged === "number" ? d.acknowledged : 0,
-    invites,
+    offers,
     busy,
   };
 }
@@ -163,6 +170,8 @@ export interface PollLoopOptions {
   maxItems?: number;
   /** Never throws. Absent: no sweeps. */
   sweepPending?: () => Promise<void>;
+  /** Accepts an invite or vouch item. Never throws. Absent: offers are ignored. */
+  acceptOffer?: (offer: PollOffer) => Promise<void>;
   backoffMs?: (attempt: number) => number;
   now?: () => number;
 }
@@ -185,7 +194,7 @@ function itemKey(item: PollWorkItem): string {
 const DEFAULT_MAX_ITEMS = 1;
 
 export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult> {
-  const { client, abortSignal, log, dispatchItem, sweepPending } = opts;
+  const { client, abortSignal, log, dispatchItem, sweepPending, acceptOffer } = opts;
   const waitSeconds = opts.waitSeconds ?? DEFAULT_WAIT_SECONDS;
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
@@ -264,7 +273,10 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     }
     pendingAck = [];
     cursor = parsed.cursor;
-    if (parsed.invites.length > 0) await sweep();
+    for (const offer of parsed.offers) {
+      if (abortSignal.aborted) return {};
+      await acceptOffer?.(offer);
+    }
 
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
