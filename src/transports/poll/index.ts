@@ -11,7 +11,7 @@ import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isGatewayCommandItem } from "../../gateway.js";
 import type { DispatchOutcome } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
-import { type PollWorkItem, runPollLoop } from "./poll-work.js";
+import { type PollOffer, type PollWorkItem, runPollLoop } from "./poll-work.js";
 
 function publishSucceeded(data: unknown): boolean {
   if (!data || typeof data !== "object") return false;
@@ -74,6 +74,23 @@ export function classifyPublish(res: ToolCallResult): DispatchOutcome {
 export interface PollTransportDeps {
   fetchInboundMedia?: typeof fetchInboundMedia;
   uploadOutboundMedia?: typeof uploadOutboundMedia;
+}
+
+/** Calls the accept tool an invite or vouch item names, with exactly its arguments. Never throws. */
+async function acceptOffer(
+  client: TransportContext["client"],
+  offer: PollOffer,
+  log: (message: string) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  try {
+    const res = await client.callTool(offer.reply_with.tool, offer.reply_with.args, { signal });
+    log(
+      `filament: accept ${offer.kind} ${offer.loop_id} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`,
+    );
+  } catch (error) {
+    log(`filament: accept ${offer.kind} ${offer.loop_id} threw: ${String(error)}`);
+  }
 }
 
 export async function runPollTransport(
@@ -169,5 +186,6 @@ export async function runPollTransport(
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
     sweepPending: ctx.control ? undefined : () => acceptPending(client, log, abortSignal),
+    acceptOffer: ctx.control ? undefined : (offer) => acceptOffer(client, offer, log, abortSignal),
   });
 }

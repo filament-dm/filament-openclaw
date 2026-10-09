@@ -72,6 +72,10 @@ async function run(
       return ok({});
     },
     acceptVouch: async () => ok({}),
+    callTool: async (name: string, args: Record<string, unknown>) => {
+      events.push(`tool ${name} ${JSON.stringify(args)}`);
+      return ok({});
+    },
   };
   const ctx: TransportContext = {
     accountId: "writer",
@@ -114,16 +118,34 @@ test("poll: a control account never sweeps invites", async () => {
   assert.equal(h.events.includes("list_invites"), false);
 });
 
-test("poll: an invites hint in a poll result triggers a sweep", async () => {
-  const h = await run([{ work: [], cursor: "c:1", invites: [{ room_id: "!loop:x" }] }]);
+test("poll: an invite item is accepted with the tool and arguments its reply_with names", async () => {
+  const invite = {
+    kind: "invite",
+    loop_id: "!loop:x",
+    reply_with: { tool: "accept_invite", args: { loop_id: "!loop:x" } },
+  };
+  const h = await run([{ work: [invite], cursor: "c:1" }]);
   assert.deepEqual(h.events, [
     "list_invites",
     "accept !loop:example.test",
     "poll",
-    "list_invites",
-    "accept !loop:example.test",
+    'tool accept_invite {"loop_id":"!loop:x"}',
     "poll",
   ]);
+  assert.equal(h.turns.length, 0);
+});
+
+test("poll: a control account does not accept invite items", async () => {
+  const invite = {
+    kind: "invite",
+    loop_id: "!loop:x",
+    reply_with: { tool: "accept_invite", args: { loop_id: "!loop:x" } },
+  };
+  const h = await run([{ work: [invite], cursor: "c:1" }], { control: true });
+  assert.equal(
+    h.events.some((e) => e.startsWith("tool ")),
+    false,
+  );
 });
 
 test("poll: a reply the server refuses is ack'd and the loop goes on", async () => {

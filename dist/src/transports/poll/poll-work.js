@@ -5,6 +5,13 @@ import { nextBackoffMs, sleepAbortable } from "../../util.js";
 import {
   ATTACHMENT_ONLY_BODY
 } from "../../work-item.js";
+function replyWithFrom(rw) {
+  if (!rw || typeof rw !== "object") return null;
+  const r = rw;
+  if (typeof r.tool !== "string") return null;
+  const args = r.args && typeof r.args === "object" ? r.args : {};
+  return { tool: r.tool, args };
+}
 function withMedia(raw) {
   if (!Array.isArray(raw)) return {};
   const media = [];
@@ -27,9 +34,17 @@ function parsePollWorkResponse(data) {
   const busy = d.busy === true;
   if (!busy && (!Array.isArray(d.work) || typeof d.cursor !== "string")) return null;
   const work = [];
+  const offers = [];
   for (const raw of Array.isArray(d.work) ? d.work : []) {
     if (!raw || typeof raw !== "object") continue;
     const r = raw;
+    if (r.kind === "invite" || r.kind === "vouch") {
+      const replyWith2 = replyWithFrom(r.reply_with);
+      if (typeof r.loop_id === "string" && replyWith2) {
+        offers.push({ kind: r.kind, loop_id: r.loop_id, reply_with: replyWith2 });
+      }
+      continue;
+    }
     if (typeof r.channel_id !== "string" || !Array.isArray(r.messages)) continue;
     const messages = r.messages.filter(
       (m) => !!m && typeof m === "object" && typeof m.event_id === "string"
@@ -44,11 +59,7 @@ function parsePollWorkResponse(data) {
       ...typeof m.is_implicitly_mentioned === "boolean" ? { is_implicitly_mentioned: m.is_implicitly_mentioned } : {},
       ...typeof m.reply_expected === "boolean" ? { reply_expected: m.reply_expected } : {}
     }));
-    const rw = r.reply_with;
-    const replyWith = rw && typeof rw === "object" && typeof rw.tool === "string" ? {
-      tool: String(rw.tool),
-      args: rw.args ?? {}
-    } : null;
+    const replyWith = replyWithFrom(r.reply_with);
     work.push({
       channel_id: r.channel_id,
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
@@ -58,16 +69,13 @@ function parsePollWorkResponse(data) {
       reply_with: replyWith
     });
   }
-  const invites = (Array.isArray(d.invites) ? d.invites : []).filter(
-    (i) => !!i && typeof i === "object" && typeof i.room_id === "string"
-  ).map((i) => ({ room_id: String(i.room_id) }));
   return {
     work,
     cursor: typeof d.cursor === "string" ? d.cursor : "",
     next_poll_ms: typeof d.next_poll_ms === "number" ? d.next_poll_ms : 0,
     truncated: d.truncated === true,
     acknowledged: typeof d.acknowledged === "number" ? d.acknowledged : 0,
-    invites,
+    offers,
     busy
   };
 }
@@ -81,7 +89,7 @@ function itemKey(item) {
 }
 const DEFAULT_MAX_ITEMS = 1;
 async function runPollLoop(opts) {
-  const { client, abortSignal, log, dispatchItem, sweepPending } = opts;
+  const { client, abortSignal, log, dispatchItem, sweepPending, acceptOffer } = opts;
   const waitSeconds = opts.waitSeconds ?? DEFAULT_WAIT_SECONDS;
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
@@ -150,7 +158,10 @@ async function runPollLoop(opts) {
     }
     pendingAck = [];
     cursor = parsed.cursor;
-    if (parsed.invites.length > 0) await sweep();
+    for (const offer of parsed.offers) {
+      if (abortSignal.aborted) return {};
+      await acceptOffer?.(offer);
+    }
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
       if (!item.reply_with) {

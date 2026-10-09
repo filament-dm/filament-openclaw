@@ -50,6 +50,16 @@ function classifyPublish(res) {
   }
   return { kind: "retry", diagnostic: `publish failed (${res.kind ?? "?"}: ${message})` };
 }
+async function acceptOffer(client, offer, log, signal) {
+  try {
+    const res = await client.callTool(offer.reply_with.tool, offer.reply_with.args, { signal });
+    log(
+      `filament: accept ${offer.kind} ${offer.loop_id} ${res.ok ? "ok" : `failed (${res.error?.code ?? "?"})`}`
+    );
+  } catch (error) {
+    log(`filament: accept ${offer.kind} ${offer.loop_id} threw: ${String(error)}`);
+  }
+}
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
@@ -130,7 +140,8 @@ async function runPollTransport(ctx, deps = {}) {
     log,
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
-    sweepPending: ctx.control ? void 0 : () => acceptPending(client, log, abortSignal)
+    sweepPending: ctx.control ? void 0 : () => acceptPending(client, log, abortSignal),
+    acceptOffer: ctx.control ? void 0 : (offer) => acceptOffer(client, offer, log, abortSignal)
   });
 }
 export {
