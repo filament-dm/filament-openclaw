@@ -1,0 +1,37 @@
+name: "dist matches source"
+
+# dist/ is committed: gateways install the plugin straight from a git ref, so the
+# committed dist/ is what runs. Rebuild it from source and fail when the committed
+# copy differs from the build or the built plugin does not load.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      - name: Rebuild dist/ from source
+        run: npm run build
+
+      - name: Committed dist/ matches the build
+        run: |
+          changed="$(git status --porcelain -- dist)"
+          if [ -n "$changed" ]; then
+            echo "::error::dist/ does not match the source. Run 'npm run build' and commit dist/."
+            echo "$changed"
+            git diff --stat -- dist
+            exit 1
+          fi
+
+      - name: The built plugin loads
+        run: node --input-type=module -e "await import('./dist/index.js')"
