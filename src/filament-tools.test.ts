@@ -86,6 +86,10 @@ test("classifyToolTier: readOnlyHint true is read, false is write, set_profile i
   assert.equal(classifyToolTier(writeDescriptor("post_message")), "write");
   assert.equal(classifyToolTier(writeDescriptor("set_profile")), "ring0");
   assert.equal(classifyToolTier(readDescriptor("set_profile")), "ring0");
+  // Settings change the agent itself too.
+  assert.equal(classifyToolTier(writeDescriptor("declare_settings")), "ring0");
+  assert.equal(classifyToolTier(writeDescriptor("set_setting")), "ring0");
+  assert.equal(classifyToolTier(readDescriptor("get_settings")), "read");
 });
 
 test("classifyToolTier: missing/malformed annotations fail closed to ring0", () => {
@@ -276,7 +280,8 @@ test("logToolDrift: logs server-only and snapshot-only tool names, not the known
   assert.ok(
     lines.some(
       (l) =>
-        l.includes("snapshot has 1 tool(s) the server no longer serves") && l.includes(missingName),
+        l.includes("snapshot has 1 tool(s) the server does not list for this agent") &&
+        l.includes(missingName),
     ),
   );
   assert.ok(!lines.some((l) => l.includes("poll_work")));

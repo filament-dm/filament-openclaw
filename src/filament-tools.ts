@@ -45,7 +45,11 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
 ]);
 
 // Tools that change the agent itself: callable only from a backchannel (principal) turn.
-const RING0_TOOL_NAMES: ReadonlySet<string> = new Set(["set_profile"]);
+const RING0_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "set_profile",
+  "declare_settings",
+  "set_setting",
+]);
 
 export type ToolTier = "read" | "ring0" | "write";
 
@@ -285,7 +289,7 @@ export function logToolDrift(liveTools: McpToolDescriptor[], log: (message: stri
   }
   if (missing.length > 0) {
     log(
-      `filament-tools: snapshot has ${missing.length} tool(s) the server no longer serves: ${missing.join(", ")}`,
+      `filament-tools: snapshot has ${missing.length} tool(s) the server does not list for this agent (behind a feature flag, or removed): ${missing.join(", ")}`,
     );
   }
   if (extra.length === 0 && missing.length === 0) {

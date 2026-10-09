@@ -8,7 +8,11 @@ const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
   ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
   ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"]
 ]);
-const RING0_TOOL_NAMES = /* @__PURE__ */ new Set(["set_profile"]);
+const RING0_TOOL_NAMES = /* @__PURE__ */ new Set([
+  "set_profile",
+  "declare_settings",
+  "set_setting"
+]);
 function classifyToolTier(descriptor) {
   if (RING0_TOOL_NAMES.has(descriptor.name)) return "ring0";
   const readOnly = descriptor.annotations?.readOnlyHint;
@@ -140,7 +144,7 @@ function logToolDrift(liveTools, log) {
   }
   if (missing.length > 0) {
     log(
-      `filament-tools: snapshot has ${missing.length} tool(s) the server no longer serves: ${missing.join(", ")}`
+      `filament-tools: snapshot has ${missing.length} tool(s) the server does not list for this agent (behind a feature flag, or removed): ${missing.join(", ")}`
     );
   }
   if (extra.length === 0 && missing.length === 0) {
