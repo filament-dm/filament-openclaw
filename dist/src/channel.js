@@ -1,4 +1,8 @@
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
+import { resolveAgentAvatar, resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
   asRecord,
@@ -22,7 +26,13 @@ import {
   setFilamentClient
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
+import { listGatewayAgents } from "./gateway.js";
 import { helloDue, sayFirstHello } from "./hello.js";
+import {
+  parseIdentityMarkdown,
+  seedName,
+  seedProfile
+} from "./profile-seed.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
@@ -47,6 +57,10 @@ const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
 };
+function boundAgentOf(gatewayConfig, accountId) {
+  const agents = listGatewayAgents(gatewayConfig);
+  return agents.find((agent) => agent.boundAccount === accountId)?.id ?? agents.find((agent) => agent.id === accountId)?.id;
+}
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
   const log = (message) => {
@@ -54,6 +68,34 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     else console.log(message);
   };
   const pluginConfigOf = (cfg) => pluginConfigFrom(cfg) ?? api.pluginConfig;
+  const liveConfig = () => api.runtime?.config?.current?.() ?? api.config;
+  const seedFromOpenClaw = async (client, accountId, accountLog, signal) => {
+    const cfg = liveConfig();
+    const agentId = boundAgentOf(cfg, accountId);
+    if (!agentId) return null;
+    const sdkConfig = cfg;
+    let identityFile;
+    try {
+      const workspace = resolveAgentWorkspaceDir(sdkConfig, agentId);
+      identityFile = parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
+    } catch {
+      identityFile = void 0;
+    }
+    let avatar = { kind: "none" };
+    try {
+      avatar = resolveAgentAvatar(sdkConfig, agentId);
+    } catch (error) {
+      accountLog(`filament-profile: could not resolve the agent's avatar: ${String(error)}`);
+    }
+    return seedProfile({
+      client,
+      name: seedName(cfg, agentId, identityFile),
+      avatar,
+      readFile: async (path) => readFile(path),
+      log: accountLog,
+      signal
+    });
+  };
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const plugin = {
     id: FILAMENT_CHANNEL_ID,
@@ -246,12 +288,19 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             previousMxid,
             helloSentAs: helloSentAs(accountId)
           })) {
+            const seeded = await seedFromOpenClaw(
+              connection.client,
+              accountId,
+              accountLog,
+              abortSignal
+            );
             setFilamentClient(connection.client, accountId);
             const hello = await sayFirstHello({
               identity: connection.identity,
               runTurn: (item) => runTurn(item),
               say: sayToPrincipal,
-              log: accountLog
+              log: accountLog,
+              filamentName: seeded?.name
             }).catch((error) => {
               accountLog(`filament-hello: ${String(error)}`);
               return "failed";

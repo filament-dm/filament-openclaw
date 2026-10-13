@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { FALLBACK_HELLO, HELLO_PROMPT, helloDue, sayFirstHello } from "./hello.js";
+import { FALLBACK_HELLO, helloDue, helloPrompt, sayFirstHello } from "./hello.js";
 import type { TurnResult } from "./transports/types.js";
 import type { WorkItem } from "./work-item.js";
 
@@ -81,15 +81,17 @@ test("sayFirstHello: one backchannel turn in the agent's voice, its reply posted
         {
           event_id: "first-hello:@carl:filament.dm",
           sender: "@owner:filament.dm",
-          body: HELLO_PROMPT,
+          body: helloPrompt(),
           ts: 42,
         },
       ],
     },
   ]);
   assert.deepEqual(run.said, ["Hi! I'm Carl, your raccoon familiar. I'm listening here."]);
-  assert.match(HELLO_PROMPT, /name your owner knows you by/);
-  assert.match(HELLO_PROMPT, /filament_set_profile/);
+  assert.match(helloPrompt(), /name your owner knows you by/);
+  // The profile is seeded in code: the agent is told its name, not asked to set it.
+  assert.doesNotMatch(helloPrompt(), /set_profile|profile name is/);
+  assert.match(helloPrompt("Carl"), /Your Filament profile name is now "Carl"\./);
 });
 
 test("sayFirstHello: an agent that posted the hello itself is not echoed", async () => {

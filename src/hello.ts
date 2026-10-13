@@ -9,13 +9,19 @@ import { isFirstContact, type ResolvedIdentity } from "./onboarding-core.js";
 import type { TurnResult } from "./transports/types.js";
 import type { WorkItem } from "./work-item.js";
 
-/** Read by the agent as its principal's message; it is the gateway speaking, so it says so. */
-export const HELLO_PROMPT =
-  "[system: You just joined Filament for your owner, and this is your private chat with them; " +
-  "they are waiting to see you arrive. Reply with one short message: say hello, introduce " +
-  "yourself by the name your owner knows you by, and say you are listening here for anything " +
-  "they want. If your Filament profile name is not that name, set it with filament_set_profile " +
-  "first. Use no other tools.]";
+/**
+ * Read by the agent as its principal's message; it is the gateway speaking, so it says so. The
+ * profile was seeded in code (profile-seed.ts); `filamentName` is the name it now carries.
+ */
+export function helloPrompt(filamentName?: string): string {
+  const named = filamentName ? ` Your Filament profile name is now "${filamentName}".` : "";
+  return (
+    "[system: You just joined Filament for your owner, and this is your private chat with them; " +
+    `they are waiting to see you arrive.${named} Reply with one short message: say hello, ` +
+    "introduce yourself by the name your owner knows you by, and say you are listening here for " +
+    "anything they want. Use no tools.]"
+  );
+}
 
 export const FALLBACK_HELLO =
   "Hi — I'm connected to Filament and listening here. Ask me anything, give me tasks, or tell me how you'd like me to behave.";
@@ -37,7 +43,12 @@ export function helloDue(params: {
   return isFirstContact(params.instructions) || params.previousMxid !== params.mxid;
 }
 
-export function helloItem(identity: ResolvedIdentity, ccRoomId: string, now: number): WorkItem {
+export function helloItem(
+  identity: ResolvedIdentity,
+  ccRoomId: string,
+  now: number,
+  filamentName?: string,
+): WorkItem {
   return {
     channel_id: ccRoomId,
     thread_id: null,
@@ -46,7 +57,7 @@ export function helloItem(identity: ResolvedIdentity, ccRoomId: string, now: num
       {
         event_id: `first-hello:${identity.mxid}`,
         sender: identity.principal,
-        body: HELLO_PROMPT,
+        body: helloPrompt(filamentName),
         ts: now,
       },
     ],
@@ -61,6 +72,8 @@ export interface HelloContext {
   /** Posts to the principal's backchannel; true only when it landed. */
   say: (markdownBody: string) => Promise<boolean>;
   log: (message: string) => void;
+  /** The name the profile was just given, if it was. */
+  filamentName?: string;
   now?: () => number;
   timeoutMs?: number;
 }
@@ -77,7 +90,7 @@ export async function sayFirstHello(ctx: HelloContext): Promise<HelloOutcome> {
   let timer: NodeJS.Timeout | undefined;
   try {
     result = await Promise.race([
-      ctx.runTurn(helloItem(ctx.identity, ccRoomId, (ctx.now ?? Date.now)())),
+      ctx.runTurn(helloItem(ctx.identity, ccRoomId, (ctx.now ?? Date.now)(), ctx.filamentName)),
       new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), ctx.timeoutMs ?? HELLO_TURN_TIMEOUT_MS);
       }),

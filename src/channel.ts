@@ -3,7 +3,12 @@
  * default, or `poll`) until it stops, then hold the account open until the gateway aborts it.
  */
 // `media-local-roots` is the newer home of this helper, but the SDK this builds against predates it.
+import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
+import { resolveAgentAvatar, resolveAgentWorkspaceDir } from "openclaw/plugin-sdk/agent-runtime";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
@@ -31,7 +36,16 @@ import {
   type FilamentToolsApi,
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
+import { listGatewayAgents } from "./gateway.js";
 import { helloDue, sayFirstHello } from "./hello.js";
+import {
+  parseIdentityMarkdown,
+  seedName,
+  seedProfile,
+  type AvatarSource,
+  type SeedClient,
+  type SeedResult,
+} from "./profile-seed.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
@@ -75,6 +89,15 @@ export interface FilamentChannelApi extends FilamentToolsApi {
   };
 }
 
+/** The OpenClaw agent an account answers as: its binding, or the agent its id names. */
+function boundAgentOf(gatewayConfig: unknown, accountId: string): string | undefined {
+  const agents = listGatewayAgents(gatewayConfig);
+  return (
+    agents.find((agent) => agent.boundAccount === accountId)?.id ??
+    agents.find((agent) => agent.id === accountId)?.id
+  );
+}
+
 export function registerFilamentChannel(
   api: FilamentChannelApi,
   onConnectionChange: (connection: ConnectHandle | null) => void = () => {},
@@ -87,6 +110,42 @@ export function registerFilamentChannel(
   // added by `openclaw config set` is seen on the next reload.
   // oxlint-disable-next-line typescript/no-explicit-any
   const pluginConfigOf = (cfg: any): unknown => pluginConfigFrom(cfg) ?? api.pluginConfig;
+
+  const liveConfig = (): unknown => api.runtime?.config?.current?.() ?? api.config;
+
+  const seedFromOpenClaw = async (
+    client: SeedClient,
+    accountId: string,
+    accountLog: (message: string) => void,
+    signal: AbortSignal,
+  ): Promise<SeedResult | null> => {
+    const cfg = liveConfig();
+    const agentId = boundAgentOf(cfg, accountId);
+    if (!agentId) return null;
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const sdkConfig = cfg as any;
+    let identityFile: { name?: string } | undefined;
+    try {
+      const workspace = resolveAgentWorkspaceDir(sdkConfig, agentId);
+      identityFile = parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
+    } catch {
+      identityFile = undefined;
+    }
+    let avatar: AvatarSource = { kind: "none" };
+    try {
+      avatar = resolveAgentAvatar(sdkConfig, agentId);
+    } catch (error) {
+      accountLog(`filament-profile: could not resolve the agent's avatar: ${String(error)}`);
+    }
+    return seedProfile({
+      client,
+      name: seedName(cfg, agentId, identityFile),
+      avatar,
+      readFile: async (path) => readFile(path),
+      log: accountLog,
+      signal,
+    });
+  };
 
   // Before any connection exists: a session can resolve its toolset before connect finishes.
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
@@ -308,6 +367,13 @@ export function registerFilamentChannel(
               helloSentAs: helloSentAs(accountId),
             })
           ) {
+            // The new agent takes its OpenClaw agent's name and avatar before it says hello.
+            const seeded = await seedFromOpenClaw(
+              connection.client,
+              accountId,
+              accountLog,
+              abortSignal,
+            );
             // Before the transport starts: a turn's reply tracking is one per account.
             setFilamentClient(connection.client, accountId);
             const hello = await sayFirstHello({
@@ -315,6 +381,7 @@ export function registerFilamentChannel(
               runTurn: (item) => runTurn(item),
               say: sayToPrincipal,
               log: accountLog,
+              filamentName: seeded?.name,
             }).catch((error) => {
               accountLog(`filament-hello: ${String(error)}`);
               return "failed" as const;

@@ -1,12 +1,15 @@
 import { isFirstContact } from "./onboarding-core.js";
-const HELLO_PROMPT = "[system: You just joined Filament for your owner, and this is your private chat with them; they are waiting to see you arrive. Reply with one short message: say hello, introduce yourself by the name your owner knows you by, and say you are listening here for anything they want. If your Filament profile name is not that name, set it with filament_set_profile first. Use no other tools.]";
+function helloPrompt(filamentName) {
+  const named = filamentName ? ` Your Filament profile name is now "${filamentName}".` : "";
+  return `[system: You just joined Filament for your owner, and this is your private chat with them; they are waiting to see you arrive.${named} Reply with one short message: say hello, introduce yourself by the name your owner knows you by, and say you are listening here for anything they want. Use no tools.]`;
+}
 const FALLBACK_HELLO = "Hi \u2014 I'm connected to Filament and listening here. Ask me anything, give me tasks, or tell me how you'd like me to behave.";
 const HELLO_TURN_TIMEOUT_MS = 9e4;
 function helloDue(params) {
   if (params.helloSentAs === params.mxid) return false;
   return isFirstContact(params.instructions) || params.previousMxid !== params.mxid;
 }
-function helloItem(identity, ccRoomId, now) {
+function helloItem(identity, ccRoomId, now, filamentName) {
   return {
     channel_id: ccRoomId,
     thread_id: null,
@@ -15,7 +18,7 @@ function helloItem(identity, ccRoomId, now) {
       {
         event_id: `first-hello:${identity.mxid}`,
         sender: identity.principal,
-        body: HELLO_PROMPT,
+        body: helloPrompt(filamentName),
         ts: now
       }
     ]
@@ -32,7 +35,7 @@ async function sayFirstHello(ctx) {
   let timer;
   try {
     result = await Promise.race([
-      ctx.runTurn(helloItem(ctx.identity, ccRoomId, (ctx.now ?? Date.now)())),
+      ctx.runTurn(helloItem(ctx.identity, ccRoomId, (ctx.now ?? Date.now)(), ctx.filamentName)),
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(void 0), ctx.timeoutMs ?? HELLO_TURN_TIMEOUT_MS);
       })
@@ -54,8 +57,8 @@ async function sayFirstHello(ctx) {
 }
 export {
   FALLBACK_HELLO,
-  HELLO_PROMPT,
   helloDue,
   helloItem,
+  helloPrompt,
   sayFirstHello
 };
