@@ -3,6 +3,16 @@
   "name": "Filament",
   "description": "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll — or, by name, as Firebase Cloud Messaging (FCM) pushes — and replies through Filament's MCP-over-HTTP agents API.",
   "version": "0.1.3",
+  "cliCommands": [
+    {
+      "name": "filament",
+      "description": "Connect OpenClaw agents to Filament",
+      "hasSubcommands": true
+    }
+  ],
+  "skills": [
+    "skills"
+  ],
   "activation": {
     "onStartup": true,
     "onCommands": [

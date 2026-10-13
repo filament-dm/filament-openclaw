@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "skills"
   ],
   "scripts": {
     "build": "esbuild index.ts src/util.ts src/accounts.ts src/gateway.ts src/state/store.ts src/state/identities.ts src/state/bearers.ts src/state/fcm.ts src/state/agent-choice.ts src/state/updates.ts src/mcp-client.ts src/settings.ts src/credentials.ts src/connect.ts src/work-item.ts src/wake-rules.ts src/accept-pending.ts src/choose-agent.ts src/config-write.ts src/oauth-login.ts src/login-cli.ts src/version.ts src/update-check.ts src/transports/types.ts src/transports/poll/index.ts src/transports/poll/poll-work.ts src/transports/fcm/index.ts src/transports/fcm/receiver.ts src/transports/fcm/decode.ts src/transports/fcm/wake-policy.ts src/transports/fcm/reply-route.ts src/media.ts src/onboarding-core.ts src/filament-tools.ts src/channel.ts src/turn.ts --outdir=dist --format=esm --platform=node --target=node22 && node -e \"require('fs').copyFileSync('src/filament-tools.snapshot.json','dist/src/filament-tools.snapshot.json')\"",

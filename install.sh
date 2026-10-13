@@ -198,7 +198,8 @@ elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] \
   fi
   if [ "$INSTALL_SOURCE" = "git" ]; then
     info "Updating $PLUGIN_ID (installed from git) ..."
-    openclaw plugins update "$PLUGIN_ID" || err "plugin update failed for $PLUGIN_ID."
+    # New plugin surfaces (a CLI command, skills) need consent again.
+    openclaw plugins update "$PLUGIN_ID" --accept-capabilities || err "plugin update failed for $PLUGIN_ID."
   else
     info "Reinstalling $PLUGIN_ID (installed from $INSTALL_SOURCE) ..."
     install_fresh

@@ -20,22 +20,88 @@ function gateway(ids: string[], extra: Record<string, unknown> = {}) {
   return { agents: { entries: Object.fromEntries(ids.map((id) => [id, {}])) }, ...extra };
 }
 
+const nowhere = { cwd: "/elsewhere", home: "/home/me", realpath: (path: string) => path };
+
 test("resolveLoginAgent: the named agent, else the only one", () => {
-  assert.equal(resolveLoginAgent(gateway(["main", "news"]), "News"), "news");
-  assert.equal(resolveLoginAgent(gateway(["writer"])), "writer");
+  assert.deepEqual(resolveLoginAgent(gateway(["main", "news"]), "News", nowhere), {
+    agentId: "news",
+    reason: "named with --agent",
+  });
+  assert.deepEqual(resolveLoginAgent(gateway(["writer"]), undefined, nowhere), {
+    agentId: "writer",
+    reason: "the gateway's only agent",
+  });
   // No agents configured: OpenClaw's implicit `main`.
-  assert.equal(resolveLoginAgent({}), "main");
+  assert.equal(resolveLoginAgent({}, undefined, nowhere).agentId, "main");
+});
+
+test("resolveLoginAgent: the agent whose workspace holds the current directory", () => {
+  // A fresh onboarded config, plus a second agent that has no workspace of its own.
+  const cfg = {
+    agents: {
+      defaults: { workspace: "~/.openclaw/workspace" },
+      entries: {
+        main: {
+          name: "main",
+          workspace: "/home/me/.openclaw/workspace",
+          identity: { name: "main" },
+        },
+        news: { workspace: "/home/me/.openclaw/workspace-news" },
+        quiet: {},
+      },
+    },
+  };
+  const at = (cwd: string) => ({ cwd, home: "/home/me", realpath: (path: string) => path });
+  assert.deepEqual(resolveLoginAgent(cfg, undefined, at("/home/me/.openclaw/workspace-news")), {
+    agentId: "news",
+    reason: "its workspace is the current directory",
+  });
+  assert.deepEqual(resolveLoginAgent(cfg, undefined, at("/home/me/.openclaw/workspace-news/a/b")), {
+    agentId: "news",
+    reason: "the current directory is in its workspace",
+  });
+  // `quiet` falls back to the default workspace, which `main` also has: no answer from there.
+  assert.throws(
+    () => resolveLoginAgent(cfg, undefined, at("/home/me/.openclaw/workspace")),
+    /^LoginError: Could not tell which OpenClaw agent to connect \(agents: main, news, quiet\); pass --agent <id>\.$/,
+  );
+  // --agent wins over the directory.
+  assert.equal(
+    resolveLoginAgent(cfg, "main", at("/home/me/.openclaw/workspace-news")).agentId,
+    "main",
+  );
+  // A sibling whose name only starts like the workspace is outside it.
+  assert.throws(() =>
+    resolveLoginAgent(cfg, undefined, at("/home/me/.openclaw/workspace-newsroom")),
+  );
+
+  // The deepest workspace wins, and symlinked paths compare by their real path.
+  const nested = gateway([], {
+    agents: { entries: { outer: { workspace: "/w" }, inner: { workspace: "/w/inner" } } },
+  });
+  const links = {
+    cwd: "/link/inner/x",
+    home: "/h",
+    realpath: (p: string) => p.replace(/^\/link/, "/w"),
+  };
+  assert.deepEqual(resolveLoginAgent(nested, undefined, links), {
+    agentId: "inner",
+    reason: "the current directory is in its workspace",
+  });
 });
 
 test("resolveLoginAgent: an unknown, reserved, malformed or ambiguous agent is refused", () => {
   const cfg = gateway(["main", "news"]);
-  assert.throws(() => resolveLoginAgent(cfg), /several OpenClaw agents \(main, news\).*--agent/);
   assert.throws(
-    () => resolveLoginAgent(cfg, "nope"),
+    () => resolveLoginAgent(cfg, undefined, nowhere),
+    /Could not tell which OpenClaw agent to connect \(agents: main, news\); pass --agent <id>/,
+  );
+  assert.throws(
+    () => resolveLoginAgent(cfg, "nope", nowhere),
     /no OpenClaw agent "nope" \(agents: main, news\)/,
   );
-  assert.throws(() => resolveLoginAgent(cfg, "gateway"), LoginError);
-  assert.throws(() => resolveLoginAgent(cfg, "bad id!"), /not a usable OpenClaw agent id/);
+  assert.throws(() => resolveLoginAgent(cfg, "gateway", nowhere), LoginError);
+  assert.throws(() => resolveLoginAgent(cfg, "bad id!", nowhere), /not a usable OpenClaw agent id/);
 });
 
 test("resolveLoginUrl: flag, env, the account's, the plugin's, production", () => {
@@ -146,7 +212,10 @@ test("runLogin: signs the agent in, writes its account through the CLI, says so"
   );
   assert.equal(code, 0);
   assert.deepEqual(logins, [{ url: DEV, flow: "device", openBrowser: false }]);
-  assert.equal(io.out[0], `Signing in OpenClaw agent 'main' to Filament at ${DEV} ...`);
+  assert.deepEqual(io.out.slice(0, 2), [
+    `Connecting OpenClaw agent "main" (named with --agent).`,
+    `Signing in to Filament at ${DEV} ...`,
+  ]);
   assert.ok(io.out.includes("Code: BCDF-GHJK"));
   assert.ok(io.out.includes("Connected. Configuration saved."));
   assert.deepEqual(io.warn, [
@@ -180,6 +249,7 @@ test("runLogin: a failed sign-in or save exits 1 with the reason, writing nothin
     const code = await runLogin(opts, {
       ...io.deps,
       gatewayConfig: gateway(["main"]),
+      workspace: nowhere,
       env: {},
       login,
       writeConfig: write ?? (async () => (wrote = true)),
@@ -199,6 +269,7 @@ test("runLogin: a failed sign-in or save exits 1 with the reason, writing nothin
     {
       ...collect().deps,
       gatewayConfig: gateway(["a", "b"]),
+      workspace: nowhere,
       login: async () => assert.fail("no login"),
     },
   );

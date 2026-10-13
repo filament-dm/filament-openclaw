@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { asRecord, PLUGIN_ID, pluginConfigFrom } from "./accounts.js";
 import { writeGatewayConfig } from "./config-write.js";
 import {
@@ -9,7 +12,28 @@ import {
 import { consoleOut, login, LoginError } from "./oauth-login.js";
 import { DEFAULT_MCP_URL } from "./settings.js";
 const CLI_ROOT = "filament";
-function resolveLoginAgent(gatewayConfig, requested) {
+function realpathOrSame(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+function agentWorkspaces(gatewayConfig, agentIds, ctx) {
+  const agents = asRecord(asRecord(gatewayConfig).agents);
+  const entries = asRecord(agents.entries);
+  const fallback = asRecord(agents.defaults).workspace;
+  const workspaces = /* @__PURE__ */ new Map();
+  for (const id of agentIds) {
+    const raw = asRecord(entries[id]).workspace ?? fallback;
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const expanded = raw.trim().replace(/^~(?=$|[\\/])/, () => ctx.home);
+    if (!isAbsolute(expanded)) continue;
+    workspaces.set(id, ctx.realpath(resolve(expanded)));
+  }
+  return workspaces;
+}
+function resolveLoginAgent(gatewayConfig, requested, workspace = {}) {
   const agents = listGatewayAgents(gatewayConfig).map((agent) => agent.id).filter((id) => !RESERVED_ACCOUNT_IDS.has(id));
   const known = agents.length > 0 ? agents.join(", ") : "none";
   if (requested !== void 0) {
@@ -20,11 +44,30 @@ function resolveLoginAgent(gatewayConfig, requested) {
     if (!agents.includes(agentId)) {
       throw new LoginError(`This gateway has no OpenClaw agent "${agentId}" (agents: ${known}).`);
     }
-    return agentId;
+    return { agentId, reason: "named with --agent" };
   }
-  if (agents.length === 1) return agents[0];
+  const ctx = {
+    cwd: workspace.cwd ?? process.cwd(),
+    home: workspace.home ?? homedir(),
+    realpath: workspace.realpath ?? realpathOrSame
+  };
+  const cwd = ctx.realpath(resolve(ctx.cwd));
+  let best = { ids: [], dir: "" };
+  for (const [id, dir] of agentWorkspaces(gatewayConfig, agents, ctx)) {
+    const inside = relative(dir, cwd);
+    if (inside.split(sep)[0] === ".." || isAbsolute(inside)) continue;
+    if (dir.length > best.dir.length) best = { ids: [id], dir };
+    else if (dir === best.dir) best.ids.push(id);
+  }
+  if (best.ids.length === 1) {
+    return {
+      agentId: best.ids[0],
+      reason: best.dir === cwd ? "its workspace is the current directory" : "the current directory is in its workspace"
+    };
+  }
+  if (agents.length === 1) return { agentId: agents[0], reason: "the gateway's only agent" };
   throw new LoginError(
-    agents.length === 0 ? "This gateway has no OpenClaw agent to connect." : `This gateway has several OpenClaw agents (${known}); name one with --agent <id>.`
+    agents.length === 0 ? "This gateway has no OpenClaw agent to connect." : `Could not tell which OpenClaw agent to connect (agents: ${known}); pass --agent <id>.`
   );
 }
 function trimUrl(raw) {
@@ -52,9 +95,9 @@ function applyLogin(draft, agentId, token, mcpUrl) {
   else account.mcpUrl = mcpUrl;
   return result;
 }
-const consoleWarn = (line) => new Promise((resolve) => {
+const consoleWarn = (line) => new Promise((resolve2) => {
   process.stderr.write(`${line}
-`, () => resolve());
+`, () => resolve2());
 });
 async function runLogin(opts, deps) {
   const out = deps.out ?? consoleOut;
@@ -64,14 +107,15 @@ async function runLogin(opts, deps) {
       throw new LoginError("--device and --browser are mutually exclusive.");
     }
     const flow = opts.device ? "device" : opts.browser ? "browser" : "auto";
-    const agentId = resolveLoginAgent(deps.gatewayConfig, opts.agent);
+    const { agentId, reason } = resolveLoginAgent(deps.gatewayConfig, opts.agent, deps.workspace);
     const mcpUrl = resolveLoginUrl(
       pluginConfigFrom(deps.gatewayConfig),
       agentId,
       opts.url,
       deps.env ?? process.env
     );
-    await out(`Signing in OpenClaw agent '${agentId}' to Filament at ${mcpUrl} ...`);
+    await out(`Connecting OpenClaw agent "${agentId}" (${reason}).`);
+    await out(`Signing in to Filament at ${mcpUrl} ...`);
     const token = await (deps.login ?? login)(mcpUrl, {
       flow,
       out,
@@ -109,7 +153,10 @@ function registerFilamentCli(api) {
   api.registerCli(
     ({ program, config }) => {
       const root = program.command(CLI_ROOT).description(ROOT_DESCRIPTION);
-      root.command("login").description("Sign an OpenClaw agent in to Filament, with no token to paste").option("--agent <id>", "OpenClaw agent to connect (default: the gateway's only agent)").option(
+      root.command("login").description("Sign an OpenClaw agent in to Filament, with no token to paste").option(
+        "--agent <id>",
+        "OpenClaw agent to connect (default: the one whose workspace holds the current directory, else the gateway's only agent)"
+      ).option(
         "--url <url>",
         `Filament MCP endpoint (default: FILAMENT_MCP_URL, else ${DEFAULT_MCP_URL})`
       ).option("--device", "sign in from any device with a link and a code").option("--browser", "sign in with a browser and a local callback").option("--no-open", "print the sign-in link rather than opening a browser").action(async (options) => {

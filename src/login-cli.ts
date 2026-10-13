@@ -4,6 +4,10 @@
  * a connect token. The write goes through the CLI (config-write.ts), an external change to the
  * running gateway, which reloads and connects the account.
  */
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+
 import { asRecord, PLUGIN_ID, pluginConfigFrom } from "./accounts.js";
 import { writeGatewayConfig } from "./config-write.js";
 import {
@@ -17,8 +21,57 @@ import { DEFAULT_MCP_URL } from "./settings.js";
 
 export const CLI_ROOT = "filament";
 
-/** The agent to sign in: the one named, or the gateway's only agent. */
-export function resolveLoginAgent(gatewayConfig: unknown, requested?: string): string {
+export interface ChosenAgent {
+  agentId: string;
+  /** Why this agent, for the line that names it. */
+  reason: string;
+}
+
+export interface WorkspaceContext {
+  cwd?: string;
+  home?: string;
+  /** Resolves symlinks (macOS /tmp is /private/tmp); a path that does not exist stays as it is. */
+  realpath?: (path: string) => string;
+}
+
+function realpathOrSame(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Each agent's workspace: its own, else `agents.defaults.workspace`. */
+function agentWorkspaces(
+  gatewayConfig: unknown,
+  agentIds: readonly string[],
+  ctx: Required<WorkspaceContext>,
+): Map<string, string> {
+  const agents = asRecord(asRecord(gatewayConfig).agents);
+  const entries = asRecord(agents.entries);
+  const fallback = asRecord(agents.defaults).workspace;
+  const workspaces = new Map<string, string>();
+  for (const id of agentIds) {
+    const raw = asRecord(entries[id]).workspace ?? fallback;
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const expanded = raw.trim().replace(/^~(?=$|[\\/])/, () => ctx.home);
+    if (!isAbsolute(expanded)) continue;
+    workspaces.set(id, ctx.realpath(resolve(expanded)));
+  }
+  return workspaces;
+}
+
+/**
+ * The agent to sign in: the one named; else the one whose workspace holds the current directory,
+ * since an agent's exec tool runs there and nothing else tells a command which agent ran it; else
+ * the gateway's only agent.
+ */
+export function resolveLoginAgent(
+  gatewayConfig: unknown,
+  requested?: string,
+  workspace: WorkspaceContext = {},
+): ChosenAgent {
   const agents = listGatewayAgents(gatewayConfig)
     .map((agent) => agent.id)
     .filter((id) => !RESERVED_ACCOUNT_IDS.has(id));
@@ -31,13 +84,36 @@ export function resolveLoginAgent(gatewayConfig: unknown, requested?: string): s
     if (!agents.includes(agentId)) {
       throw new LoginError(`This gateway has no OpenClaw agent "${agentId}" (agents: ${known}).`);
     }
-    return agentId;
+    return { agentId, reason: "named with --agent" };
   }
-  if (agents.length === 1) return agents[0]!;
+  const ctx: Required<WorkspaceContext> = {
+    cwd: workspace.cwd ?? process.cwd(),
+    home: workspace.home ?? homedir(),
+    realpath: workspace.realpath ?? realpathOrSame,
+  };
+  const cwd = ctx.realpath(resolve(ctx.cwd));
+  // The deepest workspace holding the directory wins; two agents sharing it is no answer.
+  let best: { ids: string[]; dir: string } = { ids: [], dir: "" };
+  for (const [id, dir] of agentWorkspaces(gatewayConfig, agents, ctx)) {
+    const inside = relative(dir, cwd);
+    if (inside.split(sep)[0] === ".." || isAbsolute(inside)) continue;
+    if (dir.length > best.dir.length) best = { ids: [id], dir };
+    else if (dir === best.dir) best.ids.push(id);
+  }
+  if (best.ids.length === 1) {
+    return {
+      agentId: best.ids[0]!,
+      reason:
+        best.dir === cwd
+          ? "its workspace is the current directory"
+          : "the current directory is in its workspace",
+    };
+  }
+  if (agents.length === 1) return { agentId: agents[0]!, reason: "the gateway's only agent" };
   throw new LoginError(
     agents.length === 0
       ? "This gateway has no OpenClaw agent to connect."
-      : `This gateway has several OpenClaw agents (${known}); name one with --agent <id>.`,
+      : `Could not tell which OpenClaw agent to connect (agents: ${known}); pass --agent <id>.`,
   );
 }
 
@@ -101,6 +177,7 @@ export interface LoginCommandOptions {
 
 export interface LoginDeps {
   gatewayConfig: unknown;
+  workspace?: WorkspaceContext;
   out?: Out;
   warn?: Out;
   env?: NodeJS.ProcessEnv;
@@ -122,14 +199,15 @@ export async function runLogin(opts: LoginCommandOptions, deps: LoginDeps): Prom
       throw new LoginError("--device and --browser are mutually exclusive.");
     }
     const flow: LoginFlow = opts.device ? "device" : opts.browser ? "browser" : "auto";
-    const agentId = resolveLoginAgent(deps.gatewayConfig, opts.agent);
+    const { agentId, reason } = resolveLoginAgent(deps.gatewayConfig, opts.agent, deps.workspace);
     const mcpUrl = resolveLoginUrl(
       pluginConfigFrom(deps.gatewayConfig),
       agentId,
       opts.url,
       deps.env ?? process.env,
     );
-    await out(`Signing in OpenClaw agent '${agentId}' to Filament at ${mcpUrl} ...`);
+    await out(`Connecting OpenClaw agent "${agentId}" (${reason}).`);
+    await out(`Signing in to Filament at ${mcpUrl} ...`);
     const token = await (deps.login ?? login)(mcpUrl, {
       flow,
       out,
@@ -187,7 +265,10 @@ export function registerFilamentCli(api: FilamentCliApi): void {
       root
         .command("login")
         .description("Sign an OpenClaw agent in to Filament, with no token to paste")
-        .option("--agent <id>", "OpenClaw agent to connect (default: the gateway's only agent)")
+        .option(
+          "--agent <id>",
+          "OpenClaw agent to connect (default: the one whose workspace holds the current directory, else the gateway's only agent)",
+        )
         .option(
           "--url <url>",
           `Filament MCP endpoint (default: FILAMENT_MCP_URL, else ${DEFAULT_MCP_URL})`,

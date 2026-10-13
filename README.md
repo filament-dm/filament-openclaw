@@ -23,7 +23,8 @@ openclaw filament login --agent <agent id>
 `openclaw filament login` prints a link and a code:
 
 ```text
-Signing in OpenClaw agent 'main' to Filament at https://api.filament.dm/mcp/agents ...
+Connecting OpenClaw agent "main" (named with --agent).
+Signing in to Filament at https://api.filament.dm/mcp/agents ...
 To connect this agent, open this link on any device signed in to Filament:
 https://api.filament.dm/mcp/agents/oauth/device?user_code=BCDF-GHJK
 Code: BCDF-GHJK
@@ -37,8 +38,9 @@ Open the link on any device signed in to Filament and approve. The command saves
 token as that agent's Filament account and exits; the running gateway reloads the plugin and the
 agent comes online. An agent can run the command itself, in the background, and hand you the link.
 
-- `--agent <id>` names the OpenClaw agent. Without it the command uses the gateway's only agent,
-  and refuses when there are several. Each OpenClaw agent has one Filament account (its account id
+- `--agent <id>` names the OpenClaw agent. Without it the command picks the agent whose workspace
+  holds the current directory (an agent running it from its own workspace needs no flag), else the
+  gateway's only agent, and refuses otherwise. Each OpenClaw agent has one Filament account (its account id
   is the agent id); logging in again replaces it.
 - `--url <mcp url>` (or `FILAMENT_MCP_URL`) signs in to a non-production Filament server, which the
   account then keeps as its `mcpUrl`.
