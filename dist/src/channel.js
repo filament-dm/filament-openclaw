@@ -15,7 +15,7 @@ import {
 } from "./accounts.js";
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
-import { retryConnect, runConnect } from "./connect.js";
+import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -42,7 +42,7 @@ import {
   takeUpdateRequest
 } from "./state/updates.js";
 import { helloSentAs, markHelloSent } from "./state/hello.js";
-import { clearSignInEnd, saveSignInEnd } from "./state/sign-in.js";
+import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -258,8 +258,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               { log: accountLog, abortSignal }
             );
             onConnectionChange(connection);
+            clearRevoked(accountId);
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);
+            if (error instanceof BearerRejectedError) markRevoked(accountId, token);
             connection = null;
           }
         } else if (pendingSignIn) {
@@ -339,6 +341,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
+            if (fatal.startsWith("auth:")) markRevoked(accountId, token);
             connection.stop();
             ctx.setStatus?.({
               accountId,

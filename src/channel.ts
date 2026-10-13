@@ -23,7 +23,7 @@ import {
 } from "./accounts.js";
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
-import { type ConnectHandle, retryConnect, runConnect } from "./connect.js";
+import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import type { InboundMedia } from "./media.js";
 import { turnInstructions } from "./onboarding-core.js";
 import {
@@ -55,7 +55,7 @@ import {
   takeUpdateRequest,
 } from "./state/updates.js";
 import { helloSentAs, markHelloSent } from "./state/hello.js";
-import { clearSignInEnd, saveSignInEnd } from "./state/sign-in.js";
+import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
@@ -332,8 +332,11 @@ export function registerFilamentChannel(
               { log: accountLog, abortSignal },
             );
             onConnectionChange(connection);
+            clearRevoked(accountId);
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);
+            // Kept for `openclaw filament status`: the agent was deleted or its token revoked.
+            if (error instanceof BearerRejectedError) markRevoked(accountId, token);
             connection = null;
           }
         } else if (pendingSignIn) {
@@ -423,6 +426,7 @@ export function registerFilamentChannel(
             // Report and hold open rather than throw: the gateway restarts an account that
             // exits, which would re-run a transport that just asked to stop.
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
+            if (fatal.startsWith("auth:")) markRevoked(accountId, token);
             // The account no longer receives work: stop the heartbeat so Filament shows it offline.
             connection.stop();
             ctx.setStatus?.({

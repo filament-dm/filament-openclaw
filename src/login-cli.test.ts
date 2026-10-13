@@ -8,12 +8,14 @@ import {
   resolveLoginAgent,
   resolveLoginUrl,
   runLogin,
+  probeBearer,
   runStatus,
   type CliCommand,
+  type ProbeResult,
   type LoginCommandOptions,
 } from "./login-cli.js";
 import { LoginError } from "./oauth-login.js";
-import type { SignInEnd } from "./state/sign-in.js";
+import { tokenFingerprint, type SignInEnd } from "./state/sign-in.js";
 import { fakeHttp, ISSUER, MCP, server } from "./testing/fake-oauth.js";
 
 const PROD = "https://api.filament.dm/mcp/agents";
@@ -439,6 +441,9 @@ test("describeAccount / runStatus: one line per agent, then accounts bound to no
           ? { mxid: `@${id}:filament.dm`, principal: "@p:x", onboardedAt: 1 }
           : undefined,
       loadSignInEnd: (id) => (id === "idle" ? ended : undefined),
+      loadRevoked: () => undefined,
+      probe: async (_url, token) =>
+        token === "fmcp_m" ? { kind: "ok", mxid: "@main:filament.dm" } : { kind: "ok" },
     });
     return { code, out };
   };
@@ -477,9 +482,117 @@ test("describeAccount / runStatus: one line per agent, then accounts bound to no
       loadIdentity: () => {
         throw new Error("no store here");
       },
+      loadRevoked: () => {
+        throw new Error("no store here");
+      },
+      probe: async () => ({ kind: "unknown" }),
     },
   );
   assert.deepEqual(out, ['signed in; waiting for the gateway to connect (OpenClaw agent "main")']);
+});
+
+test("runStatus: a token Filament rejects, or the gateway saw rejected, is revoked, not connected", async () => {
+  const cfg = gateway(["main"], {
+    plugins: {
+      entries: {
+        "filament-openclaw": {
+          config: { mcpUrl: DEV, accounts: { main: { connectToken: "fmcp_m" } } },
+        },
+      },
+    },
+    bindings: [{ agentId: "main", match: { channel: "filament", accountId: "main" } }],
+  });
+  const identity = { mxid: "@main:filament.dm", principal: "@p:x", onboardedAt: 1 };
+  const status = async (probe: ProbeResult, revokedToken?: string) => {
+    const out: string[] = [];
+    const probed: Array<[string, string]> = [];
+    await runStatus(
+      { agent: "main" },
+      {
+        gatewayConfig: cfg,
+        out: (line) => void out.push(line),
+        loadIdentity: () => identity,
+        loadSignInEnd: () => undefined,
+        loadRevoked: () =>
+          revokedToken ? { fingerprint: tokenFingerprint(revokedToken), at: 1 } : undefined,
+        probe: async (url, token) => {
+          probed.push([url, token]);
+          return probe;
+        },
+      },
+    );
+    return { line: out[0], probed };
+  };
+  const live = await status({ kind: "ok", mxid: "@main:filament.dm" });
+  assert.equal(live.line, 'connected as @main:filament.dm (OpenClaw agent "main")');
+  // The probe uses the account's own server and token.
+  assert.deepEqual(live.probed, [[DEV, "fmcp_m"]]);
+  assert.equal(
+    (await status({ kind: "revoked" })).line,
+    'sign-in revoked; run openclaw filament login again (OpenClaw agent "main")',
+  );
+  // Offline: the gateway's record of a rejection stands; without one, the stored identity.
+  assert.equal(
+    (await status({ kind: "unknown" }, "fmcp_m")).line,
+    'sign-in revoked; run openclaw filament login again (OpenClaw agent "main")',
+  );
+  assert.equal(
+    (await status({ kind: "unknown" })).line,
+    'connected as @main:filament.dm (not verified) (OpenClaw agent "main")',
+  );
+  // A rejection recorded for an older token says nothing about this one.
+  assert.equal(
+    (await status({ kind: "unknown" }, "fmcp_old")).line,
+    'connected as @main:filament.dm (not verified) (OpenClaw agent "main")',
+  );
+  // A live token for a newer agent than the gateway last connected as.
+  assert.equal(
+    (await status({ kind: "ok", mxid: "@new:filament.dm" })).line,
+    'signed in; waiting for the gateway to connect (OpenClaw agent "main")',
+  );
+});
+
+test("probeBearer: get_self with the token; 401 is revoked, a dead server unknown", async () => {
+  const realFetch = globalThis.fetch;
+  try {
+    const answer = (status: number, body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+    const seen: string[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const auth = new Headers(init.headers).get("authorization");
+      seen.push(auth ?? "");
+      if (auth !== "Bearer fmcp_good") return answer(401, {});
+      const call = JSON.parse(String(init.body)) as { id?: number; method?: string };
+      if (call.method === "initialize")
+        return answer(200, { jsonrpc: "2.0", id: call.id, result: {} });
+      if (!call.id) return new Response(null, { status: 202 });
+      return answer(200, {
+        jsonrpc: "2.0",
+        id: call.id,
+        result: {
+          structuredContent: { user_id: "@a:x", owner: { user_id: "@p:x" } },
+          content: [
+            { type: "text", text: JSON.stringify({ user_id: "@a:x", owner: { user_id: "@p:x" } }) },
+          ],
+        },
+      });
+    }) as typeof fetch;
+    assert.deepEqual(await probeBearer("https://f/mcp/agents", "fmcp_good"), {
+      kind: "ok",
+      mxid: "@a:x",
+    });
+    assert.deepEqual(await probeBearer("https://f/mcp/agents", "fmcp_bad"), { kind: "revoked" });
+    assert.ok(seen.every((auth) => auth.startsWith("Bearer fmcp_")));
+    globalThis.fetch = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    assert.deepEqual(await probeBearer("https://f/mcp/agents", "fmcp_good"), { kind: "unknown" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("registerFilamentCli: `openclaw filament login` and `status` with a lazy root descriptor", async () => {

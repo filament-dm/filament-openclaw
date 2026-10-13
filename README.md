@@ -58,7 +58,11 @@ signed in; waiting for the gateway to connect (OpenClaw agent "ops")
 not signed in (OpenClaw agent "idle")
 ```
 
-An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in failed`.
+An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in failed`. Each signed-in
+agent's token is checked with one `get_self` call (5 s timeout): a token Filament rejects, because
+the agent was deleted or revoked, shows as `sign-in revoked; run openclaw filament login again`, as
+does one the gateway saw rejected. When Filament cannot be reached, `connected as …` carries
+`(not verified)`.
 
 - `--agent <id>` names the OpenClaw agent. Without it the command picks the agent whose workspace
   holds the current directory (an agent running it from its own workspace needs no flag), else the

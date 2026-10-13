@@ -37,10 +37,18 @@ import {
   type DeviceLoginOptions,
   type Out,
 } from "./oauth-login.js";
-import { DEFAULT_MCP_URL, normalizeMcpUrl } from "./settings.js";
+import { FilamentMcpClient } from "./mcp-client.js";
+import { classifyGetSelf } from "./onboarding-core.js";
+import { DEFAULT_MCP_URL, normalizeMcpUrl, resolveAccountSettings } from "./settings.js";
 import { parsePendingSignIn, toPendingSignIn, type PendingSignIn } from "./sign-in.js";
 import { loadIdentity, type AgentIdentity } from "./state/identities.js";
-import { loadSignInEnd, type SignInEnd } from "./state/sign-in.js";
+import {
+  loadRevoked,
+  loadSignInEnd,
+  tokenFingerprint,
+  type RevokedBearer,
+  type SignInEnd,
+} from "./state/sign-in.js";
 
 export const CLI_ROOT = "filament";
 
@@ -332,6 +340,45 @@ export interface StatusDeps {
   /** The plugin's state lives in the gateway's store; a CLI that cannot open it knows less. */
   loadIdentity?: (accountId: string) => AgentIdentity | undefined;
   loadSignInEnd?: (accountId: string) => SignInEnd | undefined;
+  loadRevoked?: (accountId: string) => RevokedBearer | undefined;
+  /** One authenticated call with the account's token; absent from `describeAccount`'s view if it was never made. */
+  probe?: Probe;
+  env?: NodeJS.ProcessEnv;
+}
+
+/** What one authenticated `get_self` says about a token. `unknown`: offline, or no answer. */
+export type ProbeResult = { kind: "ok"; mxid?: string } | { kind: "revoked" } | { kind: "unknown" };
+
+export type Probe = (mcpUrl: string, token: string) => Promise<ProbeResult>;
+
+const PROBE_TIMEOUT_MS = 5_000;
+
+/** A read only: `get_self`, never the heartbeat, which would show the agent online. */
+export const probeBearer: Probe = async (mcpUrl, token) => {
+  try {
+    const result = await new FilamentMcpClient(mcpUrl, token).callTool(
+      "get_self",
+      {},
+      { timeoutMs: PROBE_TIMEOUT_MS },
+    );
+    const decision = classifyGetSelf(result);
+    if (decision.status === "auth_failed") return { kind: "revoked" };
+    if (result.ok) return { kind: "ok", mxid: decision.identity?.mxid || undefined };
+    return { kind: "unknown" };
+  } catch {
+    return { kind: "unknown" };
+  }
+};
+
+/** The account's token when the config holds it as text; a `${ENV}` or SecretRef the CLI cannot read. */
+function plainToken(pluginConfig: unknown, accountId: string): string | undefined {
+  const cfg = asRecord(pluginConfig);
+  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
+  const raw =
+    entry.connectToken ?? (accountId === DEFAULT_ACCOUNT_ID ? cfg.connectToken : undefined);
+  return typeof raw === "string" && raw.trim() && !/^\$\{.*\}$/.test(raw.trim())
+    ? raw.trim()
+    : undefined;
 }
 
 function tryLoad<T>(load: (accountId: string) => T | undefined, accountId: string): T | undefined {
@@ -346,7 +393,9 @@ function tryLoad<T>(load: (accountId: string) => T | undefined, accountId: strin
 export function describeAccount(
   pluginConfig: unknown,
   accountId: string,
-  deps: Required<Pick<StatusDeps, "now" | "loadIdentity" | "loadSignInEnd">>,
+  deps: Required<Pick<StatusDeps, "now" | "loadIdentity" | "loadSignInEnd" | "loadRevoked">> & {
+    probe?: ProbeResult;
+  },
 ): string {
   if (retiredAccountKind(pluginConfig, accountId)) return "retired; remove it from the config";
   const cfg = asRecord(pluginConfig);
@@ -360,10 +409,23 @@ export function describeAccount(
     hasTokenInput(entry.connectToken) ||
     (accountId === DEFAULT_ACCOUNT_ID && hasTokenInput(cfg.connectToken));
   if (token) {
+    const { probe } = deps;
+    const plain = plainToken(pluginConfig, accountId);
+    const marker = tryLoad(deps.loadRevoked, accountId);
+    // The gateway's record is for the token it had; a newer login's is not that one.
+    const marked =
+      marker !== undefined && (!plain || marker.fingerprint === tokenFingerprint(plain));
+    if (probe?.kind === "revoked" || (probe?.kind !== "ok" && marked)) {
+      return "sign-in revoked; run openclaw filament login again";
+    }
     const identity = tryLoad(deps.loadIdentity, accountId);
-    return identity
+    // Connected as the agent this token is: a newer login's agent has yet to connect.
+    if (!identity || (probe?.kind === "ok" && probe.mxid && probe.mxid !== identity.mxid)) {
+      return "signed in; waiting for the gateway to connect";
+    }
+    return probe?.kind === "ok"
       ? `connected as ${identity.mxid}`
-      : "signed in; waiting for the gateway to connect";
+      : `connected as ${identity.mxid} (not verified)`;
   }
   const end = tryLoad(deps.loadSignInEnd, accountId);
   if (end?.reason === "expired") return "sign-in expired";
@@ -378,12 +440,29 @@ export function describeAccount(
  */
 export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Promise<number> {
   const out = deps.out ?? consoleOut;
-  const describeDeps = {
+  const baseDeps = {
     now: deps.now ?? Date.now,
     loadIdentity: deps.loadIdentity ?? loadIdentity,
     loadSignInEnd: deps.loadSignInEnd ?? loadSignInEnd,
+    loadRevoked: deps.loadRevoked ?? loadRevoked,
   };
   const pluginConfig = pluginConfigFrom(deps.gatewayConfig);
+  const probe = deps.probe ?? probeBearer;
+  const env = deps.env ?? process.env;
+  // Every account's token is checked at once, each with a short timeout.
+  const probes = new Map<string, Promise<ProbeResult>>();
+  const probeOf = (accountId: string): Promise<ProbeResult | undefined> => {
+    const token = plainToken(pluginConfig, accountId);
+    if (!token || retiredAccountKind(pluginConfig, accountId)) return Promise.resolve(undefined);
+    let pending = probes.get(accountId);
+    if (!pending) {
+      pending = probe(resolveAccountSettings(pluginConfig, accountId, env).mcpUrl, token);
+      probes.set(accountId, pending);
+    }
+    return pending;
+  };
+  const describe = async (accountId: string) =>
+    describeAccount(pluginConfig, accountId, { ...baseDeps, probe: await probeOf(accountId) });
   const agents = listGatewayAgents(deps.gatewayConfig).filter(
     (agent) => !RESERVED_ACCOUNT_IDS.has(agent.id),
   );
@@ -398,13 +477,12 @@ export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Pro
       return 1;
     }
   }
-  for (const agent of shown) {
-    // A login's account carries the agent's id, and an ended sign-in is kept under it too.
-    const accountId = agent.boundAccount ?? agent.id;
-    await out(
-      `${describeAccount(pluginConfig, accountId, describeDeps)} (OpenClaw agent "${agent.id}")`,
-    );
-  }
+  // A login's account carries the agent's id, and an ended sign-in is kept under it too.
+  const agentLines = shown.map(
+    async (agent) =>
+      `${await describe(agent.boundAccount ?? agent.id)} (OpenClaw agent "${agent.id}")`,
+  );
+  for (const line of agentLines) await out(await line);
   if (opts.agent !== undefined) return 0;
   const claimed = new Set(agents.flatMap((agent) => [agent.boundAccount, agent.id]));
   const unbound = listConfiguredAccountIds(pluginConfig, {}).filter(
@@ -420,9 +498,7 @@ export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Pro
         : retired === "pending"
           ? ", an agent-choice account"
           : "";
-    await out(
-      `${describeAccount(pluginConfig, accountId, describeDeps)} (Filament account "${accountId}"${role})`,
-    );
+    await out(`${await describe(accountId)} (Filament account "${accountId}"${role})`);
   }
   return 0;
 }

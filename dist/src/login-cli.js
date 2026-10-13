@@ -26,10 +26,16 @@ import {
   pollDeviceToken,
   startDeviceLogin
 } from "./oauth-login.js";
-import { DEFAULT_MCP_URL, normalizeMcpUrl } from "./settings.js";
+import { FilamentMcpClient } from "./mcp-client.js";
+import { classifyGetSelf } from "./onboarding-core.js";
+import { DEFAULT_MCP_URL, normalizeMcpUrl, resolveAccountSettings } from "./settings.js";
 import { parsePendingSignIn, toPendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
-import { loadSignInEnd } from "./state/sign-in.js";
+import {
+  loadRevoked,
+  loadSignInEnd,
+  tokenFingerprint
+} from "./state/sign-in.js";
 const CLI_ROOT = "filament";
 function realpathOrSame(path) {
   try {
@@ -210,6 +216,28 @@ async function runLogin(opts, deps) {
     return 1;
   }
 }
+const PROBE_TIMEOUT_MS = 5e3;
+const probeBearer = async (mcpUrl, token) => {
+  try {
+    const result = await new FilamentMcpClient(mcpUrl, token).callTool(
+      "get_self",
+      {},
+      { timeoutMs: PROBE_TIMEOUT_MS }
+    );
+    const decision = classifyGetSelf(result);
+    if (decision.status === "auth_failed") return { kind: "revoked" };
+    if (result.ok) return { kind: "ok", mxid: decision.identity?.mxid || void 0 };
+    return { kind: "unknown" };
+  } catch {
+    return { kind: "unknown" };
+  }
+};
+function plainToken(pluginConfig, accountId) {
+  const cfg = asRecord(pluginConfig);
+  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
+  const raw = entry.connectToken ?? (accountId === DEFAULT_ACCOUNT_ID ? cfg.connectToken : void 0);
+  return typeof raw === "string" && raw.trim() && !/^\$\{.*\}$/.test(raw.trim()) ? raw.trim() : void 0;
+}
 function tryLoad(load, accountId) {
   try {
     return load(accountId);
@@ -228,8 +256,18 @@ function describeAccount(pluginConfig, accountId, deps) {
   }
   const token = hasTokenInput(entry.connectToken) || accountId === DEFAULT_ACCOUNT_ID && hasTokenInput(cfg.connectToken);
   if (token) {
+    const { probe } = deps;
+    const plain = plainToken(pluginConfig, accountId);
+    const marker = tryLoad(deps.loadRevoked, accountId);
+    const marked = marker !== void 0 && (!plain || marker.fingerprint === tokenFingerprint(plain));
+    if (probe?.kind === "revoked" || probe?.kind !== "ok" && marked) {
+      return "sign-in revoked; run openclaw filament login again";
+    }
     const identity = tryLoad(deps.loadIdentity, accountId);
-    return identity ? `connected as ${identity.mxid}` : "signed in; waiting for the gateway to connect";
+    if (!identity || probe?.kind === "ok" && probe.mxid && probe.mxid !== identity.mxid) {
+      return "signed in; waiting for the gateway to connect";
+    }
+    return probe?.kind === "ok" ? `connected as ${identity.mxid}` : `connected as ${identity.mxid} (not verified)`;
   }
   const end = tryLoad(deps.loadSignInEnd, accountId);
   if (end?.reason === "expired") return "sign-in expired";
@@ -239,12 +277,27 @@ function describeAccount(pluginConfig, accountId, deps) {
 }
 async function runStatus(opts, deps) {
   const out = deps.out ?? consoleOut;
-  const describeDeps = {
+  const baseDeps = {
     now: deps.now ?? Date.now,
     loadIdentity: deps.loadIdentity ?? loadIdentity,
-    loadSignInEnd: deps.loadSignInEnd ?? loadSignInEnd
+    loadSignInEnd: deps.loadSignInEnd ?? loadSignInEnd,
+    loadRevoked: deps.loadRevoked ?? loadRevoked
   };
   const pluginConfig = pluginConfigFrom(deps.gatewayConfig);
+  const probe = deps.probe ?? probeBearer;
+  const env = deps.env ?? process.env;
+  const probes = /* @__PURE__ */ new Map();
+  const probeOf = (accountId) => {
+    const token = plainToken(pluginConfig, accountId);
+    if (!token || retiredAccountKind(pluginConfig, accountId)) return Promise.resolve(void 0);
+    let pending = probes.get(accountId);
+    if (!pending) {
+      pending = probe(resolveAccountSettings(pluginConfig, accountId, env).mcpUrl, token);
+      probes.set(accountId, pending);
+    }
+    return pending;
+  };
+  const describe = async (accountId) => describeAccount(pluginConfig, accountId, { ...baseDeps, probe: await probeOf(accountId) });
   const agents = listGatewayAgents(deps.gatewayConfig).filter(
     (agent) => !RESERVED_ACCOUNT_IDS.has(agent.id)
   );
@@ -259,12 +312,10 @@ async function runStatus(opts, deps) {
       return 1;
     }
   }
-  for (const agent of shown) {
-    const accountId = agent.boundAccount ?? agent.id;
-    await out(
-      `${describeAccount(pluginConfig, accountId, describeDeps)} (OpenClaw agent "${agent.id}")`
-    );
-  }
+  const agentLines = shown.map(
+    async (agent) => `${await describe(agent.boundAccount ?? agent.id)} (OpenClaw agent "${agent.id}")`
+  );
+  for (const line of agentLines) await out(await line);
   if (opts.agent !== void 0) return 0;
   const claimed = new Set(agents.flatMap((agent) => [agent.boundAccount, agent.id]));
   const unbound = listConfiguredAccountIds(pluginConfig, {}).filter(
@@ -273,9 +324,7 @@ async function runStatus(opts, deps) {
   for (const accountId of unbound) {
     const retired = retiredAccountKind(pluginConfig, accountId);
     const role = retired === "control" ? ", a gateway control account" : retired === "pending" ? ", an agent-choice account" : "";
-    await out(
-      `${describeAccount(pluginConfig, accountId, describeDeps)} (Filament account "${accountId}"${role})`
-    );
+    await out(`${await describe(accountId)} (Filament account "${accountId}"${role})`);
   }
   return 0;
 }
@@ -304,6 +353,7 @@ export {
   CLI_ROOT,
   applyLogin,
   describeAccount,
+  probeBearer,
   registerFilamentCli,
   resolveLoginAgent,
   resolveLoginUrl,
