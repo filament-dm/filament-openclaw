@@ -162,9 +162,22 @@ install_fresh() {
   fi
 }
 
+# 1 when the gateway lists the plugin as enabled. OpenClaw 2026.10's `plugins install`
+# enables what it installs (unless --no-enable); an older one may not.
+plugin_enabled() {
+  python3 - "$(openclaw plugins list --json 2>/dev/null || true)" "$PLUGIN_ID" <<'PY'
+import json, sys
+try:
+    plugins = json.loads(sys.argv[1]).get("plugins", [])
+    print("1" if any(p.get("id") == sys.argv[2] and p.get("enabled") for p in plugins) else "0")
+except Exception:
+    print("0")
+PY
+}
+
 if [ "$FOUND_STATE" = "MISSING" ]; then
   install_fresh
-  PLUGIN_ENABLED=0
+  PLUGIN_ENABLED="$(plugin_enabled)"
 elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] || [ "$SUPPORTS_LOGIN" != 1 ]; then
   [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] \
     || info "The installed $PLUGIN_ID predates openclaw filament login; updating it first."
@@ -176,6 +189,7 @@ elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] || [ "$SUPPORTS_LOGIN" != 1 ]; then
     info "Reinstalling $PLUGIN_ID (installed from $INSTALL_SOURCE) ..."
     install_fresh
   fi
+  PLUGIN_ENABLED="$(plugin_enabled)"
 else
   info "$PLUGIN_ID is already installed (${INSTALL_SOURCE}); reusing it."
 fi
@@ -323,10 +337,19 @@ if [ -n "$PATCH" ]; then
     || err "could not write the Filament account config (openclaw config patch failed)."
 fi
 
+# A running gateway applies an enable by replacing the plugin, and refuses it with
+# "config reload superseded by a newer runtime config source" while the reload from
+# the install (or the config write above) is still draining. That passes: retry, and
+# take an enable that landed despite the error.
 if [ "$PLUGIN_ENABLED" != "1" ]; then
   info "Enabling $PLUGIN_ID ..."
-  openclaw plugins enable "$PLUGIN_ID" --accept-capabilities \
-    || err "could not enable $PLUGIN_ID."
+  for attempt in 1 2 3 4; do
+    openclaw plugins enable "$PLUGIN_ID" --accept-capabilities </dev/null && break
+    [ "$(plugin_enabled)" = 1 ] && break
+    [ "$attempt" = 4 ] && err "could not enable $PLUGIN_ID (openclaw plugins enable failed $attempt times)."
+    warn "Enabling $PLUGIN_ID failed (the gateway may still be reloading); retrying in 3s."
+    sleep 3
+  done
 fi
 
 if [ "$TOKEN_MODE" = 0 ]; then
