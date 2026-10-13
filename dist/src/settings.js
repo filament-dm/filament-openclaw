@@ -63,6 +63,7 @@ function resolveMcpSettings(pluginConfig, env = process.env) {
   };
 }
 export {
+  DEFAULT_MCP_URL,
   DEFAULT_TRANSPORT,
   MAX_POLL_WAIT_SECONDS,
   MIN_POLL_WAIT_SECONDS,

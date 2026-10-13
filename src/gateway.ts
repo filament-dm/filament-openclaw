@@ -26,8 +26,11 @@ export const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
 /** OpenClaw's implicit agent when `agents.entries` is empty. */
 const IMPLICIT_AGENT_ID = "main";
 
-const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const RESERVED_ACCOUNT_IDS: ReadonlySet<string> = new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
+export const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+export const RESERVED_ACCOUNT_IDS: ReadonlySet<string> = new Set([
+  DEFAULT_ACCOUNT_ID,
+  GATEWAY_ACCOUNT_ID,
+]);
 
 export interface GatewayAgent {
   id: string;

@@ -10,7 +10,10 @@ import { UPDATE_NOW_LABEL } from "./update-check.js";
 const AGENT_INVENTORY_ORIGIN = "openclaw-agent";
 const IMPLICIT_AGENT_ID = "main";
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const RESERVED_ACCOUNT_IDS = /* @__PURE__ */ new Set([DEFAULT_ACCOUNT_ID, GATEWAY_ACCOUNT_ID]);
+const RESERVED_ACCOUNT_IDS = /* @__PURE__ */ new Set([
+  DEFAULT_ACCOUNT_ID,
+  GATEWAY_ACCOUNT_ID
+]);
 function listGatewayAgents(gatewayConfig, filamentUserOf = () => void 0) {
   const cfg = asRecord(gatewayConfig);
   const entries = asRecord(asRecord(cfg.agents).entries);
@@ -287,8 +290,10 @@ async function handleGatewayItem(ctx) {
   return done;
 }
 export {
+  AGENT_ID_PATTERN,
   AGENT_INVENTORY_ORIGIN,
   MAX_REPORTED_STATUSES,
+  RESERVED_ACCOUNT_IDS,
   STATUS_INVENTORY_ORIGIN,
   applyAgentConnect,
   applyAgentDisconnect,

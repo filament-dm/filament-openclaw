@@ -4,7 +4,7 @@
  */
 import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+export const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
 
 // The server caps `wait_seconds` at 60, and an intermediary proxy can time out around 60s.
 export const MIN_POLL_WAIT_SECONDS = 1;

@@ -12,9 +12,45 @@ channel, and the agent replies and uses Filament through a set of `filament_*` t
 
 ## Install
 
-In the Filament app, choose **OpenClaw** under agents, name the agent, and run the command it shows
-on the machine where your gateway runs. It installs and enables the plugin (once), connects that
-Filament agent and waits until it is connected:
+On the machine where your gateway runs, install and enable the plugin, then sign the agent in to
+Filament. No token to copy:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | bash
+openclaw filament login --agent <agent id>
+```
+
+`openclaw filament login` prints a link and a code:
+
+```text
+Signing in OpenClaw agent 'main' to Filament at https://api.filament.dm/mcp/agents ...
+To connect this agent, open this link on any device signed in to Filament:
+https://api.filament.dm/mcp/agents/oauth/device?user_code=BCDF-GHJK
+Code: BCDF-GHJK
+Waiting for approval ...
+Signed in. Saving the configuration ...
+Connected. Configuration saved.
+The gateway reloads the Filament plugin and brings 'main' online; follow along with: openclaw logs --follow
+```
+
+Open the link on any device signed in to Filament and approve. The command saves the issued
+token as that agent's Filament account and exits; the running gateway reloads the plugin and the
+agent comes online. An agent can run the command itself, in the background, and hand you the link.
+
+- `--agent <id>` names the OpenClaw agent. Without it the command uses the gateway's only agent,
+  and refuses when there are several. Each OpenClaw agent has one Filament account (its account id
+  is the agent id); logging in again replaces it.
+- `--url <mcp url>` (or `FILAMENT_MCP_URL`) signs in to a non-production Filament server, which the
+  account then keeps as its `mcpUrl`.
+- `--device` asks for the link and code even if the server could do a browser sign-in; `--browser`
+  uses a browser with a local callback instead (with `--no-open` it only prints the address, and a
+  redirect pasted back at the terminal also works). By default the command takes the link and code
+  when the server offers them, which Filament does.
+
+### With a connect token
+
+The Filament app can also show a command with a connect token. It installs the plugin, connects
+that Filament agent and waits until it is connected:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
@@ -34,12 +70,13 @@ the new agent asks in its own chat which OpenClaw agent should answer as it.
 
 ## Configuration
 
-The plugin is configured under `plugins.entries.filament-openclaw.config`, and `install.sh` writes
-it. Each connected agent is an entry under `accounts`.
+The plugin is configured under `plugins.entries.filament-openclaw.config`, and
+`openclaw filament login` or `install.sh` writes it. Each connected agent is an entry under
+`accounts`.
 
 | Key | Env var | Meaning |
 | --- | --- | --- |
-| `connectToken` | `FILAMENT_MCP_TOKEN` | The token from the Filament app |
+| `connectToken` | `FILAMENT_MCP_TOKEN` | The agent's token, from `openclaw filament login` or the Filament app |
 | `mcpUrl` | `FILAMENT_MCP_URL` | A non-production Filament server |
 | `transport` | `FILAMENT_TRANSPORT` | `poll` (default) or `fcm` |
 | `firebase` | `FILAMENT_FIREBASE_*` | Firebase project of a non-production server (`fcm` only) |
