@@ -449,8 +449,8 @@ test("describeAccount / runStatus: one line per agent, then accounts bound to no
       'waiting for sign-in approval, expires in 599s (OpenClaw agent "news")',
       'signed in; waiting for the gateway to connect (OpenClaw agent "ops")',
       'not signed in (OpenClaw agent "idle")',
-      'connected as @gateway:filament.dm (Filament account "gateway", the gateway control account)',
-      'signed in; waiting for the gateway to connect (Filament account "pending-abc", choosing its OpenClaw agent)',
+      'retired; remove it from the config (Filament account "gateway", a gateway control account)',
+      'retired; remove it from the config (Filament account "pending-abc", an agent-choice account)',
     ],
   });
   assert.deepEqual((await lines(T0 + 600_000, { agent: "news" })).out, [

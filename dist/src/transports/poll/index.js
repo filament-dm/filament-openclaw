@@ -1,7 +1,7 @@
 import { acceptPending } from "../../accept-pending.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
-import { isGatewayCommandItem } from "../../gateway.js";
+import { isBackchannelCommandItem } from "../../commands.js";
 import { runPollLoop } from "./poll-work.js";
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
@@ -59,11 +59,7 @@ async function runPollTransport(ctx, deps = {}) {
     if (!replyWith) {
       return { kind: "ambiguous" };
     }
-    if (ctx.control) {
-      await ctx.handleControl(item);
-      return { kind: "silent" };
-    }
-    if (ctx.handleCommand && isGatewayCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)) {
+    if (ctx.handleCommand && isBackchannelCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)) {
       await ctx.handleCommand(item);
       return { kind: "silent" };
     }
@@ -130,7 +126,7 @@ async function runPollTransport(ctx, deps = {}) {
     log,
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
-    sweepPending: ctx.control ? void 0 : () => acceptPending(client, log, abortSignal)
+    sweepPending: () => acceptPending(client, log, abortSignal)
   });
 }
 export {

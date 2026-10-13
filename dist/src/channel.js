@@ -4,24 +4,13 @@ import {
   asRecord,
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
-  isControlAccount,
-  isPendingAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
-  pluginConfigFrom
+  pluginConfigFrom,
+  retiredAccountKind
 } from "./accounts.js";
-import {
-  applyPendingChoice,
-  automaticChoice,
-  choiceOptions,
-  freeOptions,
-  greetingBody,
-  handlePendingItem,
-  notAppliedBody,
-  nothingFreeBody,
-  questionBody
-} from "./choose-agent.js";
-import { awaitConfigApplied, writeGatewayConfig } from "./config-write.js";
+import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
+import { writeGatewayConfig } from "./config-write.js";
 import { retryConnect, runConnect } from "./connect.js";
 import { turnInstructions } from "./onboarding-core.js";
 import {
@@ -32,23 +21,10 @@ import {
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 } from "./filament-tools.js";
-import {
-  handleGatewayItem,
-  inventoryEntries,
-  listGatewayAgents,
-  MAX_REPORTED_STATUSES
-} from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { helloDue, sayFirstHello } from "./hello.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
-import {
-  choiceAsked,
-  dropGreeting,
-  leaveGreeting,
-  markChoiceAsked,
-  takeGreeting
-} from "./state/agent-choice.js";
 import {
   loadUpdateState,
   markUpdateRequested,
@@ -71,7 +47,6 @@ const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
 };
-let refreshGatewayInventory = null;
 function registerFilamentChannel(api, onConnectionChange = () => {
 }) {
   const log = (message) => {
@@ -107,70 +82,22 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message) => log(`[${accountId}] ${message}`);
-        accountLog(`filament: transport ${mcp.transport}`);
-        const control = isControlAccount(pluginConfig, accountId);
-        const pending = !control && isPendingAccount(pluginConfig, accountId);
-        const handlesOwnWork = control || pending;
-        const liveGatewayConfig = () => api.runtime?.config?.current?.() ?? ctx.cfg;
-        const statuses = [];
-        const reportInventory = async () => {
-          if (!connection) return;
-          const agents = listGatewayAgents(
-            liveGatewayConfig(),
-            (id) => getFilamentClient(id) ? loadIdentity(id)?.mxid : void 0
+        const holdOpen = async () => {
+          if (abortSignal.aborted) return;
+          await new Promise((resolve) => {
+            if (abortSignal.aborted) return resolve();
+            abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        };
+        const retired = retiredAccountKind(pluginConfig, accountId);
+        if (retired) {
+          accountLog(
+            `filament: ${retired === "control" ? "gateway control" : "agent-choice"} accounts are gone; this one stays idle. Remove accounts.${accountId} and connect the agent with \`openclaw filament login\``
           );
-          const status = await connection.client.reportTools(inventoryEntries(agents, statuses), {
-            signal: abortSignal
-          });
-          accountLog(`filament-gateway: reported ${agents.length} agent(s) (HTTP ${status})`);
-        };
-        const mutateConfig = async (mutate) => {
-          await writeGatewayConfig(mutate);
-        };
-        const handleControl = async (item) => {
-          if (!connection) return;
-          const client = connection.client;
-          await handleGatewayItem({
-            item,
-            principal: connection.identity.principal,
-            ccRoomId: connection.identity.ccRoomId,
-            gatewayConfig: liveGatewayConfig(),
-            consume: async (upToEventId) => {
-              await client.callTool(
-                "mark_read",
-                { channel: item.channel_id, up_to: upToEventId },
-                { signal: abortSignal }
-              );
-            },
-            mutateConfig,
-            report: async (entries) => {
-              statuses.unshift(...[...entries].reverse());
-              statuses.splice(MAX_REPORTED_STATUSES);
-              await reportInventory();
-            },
-            log: accountLog
-          });
-        };
-        const pendingOptions = () => choiceOptions(listGatewayAgents(liveGatewayConfig()));
-        const bindPending = async (agentId, label) => {
-          let bound = false;
-          let written = false;
-          leaveGreeting(agentId, accountId, greetingBody(label));
-          try {
-            await mutateConfig((draft) => {
-              bound = applyPendingChoice(draft, accountId, agentId, token);
-            });
-            written = true;
-          } finally {
-            if (!written || !bound) dropGreeting(agentId, accountId);
-          }
-          if (!bound) return "taken";
-          const wait = await awaitConfigApplied({
-            applied: () => !isPendingAccount(pluginConfigOf(liveGatewayConfig()), accountId),
-            abortSignal
-          });
-          return wait === "timeout" ? "written" : "applied";
-        };
+          await holdOpen();
+          return;
+        }
+        accountLog(`filament: transport ${mcp.transport}`);
         let updateInFlight = false;
         const runUpdate = async () => {
           if (updateInFlight) return;
@@ -196,81 +123,27 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             { markdown_body: markdownBody },
             { signal: abortSignal }
           );
-          if (!res.ok) accountLog(`filament-choose: message failed (${res.error?.message ?? "?"})`);
+          if (!res.ok)
+            accountLog(`filament: message to the principal failed (${res.error?.message ?? "?"})`);
           return res.ok;
         };
         const handleCommand = async (item) => {
           if (!connection) return;
-          const client = connection.client;
-          await handleGatewayItem({
-            item,
-            scope: "connect",
-            principal: connection.identity.principal,
-            ccRoomId: connection.identity.ccRoomId,
-            gatewayConfig: liveGatewayConfig(),
-            consume: async (upToEventId) => {
-              await client.callTool(
-                "mark_read",
-                { channel: item.channel_id, up_to: upToEventId },
-                { signal: abortSignal }
-              );
-            },
-            mutateConfig,
-            update: runUpdate,
-            // Success is silent here: the new agent asks in its own chat, and an
-            // updated plugin says so on reconnect. Only a refusal has nowhere else to show.
-            report: async (entries) => {
-              const lines = entries.filter((status) => status.state !== "applied").map((status) => `Couldn't ${status.command}: ${status.message ?? status.state}`);
-              if (lines.length > 0) await sayToPrincipal(lines.join("\n"));
-            },
-            log: accountLog
-          });
-        };
-        const handlePending = async (item) => {
-          if (!connection) return;
-          const client = connection.client;
-          await handlePendingItem({
-            item,
-            principal: connection.identity.principal,
-            ccRoomId: connection.identity.ccRoomId,
-            options: pendingOptions(),
-            consume: async (upToEventId) => {
-              await client.callTool(
-                "mark_read",
-                { channel: item.channel_id, up_to: upToEventId },
-                { signal: abortSignal }
-              );
-            },
-            say: async (body) => {
-              await sayToPrincipal(body);
-            },
-            bind: bindPending,
-            refreshOptions: pendingOptions,
-            log: accountLog
-          });
-        };
-        const startPending = async () => {
-          let options = pendingOptions();
-          const chosen = automaticChoice(options);
-          if (chosen) {
-            accountLog(`filament-choose: the gateway's only agent is '${chosen}'; binding it`);
-            const label = options.find((option) => option.agentId === chosen).label;
-            const outcome = await bindPending(chosen, label);
-            if (outcome === "written") {
-              accountLog("filament-choose: the gateway did not reload after the bind");
-              await sayToPrincipal(notAppliedBody(label));
-            }
-            if (outcome !== "taken") return;
-            accountLog(`filament-choose: '${chosen}' was taken before the write`);
-            options = pendingOptions();
-          }
-          if (choiceAsked(accountId)) {
-            return;
-          } else if (freeOptions(options).length === 0) {
-            accountLog("filament-choose: this gateway has no free agent to bind");
-            if (await sayToPrincipal(nothingFreeBody(options))) markChoiceAsked(accountId);
-          } else if (await sayToPrincipal(questionBody(options))) {
-            markChoiceAsked(accountId);
+          const last = item.messages[item.messages.length - 1];
+          const command = last ? parseBackchannelCommand(last.body) : null;
+          if (!last || !command) return;
+          await connection.client.callTool(
+            "mark_read",
+            { channel: item.channel_id, up_to: last.event_id },
+            { signal: abortSignal }
+          ).catch(
+            (error) => accountLog(`filament: could not mark the command read: ${String(error)}`)
+          );
+          if (command.kind === "update") {
+            accountLog("filament-update: update requested by the principal");
+            await runUpdate();
+          } else {
+            await sayToPrincipal(otherCommandBody(command.verb));
           }
         };
         const runTurn = async (item, media) => {
@@ -365,35 +238,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             "filament: no connect token configured; channel idle (set config.accounts.<id>.connectToken)"
           );
         }
-        const refreshOtherwise = () => {
-          if (!control) refreshGatewayInventory?.();
-        };
-        if (connection && control) {
-          refreshGatewayInventory = () => {
-            reportInventory().catch((error) => {
-              accountLog(`filament-gateway: inventory report failed: ${String(error)}`);
-            });
-          };
-          refreshGatewayInventory();
-        }
-        if (connection && pending) {
-          await startPending().catch((error) => {
-            accountLog(`filament-choose: could not start the choice: ${String(error)}`);
-          });
-        }
-        if (connection && !handlesOwnWork) {
-          const greeting = takeGreeting(accountId);
-          const greeted = greeting !== void 0 && await sayToPrincipal(greeting);
-          if (greeting && !greeted) {
-            accountLog(
-              "filament-choose: could not greet as the bound agent; will retry on connect"
-            );
-            leaveGreeting(accountId, accountId, greeting);
-          }
+        if (connection) {
           const { mxid } = connection.identity;
-          if (greeted) {
-            markHelloSent(accountId, mxid);
-          } else if (helloDue({
+          if (helloDue({
             instructions: connection.client.instructions,
             mxid,
             previousMxid,
@@ -427,26 +274,19 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           ).catch((error) => {
             accountLog(`filament-update: checks stopped: ${String(error)}`);
           });
-        }
-        if (connection) {
-          if (!handlesOwnWork) setFilamentClient(connection.client, accountId);
-          refreshOtherwise();
-          if (!handlesOwnWork) {
-            void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
-              accountLog(`filament: tool drift check failed: ${String(error)}`);
-            });
-          }
+          setFilamentClient(connection.client, accountId);
+          void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
+            accountLog(`filament: tool drift check failed: ${String(error)}`);
+          });
           const { fatal } = await TRANSPORTS[mcp.transport]({
             accountId,
             client: connection.client,
             identity: connection.identity,
             settings: mcp,
-            control: handlesOwnWork,
             abortSignal,
             log: accountLog,
             runTurn,
-            handleControl: pending ? handlePending : handleControl,
-            ...handlesOwnWork ? {} : { handleCommand }
+            handleCommand
           });
           if (fatal) {
             accountLog(`filament: account entering a fatal/paused state: ${fatal}`);
@@ -460,16 +300,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           }
           setFilamentClient(null, accountId);
         }
-        if (!abortSignal.aborted) {
-          await new Promise((resolve) => {
-            if (abortSignal.aborted) return resolve();
-            abortSignal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        }
+        await holdOpen();
         connection?.stop();
         setFilamentClient(null, accountId);
-        if (control) refreshGatewayInventory = null;
-        else refreshOtherwise();
         onConnectionChange(null);
       },
       // oxlint-disable-next-line typescript/no-explicit-any

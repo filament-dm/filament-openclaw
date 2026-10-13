@@ -71,24 +71,21 @@ An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in fail
 
 ### With a connect token
 
-The Filament app can also show a command with a connect token. It installs the plugin, connects
-that Filament agent and waits until it is connected:
+A connect token from the Filament app (`fmcp_…`) still works, for reconnecting an agent without a
+sign-in. `install.sh` installs the plugin, saves the token as the account of `OPENCLAW_AGENT` (the
+gateway's only agent when it names none; with several it must name one), and waits until it is
+connected:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-  | CONNECT_TOKEN=fmcp_... bash
+  | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=<agent id> bash
 ```
 
-The command names no OpenClaw agent. If the gateway has one, the plugin binds it. If it has
-several, the new Filament agent asks in its chat which one should answer as it, with one button per
-agent. Connect each Filament agent the same way. Running the script again is safe, and the header
-of `install.sh` lists every option.
+Running the script again is safe, and the header of `install.sh` lists every option.
 
-To bind an agent from the terminal instead, pass `OPENCLAW_AGENT=<agent id>`.
-
-Once one Filament agent is connected, the next ones need no terminal: the app posts
-`/filament connect <token>` in that agent's chat, the plugin adds the account to the gateway, and
-the new agent asks in its own chat which OpenClaw agent should answer as it.
+Accounts an older version wrote for gateway pairing (`control: true`) or for picking the agent in
+chat (`pending: true`) stay idle now; `openclaw filament status` lists them as retired. Remove them
+and connect each agent with `openclaw filament login`.
 
 ## Configuration
 
@@ -118,8 +115,8 @@ the installed version. A newer one is announced once, in the principal's backcha
 `openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
 reloads the plugin in place, no restart, and the agent reports the new version when it is back.
 
-The update is the whole plugin, dependencies included. If it reports a problem, run the connect
-command from the Filament app again: it replaces the plugin outright.
+The update is the whole plugin, dependencies included. If it reports a problem, run `install.sh`
+again with `FILAMENT_PLUGIN_UPDATE=1`: it replaces the plugin outright.
 
 ### Releasing
 
@@ -136,10 +133,10 @@ gateways install; the bump is what tells running ones about it.
 - **An agent you just connected stays "connecting".** Run `openclaw gateway restart`.
 - **`Plugin activation or recovery failed` in the gateway log, and the agent is gone.** Run
   `openclaw plugins reload filament-openclaw`; no restart needed.
-- **`bearer rejected`.** The agent was deleted in Filament, or its token was revoked. Connect it
-  again from the app.
+- **`bearer rejected`.** The agent was deleted in Filament, or its token was revoked. Sign it in
+  again with `openclaw filament login`.
 - **Upgrading from the `filament-fcm` plugin id.** Run `openclaw plugins uninstall filament-fcm`,
-  then install and pair again.
+  then install and sign in again.
 
 ## Development
 

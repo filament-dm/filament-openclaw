@@ -15,11 +15,10 @@ import {
   DEFAULT_ACCOUNT_ID,
   hasPendingSignIn,
   hasTokenInput,
-  isControlAccount,
-  isPendingAccount,
   listConfiguredAccountIds,
   PLUGIN_ID,
   pluginConfigFrom,
+  retiredAccountKind,
 } from "./accounts.js";
 import { writeGatewayConfig } from "./config-write.js";
 import {
@@ -349,6 +348,7 @@ export function describeAccount(
   accountId: string,
   deps: Required<Pick<StatusDeps, "now" | "loadIdentity" | "loadSignInEnd">>,
 ): string {
+  if (retiredAccountKind(pluginConfig, accountId)) return "retired; remove it from the config";
   const cfg = asRecord(pluginConfig);
   const entry = asRecord(asRecord(cfg.accounts)[accountId]);
   if (hasPendingSignIn(entry)) {
@@ -413,11 +413,13 @@ export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Pro
       (id !== DEFAULT_ACCOUNT_ID || hasTokenInput(asRecord(pluginConfig).connectToken)),
   );
   for (const accountId of unbound) {
-    const role = isControlAccount(pluginConfig, accountId)
-      ? ", the gateway control account"
-      : isPendingAccount(pluginConfig, accountId)
-        ? ", choosing its OpenClaw agent"
-        : "";
+    const retired = retiredAccountKind(pluginConfig, accountId);
+    const role =
+      retired === "control"
+        ? ", a gateway control account"
+        : retired === "pending"
+          ? ", an agent-choice account"
+          : "";
     await out(
       `${describeAccount(pluginConfig, accountId, describeDeps)} (Filament account "${accountId}"${role})`,
     );

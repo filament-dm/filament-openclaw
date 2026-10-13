@@ -35,7 +35,6 @@ function item(overrides: Record<string, unknown> = {}) {
 async function run(
   polls: unknown[],
   opts: {
-    control?: boolean;
     publish?: ToolCallResult;
     turn?: Partial<TurnResult>;
     deps?: PollTransportDeps;
@@ -78,7 +77,6 @@ async function run(
     client: client as unknown as FilamentMcpClient,
     identity: { mxid: SELF, principal: PRINCIPAL, ccRoomId: CC },
     settings: { pollWaitSeconds: 30 } as unknown as McpSettings,
-    control: opts.control ?? false,
     abortSignal: controller.signal,
     log: () => {},
     runTurn: async (workItem, media) => {
@@ -96,7 +94,6 @@ async function run(
         ...opts.turn,
       };
     },
-    handleControl: async () => {},
   };
   const result = await runPollTransport(ctx, opts.deps);
   return { result, pollArgs, publishes, turns, turnMedia, events };
@@ -107,11 +104,6 @@ const offer = (work: unknown) => ({ work: [work], cursor: "c:1" });
 test("poll: accepts pending invites at start, before the first poll", async () => {
   const h = await run([]);
   assert.deepEqual(h.events.slice(0, 3), ["list_invites", "accept !loop:example.test", "poll"]);
-});
-
-test("poll: a control account never sweeps invites", async () => {
-  const h = await run([], { control: true });
-  assert.equal(h.events.includes("list_invites"), false);
 });
 
 test("poll: an invites hint in a poll result triggers a sweep", async () => {

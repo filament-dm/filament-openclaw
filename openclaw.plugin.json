@@ -188,11 +188,11 @@
             },
             "pending": {
               "type": "boolean",
-              "description": "Connected without naming an OpenClaw agent (install.sh with no OPENCLAW_AGENT): runs no agent turns and asks its principal in Filament which of this gateway's agents to become, then binds it."
+              "description": "Retired: written by an older install.sh with no OPENCLAW_AGENT. The account stays idle; remove it and connect the agent with `openclaw filament login`."
             },
             "control": {
               "type": "boolean",
-              "description": "A gateway control account (install.sh OPENCLAW_GATEWAY=1): runs no agent turns, reports this gateway's agents to Filament and takes connect commands from its principal."
+              "description": "Retired: a gateway control account (an older install.sh's OPENCLAW_GATEWAY=1). The account stays idle; remove it and connect each agent with `openclaw filament login`."
             },
             "transport": {
               "$ref": "#/$defs/transport",

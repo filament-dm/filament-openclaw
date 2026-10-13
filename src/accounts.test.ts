@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { listConfiguredAccountIds, resolveToolAccountId } from "./accounts.js";
+import { listConfiguredAccountIds, resolveToolAccountId, retiredAccountKind } from "./accounts.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 
 const binding = (agentId: string, accountId: string) => ({
@@ -89,4 +89,20 @@ test("resolveAccountSettings: an account inherits the top-level transport, or ov
   };
   assert.equal(resolveAccountSettings(cfg, "writer", {}).transport, "poll");
   assert.equal(resolveAccountSettings(cfg, "reviewer", {}).transport, "fcm");
+});
+
+test("retiredAccountKind: gateway control and agent-choice accounts are retired, never a tool's", () => {
+  const cfg = {
+    accounts: {
+      gateway: { connectToken: "fmcp_g", control: true },
+      "pending-abc": { connectToken: "fmcp_p", pending: true },
+      writer: { connectToken: "fmcp_w" },
+    },
+  };
+  assert.equal(retiredAccountKind(cfg, "gateway"), "control");
+  assert.equal(retiredAccountKind(cfg, "pending-abc"), "pending");
+  assert.equal(retiredAccountKind(cfg, "writer"), undefined);
+  // Unbound, the one live account is the only candidate for a tool call.
+  const gatewayConfig = { plugins: { entries: { "filament-openclaw": { config: cfg } } } };
+  assert.equal(resolveToolAccountId({ config: gatewayConfig }, undefined, {}), "writer");
 });

@@ -8,7 +8,7 @@ import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
-import { isGatewayCommandItem } from "../../gateway.js";
+import { isBackchannelCommandItem } from "../../commands.js";
 import type { DispatchOutcome } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import { type PollWorkItem, runPollLoop } from "./poll-work.js";
@@ -90,13 +90,9 @@ export async function runPollTransport(
       // The poll loop already filters these out.
       return { kind: "ambiguous" };
     }
-    if (ctx.control) {
-      await ctx.handleControl(item);
-      return { kind: "silent" };
-    }
     if (
       ctx.handleCommand &&
-      isGatewayCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)
+      isBackchannelCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)
     ) {
       await ctx.handleCommand(item);
       return { kind: "silent" };
@@ -168,6 +164,6 @@ export async function runPollTransport(
     log,
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
-    sweepPending: ctx.control ? undefined : () => acceptPending(client, log, abortSignal),
+    sweepPending: () => acceptPending(client, log, abortSignal),
   });
 }

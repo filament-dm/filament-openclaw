@@ -521,11 +521,4 @@ export class FilamentMcpClient {
   pong(nonce: string, opts?: CallOptions): Promise<number> {
     return this.sideChannelPost("/pong", { nonce }, opts);
   }
-
-  reportTools(
-    tools: Array<{ name: string; description?: string; origin?: string; health?: string }>,
-    opts?: CallOptions,
-  ): Promise<number> {
-    return this.sideChannelPost("/tools", { tools }, opts);
-  }
 }

@@ -5,7 +5,7 @@
  */
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
-import { isGatewayCommandItem } from "../../gateway.js";
+import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import {
@@ -113,11 +113,10 @@ export async function runFcmTransport(
       ],
     };
 
-    if (ctx.control) {
-      // handleGatewayItem does the authority check.
-      return isBackchannel ? () => ctx.handleControl(item) : null;
-    }
-    if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
+    if (
+      ctx.handleCommand &&
+      isBackchannelCommandItem(item, identity.principal, identity.ccRoomId)
+    ) {
       const handleCommand = ctx.handleCommand;
       return () => handleCommand(item);
     }
@@ -230,7 +229,6 @@ export async function runFcmTransport(
       return;
     }
     if (isInvite(push.branchType) || isVouch(push.branchType)) {
-      if (ctx.control) return;
       // An invite carries the room/space in room_id; a vouch's loop is on the branch.
       const targetId = isVouch(push.branchType) ? (push.loopId ?? push.roomId) : push.roomId;
       if (!targetId) return;
@@ -260,7 +258,7 @@ export async function runFcmTransport(
     if (turn) enqueueTurn(turn);
   };
 
-  if (!ctx.control) await acceptPending(client, log, abortSignal);
+  await acceptPending(client, log, abortSignal);
 
   const createReceiver =
     deps.createReceiver ?? ((opts: FcmReceiverOptions): PushSource => new FcmReceiver(opts));

@@ -15,19 +15,16 @@
 # What it does, safe to re-run:
 #   1. installs the plugin if the gateway doesn't have it (an existing install
 #      is left alone, unless it predates what this run needs);
-#   2. with a token, saves it as its own Filament account. With OPENCLAW_AGENT
-#      it binds that agent (creating it if missing); without it the plugin binds
-#      the gateway's only agent, or asks in the agent's Filament chat which one;
+#   2. with a token, saves it as the Filament account of OPENCLAW_AGENT (created
+#      if missing), or of the gateway's only agent when it names none;
 #   3. with a token, waits until that account is connected.
 # One Filament agent per OpenClaw agent: connecting a new one replaces the old.
 #
 # Environment:
 #   CONNECT_TOKEN           token from the Filament app (optional; without it,
 #                           connect with `openclaw filament login`)
-#   OPENCLAW_AGENT          OpenClaw agent to connect; without it the plugin binds the
-#                           gateway's only agent, or asks in Filament which one to use
-#   OPENCLAW_GATEWAY=1      pair the gateway instead; the app then connects its
-#                           agents with no further terminal step
+#   OPENCLAW_AGENT          OpenClaw agent the token connects (default: the gateway's
+#                           only agent; required when it has several)
 #   FILAMENT_MCP_URL        a non-production Filament server
 #   FILAMENT_TRANSPORT      poll (default) or fcm
 #   FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID, _SENDER_ID
@@ -56,29 +53,14 @@ SPEC="${OPENCLAW_PLUGIN_SOURCE:-$REPO_HTTPS}"
 
 command -v python3 >/dev/null 2>&1 || err "python3 not found on PATH."
 
+[ -z "${OPENCLAW_GATEWAY:-}" ] || err \
+  "OPENCLAW_GATEWAY is gone: connect each agent with 'openclaw filament login --agent <id>'."
+
 # OpenClaw agent ids are lowercase.
 TARGET_AGENT="$(printf '%s' "${OPENCLAW_AGENT:-}" | tr '[:upper:]' '[:lower:]')"
-# The gateway's own account is bound to no OpenClaw agent.
-GATEWAY_MODE=0
-PENDING_MODE=0
-[ "${OPENCLAW_GATEWAY:-}" = "1" ] && GATEWAY_MODE=1
 if [ -n "$TARGET_AGENT" ]; then
   printf '%s' "$TARGET_AGENT" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$' || err \
     "OPENCLAW_AGENT='$OPENCLAW_AGENT' is not a valid agent id (lowercase letters, digits, - and _)."
-fi
-if [ "$GATEWAY_MODE" = 1 ]; then
-  [ -z "$TARGET_AGENT" ] || err "OPENCLAW_GATEWAY=1 and OPENCLAW_AGENT are mutually exclusive."
-  [ "$TOKEN_MODE" = 1 ] || err "OPENCLAW_GATEWAY=1 needs CONNECT_TOKEN (the pairing command from the Filament app)."
-  ACCOUNT_ID="gateway"
-elif [ "$TOKEN_MODE" = 0 ]; then
-  ACCOUNT_ID=""
-elif [ -n "$TARGET_AGENT" ]; then
-  ACCOUNT_ID="$TARGET_AGENT"
-else
-  # Pending until the plugin learns which OpenClaw agent this is. Keyed by the
-  # token, so connecting several agents never overwrites one with another.
-  PENDING_MODE=1
-  ACCOUNT_ID="pending-$(python3 -c 'import hashlib, os; print(hashlib.sha256(os.environ["CONNECT_TOKEN"].encode()).hexdigest()[:12])')"
 fi
 
 TRANSPORT="$(printf '%s' "${FILAMENT_TRANSPORT:-}" | tr '[:upper:]' '[:lower:]')"
@@ -109,7 +91,7 @@ LOG_START_LINE=0
 
 # --- 1. The plugin: install only when missing ------------------------------------
 # FOUND/MISSING + trust.installSource ("git"/"path"/"npm"/...) + enabled + whether the
-# installed manifest knows pending accounts + whether it has `openclaw filament login`, tab-sep.
+# installed manifest has `openclaw filament login`, tab-sep.
 LIST_JSON="$(openclaw plugins list --json 2>/dev/null || true)"
 PLUGIN_STATE="$(python3 - "$LIST_JSON" "$PLUGIN_ID" <<'PY'
 import json, os, sys
@@ -119,8 +101,6 @@ try:
     for p in data.get("plugins", []):
         if p.get("id") == pid:
             src = (p.get("trust") or {}).get("installSource", "")
-            # An install from before agent choice rejects `pending` on an account.
-            supports = "0"
             login = "0"
             try:
                 with open(os.path.join(p.get("rootDir", ""), "openclaw.plugin.json")) as f:
@@ -128,19 +108,16 @@ try:
                 # An install from before `openclaw filament login` has no such command.
                 if "filament" in ((manifest.get("activation") or {}).get("onCommands") or []):
                     login = "1"
-                accounts = manifest["configSchema"]["properties"]["accounts"]
-                if "pending" in accounts["additionalProperties"]["properties"]:
-                    supports = "1"
             except Exception:
                 pass
-            print(f"FOUND\t{src or '-'}\t{'1' if p.get('enabled') else '0'}\t{supports}\t{login}")
+            print(f"FOUND\t{src or '-'}\t{'1' if p.get('enabled') else '0'}\t{login}")
             sys.exit(0)
-    print("MISSING\t-\t0\t0\t0")
+    print("MISSING\t-\t0\t0")
 except Exception:
-    print("UNKNOWN\t-\t0\t0\t0")
+    print("UNKNOWN\t-\t0\t0")
 PY
 )"
-IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE PLUGIN_ENABLED SUPPORTS_PENDING SUPPORTS_LOGIN <<EOF
+IFS=$'\t' read -r FOUND_STATE INSTALL_SOURCE PLUGIN_ENABLED SUPPORTS_LOGIN <<EOF
 $PLUGIN_STATE
 EOF
 
@@ -188,14 +165,9 @@ install_fresh() {
 if [ "$FOUND_STATE" = "MISSING" ]; then
   install_fresh
   PLUGIN_ENABLED=0
-elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] \
-  || { [ "$PENDING_MODE" = 1 ] && [ "$SUPPORTS_PENDING" != 1 ]; } \
-  || { [ "$TOKEN_MODE" = 0 ] && [ "$SUPPORTS_LOGIN" != 1 ]; }; then
-  if [ "${FILAMENT_PLUGIN_UPDATE:-}" != "1" ] && [ "$TOKEN_MODE" = 0 ]; then
-    info "The installed $PLUGIN_ID predates openclaw filament login; updating it first."
-  elif [ "${FILAMENT_PLUGIN_UPDATE:-}" != "1" ]; then
-    info "The installed $PLUGIN_ID predates agent choice in chat; updating it first."
-  fi
+elif [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] || [ "$SUPPORTS_LOGIN" != 1 ]; then
+  [ "${FILAMENT_PLUGIN_UPDATE:-}" = "1" ] \
+    || info "The installed $PLUGIN_ID predates openclaw filament login; updating it first."
   if [ "$INSTALL_SOURCE" = "git" ]; then
     info "Updating $PLUGIN_ID (installed from git) ..."
     # New plugin surfaces (a CLI command, skills) need consent again.
@@ -235,11 +207,19 @@ EOF
 
 agent_known() { printf '%s\n' "$AGENT_IDS_CSV" | tr ',' '\n' | grep -qx "$1"; }
 
+if [ "$TOKEN_MODE" = 1 ] && [ -z "$TARGET_AGENT" ]; then
+  # A token belongs to one Filament agent: it needs the OpenClaw agent to answer as it.
+  case "$AGENT_IDS_CSV" in
+    -) err "This gateway has no OpenClaw agent; set OPENCLAW_AGENT to create one." ;;
+    *,*) err "This gateway has several OpenClaw agents ($AGENT_IDS_CSV); set OPENCLAW_AGENT to the one to connect." ;;
+    *) TARGET_AGENT="$AGENT_IDS_CSV" ;;
+  esac
+fi
+ACCOUNT_ID="$TARGET_AGENT"
+
 if [ "$TOKEN_MODE" = 0 ]; then
   :
-elif [ "$GATEWAY_MODE" = 1 ]; then
-  info "Pairing this gateway with Filament (agents: $AGENT_IDS_CSV)."
-elif [ -n "$TARGET_AGENT" ]; then
+else
   if agent_known "$TARGET_AGENT"; then
     info "Using the existing OpenClaw agent '$TARGET_AGENT'."
   else
@@ -249,8 +229,6 @@ elif [ -n "$TARGET_AGENT" ]; then
       || err "could not create the OpenClaw agent '$TARGET_AGENT'."
     OWNERSHIP="explicit"
   fi
-else
-  info "The plugin picks the OpenClaw agent (agents: $AGENT_IDS_CSV)."
 fi
 
 # --- 2b. Token + binding, in one validated config write --------------------------
@@ -258,9 +236,9 @@ fi
 # Without a token only the shared settings below are written, if any are set.
 BINDINGS_JSON="$(openclaw config get bindings --json 2>/dev/null || true)"
 PLUGIN_CFG_JSON="$(openclaw config get "plugins.entries.${PLUGIN_ID}.config" --json 2>/dev/null || true)"
-PATCH_AND_NOTES="$(python3 - "$BINDINGS_JSON" "$PLUGIN_CFG_JSON" "$ACCOUNT_ID" "$TARGET_AGENT" "$PLUGIN_ID" "$GATEWAY_MODE" <<'PY'
+PATCH_AND_NOTES="$(python3 - "$BINDINGS_JSON" "$PLUGIN_CFG_JSON" "$ACCOUNT_ID" "$TARGET_AGENT" "$PLUGIN_ID" <<'PY'
 import json, os, sys
-raw_bindings, raw_cfg, account, agent, plugin_id, gateway_mode = sys.argv[1:7]
+raw_bindings, raw_cfg, account, agent, plugin_id = sys.argv[1:6]
 def load(raw, default):
     try:
         v = json.loads(raw)
@@ -273,20 +251,12 @@ token = os.environ["CONNECT_TOKEN"]
 mcp_url = os.environ.get("FILAMENT_MCP_URL", "").strip()
 
 plugin_cfg = {}
-if not token:
-    pass
-elif account == "default":
-    plugin_cfg["connectToken"] = token
-elif account.startswith("pending-"):
-    plugin_cfg["accounts"] = {account: {"connectToken": token, "pending": True}}
-elif gateway_mode == "1":
-    plugin_cfg["accounts"] = {account: {"connectToken": token, "control": True}}
-else:
+if token:
     plugin_cfg["accounts"] = {account: {"connectToken": token}}
 if mcp_url:
     plugin_cfg["mcpUrl"] = mcp_url
-# Top level, so every account on this gateway — including the ones the
-# gateway control account adds later — uses the same transport and project.
+# Top level, so every account on this gateway, including the ones
+# `openclaw filament login` adds later, uses the same transport and project.
 transport = os.environ.get("TRANSPORT", "")
 if transport:
     plugin_cfg["transport"] = transport
@@ -386,13 +356,8 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   sleep 3
 done
 
-if [ "$CONNECTED" = 1 ] && [ "$GATEWAY_MODE" = 1 ]; then
-  info "Gateway paired.${PRINCIPAL:+ Principal: $PRINCIPAL.} Pick which agents to connect in the Filament app."
-elif [ "$CONNECTED" = 1 ] && [ "$PENDING_MODE" = 1 ]; then
-  info "Connected.${PRINCIPAL:+ Principal: $PRINCIPAL.}"
-  info "With one OpenClaw agent it is bound already; with several, the agent asks in its Filament chat which one to use."
-elif [ "$CONNECTED" = 1 ]; then
-  info "Connected.${TARGET_AGENT:+ OpenClaw agent '$TARGET_AGENT' is live on Filament.}${PRINCIPAL:+ Principal: $PRINCIPAL.}"
+if [ "$CONNECTED" = 1 ]; then
+  info "Connected. OpenClaw agent '$TARGET_AGENT' is live on Filament.${PRINCIPAL:+ Principal: $PRINCIPAL.}"
   info "Say hi to it from the Filament app."
 else
   warn "Config written, but account '$ACCOUNT_ID' did not report a connection within \
