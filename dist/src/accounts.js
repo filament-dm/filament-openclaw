@@ -13,9 +13,15 @@ function asRecord(value) {
 function hasTokenInput(value) {
   return typeof value === "string" && value.trim().length > 0 || typeof value === "object" && value !== null;
 }
+function hasPendingSignIn(entry) {
+  const pending = entry.pendingSignIn;
+  return typeof pending === "object" && pending !== null && !Array.isArray(pending);
+}
 function listConfiguredAccountIds(pluginConfig, env = process.env) {
   const cfg = asRecord(pluginConfig);
-  const ids = Object.entries(asRecord(cfg.accounts)).filter(([, entry]) => hasTokenInput(asRecord(entry).connectToken)).map(([id]) => id);
+  const ids = Object.entries(asRecord(cfg.accounts)).filter(
+    ([, entry]) => hasTokenInput(asRecord(entry).connectToken) || hasPendingSignIn(asRecord(entry))
+  ).map(([id]) => id);
   const hasDefault = hasTokenInput(cfg.connectToken) || !!env.FILAMENT_MCP_TOKEN?.trim();
   if ((hasDefault || ids.length === 0) && !ids.includes(DEFAULT_ACCOUNT_ID)) {
     ids.unshift(DEFAULT_ACCOUNT_ID);
@@ -60,6 +66,7 @@ export {
   PENDING_ACCOUNT_PREFIX,
   PLUGIN_ID,
   asRecord,
+  hasPendingSignIn,
   hasTokenInput,
   isControlAccount,
   isPendingAccount,

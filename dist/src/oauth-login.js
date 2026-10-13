@@ -7,6 +7,10 @@ const CLIENT_NAME = "OpenClaw (Filament plugin)";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const HTTP_TIMEOUT_MS = 2e4;
 class LoginError extends Error {
+  constructor(message, reason) {
+    super(message);
+    this.reason = reason;
+  }
   name = "LoginError";
 }
 async function request(fetchImpl, url, opts = {}) {
@@ -26,11 +30,11 @@ async function request(fetchImpl, url, opts = {}) {
       method: body === void 0 ? "GET" : "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
+      signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(HTTP_TIMEOUT_MS)]) : AbortSignal.timeout(HTTP_TIMEOUT_MS)
     });
     text = await response.text();
   } catch (error) {
-    throw new LoginError(`Could not reach ${url}: ${errorMessage(error)}`);
+    throw new LoginError(`Could not reach ${url}: ${errorMessage(error)}`, "transient");
   }
   try {
     return { status: response.status, doc: JSON.parse(text || "null") };
@@ -124,8 +128,11 @@ function parseRedirect(text) {
   }
   return result;
 }
-function exchange(fetchImpl, meta, form) {
-  return request(fetchImpl, meta.tokenEndpoint, { form: { ...form, resource: meta.resource } });
+function exchange(fetchImpl, server, form, signal) {
+  return request(fetchImpl, server.tokenEndpoint, {
+    form: { ...form, resource: server.resource },
+    signal
+  });
 }
 function tokenFrom({ status, doc }) {
   if (status === 200 && isRecord(doc)) {
@@ -133,18 +140,36 @@ function tokenFrom({ status, doc }) {
     if (token) return token;
   }
   const error = isRecord(doc) ? stringField(doc, "error") : void 0;
-  if (error === "access_denied") throw new LoginError("Sign-in was declined (access_denied).");
+  if (error === "access_denied") {
+    throw new LoginError("Sign-in was declined (access_denied).", "denied");
+  }
   if (error === "expired_token") {
-    throw new LoginError("The sign-in link expired (expired_token). Run the login again.");
+    throw new LoginError(
+      "The sign-in link expired (expired_token). Run the login again.",
+      "expired"
+    );
   }
   const detail = isRecord(doc) ? stringField(doc, "error_description") ?? error ?? JSON.stringify(doc) : String(doc);
-  throw new LoginError(`Filament did not issue a token (${status}): ${detail}`);
+  throw new LoginError(
+    `Filament did not issue a token (${status}): ${detail}`,
+    status >= 500 ? "transient" : void 0
+  );
 }
-const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function deviceLogin(meta, opts = {}) {
+function abortableSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+async function startDeviceLogin(meta, opts = {}) {
   const fetchImpl = opts.fetch ?? fetch;
   const out = opts.out ?? consoleOut;
-  const sleep = opts.sleep ?? realSleep;
   const now = opts.now ?? Date.now;
   if (!meta.deviceAuthorizationEndpoint) {
     throw new LoginError("Filament does not offer device sign-in.");
@@ -163,25 +188,56 @@ async function deviceLogin(meta, opts = {}) {
   await out("To connect this agent, open this link on any device signed in to Filament:");
   await out(link);
   await out(`Code: ${userCode}`);
-  await out("Waiting for approval ...");
-  let intervalMs = secondsField(doc.interval, 5) * 1e3;
-  const deadline = now() + secondsField(doc.expires_in, 600) * 1e3;
-  while (now() < deadline) {
+  return {
+    tokenEndpoint: meta.tokenEndpoint,
+    resource: meta.resource,
+    clientId,
+    deviceCode,
+    interval: secondsField(doc.interval, 5),
+    expiresAt: now() + secondsField(doc.expires_in, 600) * 1e3
+  };
+}
+function abortError() {
+  return Object.assign(new Error("The sign-in wait was aborted."), { name: "AbortError" });
+}
+async function pollDeviceToken(auth, opts = {}) {
+  const fetchImpl = opts.fetch ?? fetch;
+  const sleep = opts.sleep ?? ((ms) => abortableSleep(ms, opts.signal));
+  const now = opts.now ?? Date.now;
+  let intervalMs = auth.interval * 1e3;
+  while (now() < auth.expiresAt) {
     await sleep(intervalMs);
-    const answer = await exchange(fetchImpl, meta, {
-      grant_type: DEVICE_GRANT,
-      device_code: deviceCode,
-      client_id: clientId
-    });
-    const error = isRecord(answer.doc) ? answer.doc.error : void 0;
-    if (error === "authorization_pending") continue;
-    if (error === "slow_down") {
-      intervalMs += 5e3;
-      continue;
+    if (opts.signal?.aborted) throw abortError();
+    let answer;
+    try {
+      answer = await exchange(
+        fetchImpl,
+        auth,
+        { grant_type: DEVICE_GRANT, device_code: auth.deviceCode, client_id: auth.clientId },
+        opts.signal
+      );
+      const error = isRecord(answer.doc) ? answer.doc.error : void 0;
+      if (error === "authorization_pending") continue;
+      if (error === "slow_down") {
+        intervalMs += 5e3;
+        continue;
+      }
+      return tokenFrom(answer);
+    } catch (error) {
+      if (opts.signal?.aborted) throw abortError();
+      if (error instanceof LoginError && error.reason === "transient" && opts.onTransientError) {
+        opts.onTransientError(error);
+        continue;
+      }
+      throw error;
     }
-    return tokenFrom(answer);
   }
-  throw new LoginError("The sign-in link expired. Run the login again.");
+  throw new LoginError("The sign-in link expired. Run the login again.", "expired");
+}
+async function deviceLogin(meta, opts = {}) {
+  const auth = await startDeviceLogin(meta, opts);
+  await (opts.out ?? consoleOut)("Waiting for approval ...");
+  return pollDeviceToken(auth, opts);
 }
 function secondsField(raw, fallback) {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
@@ -334,7 +390,9 @@ export {
   login,
   parseRedirect,
   pkcePair,
+  pollDeviceToken,
   registerClient,
+  startDeviceLogin,
   wellKnownUrls,
   withQuery
 };

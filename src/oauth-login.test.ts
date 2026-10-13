@@ -12,76 +12,16 @@ import {
   login,
   LoginError,
   parseRedirect,
+  pollDeviceToken,
   registerClient,
   SCOPE,
+  startDeviceLogin,
   wellKnownUrls,
   withQuery,
   type Fetch,
 } from "./oauth-login.js";
 
-const MCP = "https://api.example/mcp/agents";
-const ISSUER = "https://api.example/mcp/agents/oauth";
-
-type Answer = [status: number, doc: unknown] | string;
-
-interface Call {
-  url: string;
-  method: string;
-  form?: Record<string, string>;
-  body?: Record<string, unknown>;
-}
-
-function server(device = true): Record<string, Answer> {
-  return {
-    "https://api.example/.well-known/oauth-protected-resource/mcp/agents": [
-      200,
-      { resource: MCP, authorization_servers: [ISSUER] },
-    ],
-    "https://api.example/.well-known/oauth-authorization-server/mcp/agents/oauth": [
-      200,
-      {
-        issuer: ISSUER,
-        authorization_endpoint: `${ISSUER}/authorize`,
-        token_endpoint: `${ISSUER}/token`,
-        registration_endpoint: `${ISSUER}/register`,
-        ...(device ? { device_authorization_endpoint: `${ISSUER}/device_authorization` } : {}),
-      },
-    ],
-    [`${ISSUER}/register`]: [201, { client_id: "client-1" }],
-    [`${ISSUER}/device_authorization`]: [
-      200,
-      {
-        device_code: "dev_1",
-        user_code: "BCDF-GHJK",
-        verification_uri: `${ISSUER}/device`,
-        verification_uri_complete: `${ISSUER}/device?user_code=BCDF-GHJK`,
-        expires_in: 600,
-        interval: 5,
-      },
-    ],
-  };
-}
-
-/** Answers from a table; /token answers come from a queue. A string answer is a raw body. */
-function fakeHttp(routes: Record<string, Answer>, tokenAnswers: Answer[] = []) {
-  const calls: Call[] = [];
-  const fetchImpl: Fetch = async (input, init) => {
-    const url = String(input);
-    const raw = typeof init?.body === "string" ? init.body : undefined;
-    const isForm = String(new Headers(init?.headers).get("content-type")).includes("form");
-    calls.push({
-      url,
-      method: init?.method ?? "GET",
-      ...(raw && isForm ? { form: Object.fromEntries(new URLSearchParams(raw)) } : {}),
-      ...(raw && !isForm ? { body: JSON.parse(raw) } : {}),
-    });
-    const answer = url === `${ISSUER}/token` ? tokenAnswers.shift() : routes[url];
-    if (answer === undefined) return new Response("{}", { status: 404 });
-    if (typeof answer === "string") return new Response(answer, { status: 200 });
-    return new Response(JSON.stringify(answer[1]), { status: answer[0] });
-  };
-  return { fetch: fetchImpl, calls };
-}
+import { fakeHttp, ISSUER, MCP, server, type Answer } from "./testing/fake-oauth.js";
 
 const quiet = () => {};
 const noSleep = async () => {};
@@ -423,4 +363,48 @@ test("parseRedirect: a full address or a bare query", () => {
 test("withQuery: keeps a query the endpoint already has", () => {
   const url = withQuery("https://as.example/authorize?tenant=a", { state: "s" });
   assert.deepEqual(Object.fromEntries(new URL(url).searchParams), { tenant: "a", state: "s" });
+});
+
+test("startDeviceLogin / pollDeviceToken: the code outlives the process that asked for it", async () => {
+  const http = fakeHttp(server(), [[200, { access_token: "fmcp_later" }]]);
+  const lines: string[] = [];
+  const auth = await startDeviceLogin(await discover(MCP, http.fetch), {
+    fetch: http.fetch,
+    out: (line) => void lines.push(line),
+    now: () => 1_000,
+  });
+  assert.deepEqual(auth, {
+    tokenEndpoint: `${ISSUER}/token`,
+    resource: MCP,
+    clientId: "client-1",
+    deviceCode: "dev_1",
+    interval: 5,
+    expiresAt: 601_000,
+  });
+  assert.deepEqual(lines.slice(-2), [`${ISSUER}/device?user_code=BCDF-GHJK`, "Code: BCDF-GHJK"]);
+  // Redeemed from the stored fields alone, as the gateway does.
+  const later = fakeHttp({}, [[200, { access_token: "fmcp_later" }]]);
+  assert.equal(
+    await pollDeviceToken(auth, { fetch: later.fetch, sleep: noSleep, now: () => 2_000 }),
+    "fmcp_later",
+  );
+});
+
+test("pollDeviceToken: an unreachable server ends the foreground wait", async () => {
+  const http = fakeHttp({}, [new TypeError("fetch failed")]);
+  const auth = {
+    tokenEndpoint: `${ISSUER}/token`,
+    resource: MCP,
+    clientId: "c",
+    deviceCode: "d",
+    interval: 1,
+    expiresAt: Date.now() + 60_000,
+  };
+  await assert.rejects(
+    pollDeviceToken(auth, { fetch: http.fetch, sleep: noSleep }),
+    (error: unknown) =>
+      error instanceof LoginError &&
+      error.reason === "transient" &&
+      /Could not reach/.test(error.message),
+  );
 });

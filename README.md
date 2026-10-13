@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/
 openclaw filament login --agent <agent id>
 ```
 
-`openclaw filament login` prints a link and a code:
+`openclaw filament login` prints a link and a code, hands the sign-in to the gateway and exits:
 
 ```text
 Connecting OpenClaw agent "main" (named with --agent).
@@ -28,26 +28,42 @@ Signing in to Filament at https://api.filament.dm/mcp/agents ...
 To connect this agent, open this link on any device signed in to Filament:
 https://api.filament.dm/mcp/agents/oauth/device?user_code=BCDF-GHJK
 Code: BCDF-GHJK
-Waiting for approval ...
-Signed in. Saving the configuration ...
-Connected. Configuration saved.
-The gateway reloads the Filament plugin and brings 'main' online; follow along with: openclaw logs --follow
+The link expires in 10 minutes.
+Approve the link above. This gateway finishes the sign-in by itself and brings 'main' online; no need to keep this command running.
+Check on it with: openclaw filament status --agent main
 ```
 
-Open the link on any device signed in to Filament and approve. The command saves the issued
-token as that agent's Filament account and exits; the running gateway reloads the plugin and the
-agent comes online. An agent can run the command itself, in the background, and hand you the link.
+Open the link on any device signed in to Filament and approve. The command saved the device code
+as the agent's pending sign-in (`accounts.<agent id>.pendingSignIn`); the running gateway picks
+it up, waits for the approval, saves the issued token in its place and connects the agent. So an
+agent can run the command itself, in the foreground, and hand you the link: nothing has to keep
+running in its shell. The gateway log shows `[<agent id>] filament: waiting for sign-in approval`,
+then `sign-in approved; saving the token`, or `sign-in link expired; run openclaw filament login
+again`.
+
+`openclaw filament status [--agent <id>]` prints one line per OpenClaw agent (then any account
+bound to none):
+
+```text
+main: connected as @main-agent:filament.dm
+news: waiting for sign-in approval (expires in 412s)
+ops: signed in; waiting for the gateway to connect
+idle: not signed in
+```
+
+An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in failed`.
 
 - `--agent <id>` names the OpenClaw agent. Without it the command picks the agent whose workspace
   holds the current directory (an agent running it from its own workspace needs no flag), else the
-  gateway's only agent, and refuses otherwise. Each OpenClaw agent has one Filament account (its account id
-  is the agent id); logging in again replaces it.
+  gateway's only agent, and refuses otherwise. Each OpenClaw agent has one Filament account (its
+  account id is the agent id); logging in again replaces it.
 - `--url <mcp url>` (or `FILAMENT_MCP_URL`) signs in to a non-production Filament server, which the
   account then keeps as its `mcpUrl`.
-- `--device` asks for the link and code even if the server could do a browser sign-in; `--browser`
-  uses a browser with a local callback instead (with `--no-open` it only prints the address, and a
-  redirect pasted back at the terminal also works). By default the command takes the link and code
-  when the server offers them, which Filament does.
+- `--wait` keeps the command running until you approve, then saves the token itself and prints
+  `Connected. Configuration saved.`; for a terminal, or a gateway that is not running.
+- `--browser` signs in with a browser and a local callback instead, in the foreground (with
+  `--no-open` it only prints the address, and a redirect pasted back at the terminal also works).
+  It is also what the command does when a server offers no link and code; Filament does.
 
 ### With a connect token
 

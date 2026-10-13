@@ -1,6 +1,7 @@
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/agent-media-payload";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
+  asRecord,
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   isControlAccount,
@@ -38,6 +39,7 @@ import {
   MAX_REPORTED_STATUSES
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
+import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
   choiceAsked,
@@ -52,6 +54,7 @@ import {
   saveUpdateState,
   takeUpdateRequest
 } from "./state/updates.js";
+import { clearSignInEnd, saveSignInEnd } from "./state/sign-in.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -321,6 +324,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             );
           }
         }
+        const pendingSignIn = token ? void 0 : parsePendingSignIn(
+          asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pendingSignIn
+        );
         if (token) {
           try {
             connection = await retryConnect(
@@ -337,6 +343,19 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);
             connection = null;
+          }
+        } else if (pendingSignIn) {
+          const outcome = await finishPendingSignIn({
+            accountId,
+            pending: pendingSignIn,
+            abortSignal,
+            log: accountLog,
+            writeConfig: writeGatewayConfig,
+            saveEnd: saveSignInEnd,
+            clearEnd: clearSignInEnd
+          });
+          if (outcome === "signed-in") {
+            accountLog("filament: sign-in saved; the gateway reloads this account to connect it");
           }
         } else {
           accountLog(

@@ -130,9 +130,6 @@
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "connectToken"
-          ],
           "properties": {
             "connectToken": {
               "description": "This agent's Filament connect token (fmcp_…), a ${ENV_VAR} shorthand, or a SecretRef.",
@@ -145,6 +142,45 @@
                   "$ref": "#/$defs/secretRef"
                 }
               ]
+            },
+            "pendingSignIn": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "deviceCode",
+                "clientId",
+                "tokenEndpoint",
+                "resource",
+                "expiresAt"
+              ],
+              "description": "A device sign-in `openclaw filament login` started and the gateway finishes: the account polls Filament until the owner approves, then saves the token as connectToken and drops this. The device code is a credential until redeemed.",
+              "properties": {
+                "deviceCode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "clientId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tokenEndpoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resource": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "interval": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "Seconds between polls."
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "description": "When the device code expires (ISO 8601)."
+                }
+              }
             },
             "mcpUrl": {
               "type": "string",
@@ -162,7 +198,19 @@
               "$ref": "#/$defs/transport",
               "description": "Overrides the top-level transport for this account."
             }
-          }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "connectToken"
+              ]
+            },
+            {
+              "required": [
+                "pendingSignIn"
+              ]
+            }
+          ]
         }
       },
       "mcpUrl": {

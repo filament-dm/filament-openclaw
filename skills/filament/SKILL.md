@@ -8,10 +8,12 @@ user-invocable: false
 
 ## Connecting to Filament
 
-Run `openclaw filament login --agent <your agent id>` in the background, writing its output to a
-file, and read the file until it shows a link and a code. Give both to your owner. They approve in
-Filament, and the command exits after printing `Connected. Configuration saved.`. Then the gateway
-reloads and you come online in Filament. Add `--url <mcp url>` only for a non-production server.
+Run `openclaw filament login` from your workspace, in the foreground (add `--agent <your agent id>`
+if it cannot tell). It prints a link and a code and exits within seconds: give both to your owner
+right away, in this turn. The gateway finishes the sign-in once they approve, with nothing left
+running in your shell. Check later with `openclaw filament status --agent <your agent id>`; it says
+`connected as …` when you are online, or `sign-in expired` if you need to run the login again. Add
+`--url <mcp url>` only for a non-production server.
 
 ## Standing rules
 

@@ -18,9 +18,21 @@ export const CLIENT_NAME = "OpenClaw (Filament plugin)";
 export const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const HTTP_TIMEOUT_MS = 20_000;
 
+/**
+ * Why a device sign-in ended without a token, where it matters to the caller: `transient` (the
+ * server was unreachable or failed) is worth another poll.
+ */
+export type LoginErrorReason = "expired" | "denied" | "transient";
+
 /** A login step failed; the message is fit to show the owner. */
 export class LoginError extends Error {
   override name = "LoginError";
+  constructor(
+    message: string,
+    readonly reason?: LoginErrorReason,
+  ) {
+    super(message);
+  }
 }
 
 export interface ServerMetadata {
@@ -44,7 +56,7 @@ interface HttpAnswer {
 async function request(
   fetchImpl: Fetch,
   url: string,
-  opts: { form?: Record<string, string>; body?: unknown } = {},
+  opts: { form?: Record<string, string>; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<HttpAnswer> {
   const headers: Record<string, string> = { Accept: "application/json" };
   let body: string | undefined;
@@ -62,11 +74,13 @@ async function request(
       method: body === undefined ? "GET" : "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+      signal: opts.signal
+        ? AbortSignal.any([opts.signal, AbortSignal.timeout(HTTP_TIMEOUT_MS)])
+        : AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     text = await response.text();
   } catch (error) {
-    throw new LoginError(`Could not reach ${url}: ${errorMessage(error)}`);
+    throw new LoginError(`Could not reach ${url}: ${errorMessage(error)}`, "transient");
   }
   try {
     return { status: response.status, doc: JSON.parse(text || "null") };
@@ -189,10 +203,14 @@ export function parseRedirect(text: string): Record<string, string> {
 
 function exchange(
   fetchImpl: Fetch,
-  meta: ServerMetadata,
+  server: { tokenEndpoint: string; resource: string },
   form: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<HttpAnswer> {
-  return request(fetchImpl, meta.tokenEndpoint, { form: { ...form, resource: meta.resource } });
+  return request(fetchImpl, server.tokenEndpoint, {
+    form: { ...form, resource: server.resource },
+    signal,
+  });
 }
 
 function tokenFrom({ status, doc }: HttpAnswer): string {
@@ -201,14 +219,22 @@ function tokenFrom({ status, doc }: HttpAnswer): string {
     if (token) return token;
   }
   const error = isRecord(doc) ? stringField(doc, "error") : undefined;
-  if (error === "access_denied") throw new LoginError("Sign-in was declined (access_denied).");
+  if (error === "access_denied") {
+    throw new LoginError("Sign-in was declined (access_denied).", "denied");
+  }
   if (error === "expired_token") {
-    throw new LoginError("The sign-in link expired (expired_token). Run the login again.");
+    throw new LoginError(
+      "The sign-in link expired (expired_token). Run the login again.",
+      "expired",
+    );
   }
   const detail = isRecord(doc)
     ? (stringField(doc, "error_description") ?? error ?? JSON.stringify(doc))
     : String(doc);
-  throw new LoginError(`Filament did not issue a token (${status}): ${detail}`);
+  throw new LoginError(
+    `Filament did not issue a token (${status}): ${detail}`,
+    status >= 500 ? "transient" : undefined,
+  );
 }
 
 export interface DeviceLoginOptions {
@@ -218,15 +244,39 @@ export interface DeviceLoginOptions {
   now?: () => number;
 }
 
-const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+/** Waits `ms`, or less when `signal` aborts. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
 
-export async function deviceLogin(
+/** A device code the owner has yet to approve: what anyone who redeems it later needs. */
+export interface DeviceAuthorization {
+  tokenEndpoint: string;
+  resource: string;
+  clientId: string;
+  deviceCode: string;
+  /** Seconds between polls. */
+  interval: number;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
+/** Registers a device client, asks for a code and prints the link and code on lines of their own. */
+export async function startDeviceLogin(
   meta: ServerMetadata,
-  opts: DeviceLoginOptions = {},
-): Promise<string> {
+  opts: Pick<DeviceLoginOptions, "fetch" | "out" | "now"> = {},
+): Promise<DeviceAuthorization> {
   const fetchImpl = opts.fetch ?? fetch;
   const out = opts.out ?? consoleOut;
-  const sleep = opts.sleep ?? realSleep;
   const now = opts.now ?? Date.now;
   if (!meta.deviceAuthorizationEndpoint) {
     throw new LoginError("Filament does not offer device sign-in.");
@@ -245,25 +295,77 @@ export async function deviceLogin(
   await out("To connect this agent, open this link on any device signed in to Filament:");
   await out(link);
   await out(`Code: ${userCode}`);
-  await out("Waiting for approval ...");
-  let intervalMs = secondsField(doc.interval, 5) * 1000;
-  const deadline = now() + secondsField(doc.expires_in, 600) * 1000;
-  while (now() < deadline) {
+  return {
+    tokenEndpoint: meta.tokenEndpoint,
+    resource: meta.resource,
+    clientId,
+    deviceCode,
+    interval: secondsField(doc.interval, 5),
+    expiresAt: now() + secondsField(doc.expires_in, 600) * 1000,
+  };
+}
+
+export interface PollOptions extends Pick<DeviceLoginOptions, "fetch" | "sleep" | "now"> {
+  /** Ends the wait early with an AbortError. */
+  signal?: AbortSignal;
+  /** Given, an unreachable or failing server is reported here and polled again, not thrown. */
+  onTransientError?: (error: LoginError) => void;
+}
+
+function abortError(): Error {
+  return Object.assign(new Error("The sign-in wait was aborted."), { name: "AbortError" });
+}
+
+/**
+ * Redeems an approved device code: polls every `interval` seconds, five more after each
+ * `slow_down`, until a token, a refusal, or `expiresAt`.
+ */
+export async function pollDeviceToken(
+  auth: DeviceAuthorization,
+  opts: PollOptions = {},
+): Promise<string> {
+  const fetchImpl = opts.fetch ?? fetch;
+  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
+  const now = opts.now ?? Date.now;
+  let intervalMs = auth.interval * 1000;
+  while (now() < auth.expiresAt) {
     await sleep(intervalMs);
-    const answer = await exchange(fetchImpl, meta, {
-      grant_type: DEVICE_GRANT,
-      device_code: deviceCode,
-      client_id: clientId,
-    });
-    const error = isRecord(answer.doc) ? answer.doc.error : undefined;
-    if (error === "authorization_pending") continue;
-    if (error === "slow_down") {
-      intervalMs += 5000;
-      continue;
+    if (opts.signal?.aborted) throw abortError();
+    let answer: HttpAnswer;
+    try {
+      answer = await exchange(
+        fetchImpl,
+        auth,
+        { grant_type: DEVICE_GRANT, device_code: auth.deviceCode, client_id: auth.clientId },
+        opts.signal,
+      );
+      const error = isRecord(answer.doc) ? answer.doc.error : undefined;
+      if (error === "authorization_pending") continue;
+      if (error === "slow_down") {
+        intervalMs += 5000;
+        continue;
+      }
+      return tokenFrom(answer);
+    } catch (error) {
+      if (opts.signal?.aborted) throw abortError();
+      if (error instanceof LoginError && error.reason === "transient" && opts.onTransientError) {
+        opts.onTransientError(error);
+        continue;
+      }
+      throw error;
     }
-    return tokenFrom(answer);
   }
-  throw new LoginError("The sign-in link expired. Run the login again.");
+  throw new LoginError("The sign-in link expired. Run the login again.", "expired");
+}
+
+/** The device grant in the foreground: prints the link and code, then waits for the token. */
+export async function deviceLogin(
+  meta: ServerMetadata,
+  opts: DeviceLoginOptions = {},
+): Promise<string> {
+  const auth = await startDeviceLogin(meta, opts);
+  await (opts.out ?? consoleOut)("Waiting for approval ...");
+  return pollDeviceToken(auth, opts);
 }
 
 function secondsField(raw: unknown, fallback: number): number {

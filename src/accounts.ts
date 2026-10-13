@@ -36,14 +36,23 @@ export function hasTokenInput(value: unknown): boolean {
   );
 }
 
+export function hasPendingSignIn(entry: Record<string, unknown>): boolean {
+  const pending = entry.pendingSignIn;
+  return typeof pending === "object" && pending !== null && !Array.isArray(pending);
+}
+
 /** With nothing configured, `default` is still listed so the channel shows up (idle) in status. */
 export function listConfiguredAccountIds(
   pluginConfig: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
   const cfg = asRecord(pluginConfig);
+  // A pending sign-in has no token yet: its account starts to finish it (sign-in.ts).
   const ids = Object.entries(asRecord(cfg.accounts))
-    .filter(([, entry]) => hasTokenInput(asRecord(entry).connectToken))
+    .filter(
+      ([, entry]) =>
+        hasTokenInput(asRecord(entry).connectToken) || hasPendingSignIn(asRecord(entry)),
+    )
     .map(([id]) => id);
   const hasDefault = hasTokenInput(cfg.connectToken) || !!env.FILAMENT_MCP_TOKEN?.trim();
   if ((hasDefault || ids.length === 0) && !ids.includes(DEFAULT_ACCOUNT_ID)) {

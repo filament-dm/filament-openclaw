@@ -8,6 +8,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 
 import {
+  asRecord,
   DEFAULT_ACCOUNT_ID,
   FILAMENT_CHANNEL_ID,
   isControlAccount,
@@ -49,6 +50,7 @@ import {
   MAX_REPORTED_STATUSES,
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
+import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
   choiceAsked,
@@ -63,6 +65,7 @@ import {
   saveUpdateState,
   takeUpdateRequest,
 } from "./state/updates.js";
+import { clearSignInEnd, saveSignInEnd } from "./state/sign-in.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { RunTransport, TurnResult } from "./transports/types.js";
@@ -388,6 +391,12 @@ export function registerFilamentChannel(
           }
         }
 
+        const pendingSignIn = token
+          ? undefined
+          : parsePendingSignIn(
+              asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pendingSignIn,
+            );
+
         if (token) {
           try {
             connection = await retryConnect(
@@ -405,6 +414,21 @@ export function registerFilamentChannel(
           } catch (error) {
             accountLog(`filament: connect failed: ${String(error)}`);
             connection = null;
+          }
+        } else if (pendingSignIn) {
+          // `openclaw filament login` left the sign-in to the gateway; saving the token reloads
+          // this account, connected.
+          const outcome = await finishPendingSignIn({
+            accountId,
+            pending: pendingSignIn,
+            abortSignal,
+            log: accountLog,
+            writeConfig: writeGatewayConfig,
+            saveEnd: saveSignInEnd,
+            clearEnd: clearSignInEnd,
+          });
+          if (outcome === "signed-in") {
+            accountLog("filament: sign-in saved; the gateway reloads this account to connect it");
           }
         } else {
           accountLog(

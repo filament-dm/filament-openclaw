@@ -1,14 +1,26 @@
 /**
- * `openclaw filament login`: signs an OpenClaw agent in to Filament with OAuth (oauth-login.ts)
- * and saves the issued token as that agent's Filament account, the account install.sh writes for
- * a connect token. The write goes through the CLI (config-write.ts), an external change to the
- * running gateway, which reloads and connects the account.
+ * `openclaw filament login`: signs an OpenClaw agent in to Filament with OAuth (oauth-login.ts).
+ * By default it saves the device code as the agent's pending sign-in and exits, and the gateway
+ * finishes it (sign-in.ts); `--wait` and the browser flow save the token here instead. Either way
+ * the account is the one install.sh writes for a connect token, and the write goes through the CLI
+ * (config-write.ts), an external change the running gateway reloads. `openclaw filament status`
+ * reports each agent's sign-in.
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import { asRecord, PLUGIN_ID, pluginConfigFrom } from "./accounts.js";
+import {
+  asRecord,
+  DEFAULT_ACCOUNT_ID,
+  hasPendingSignIn,
+  hasTokenInput,
+  isControlAccount,
+  isPendingAccount,
+  listConfiguredAccountIds,
+  PLUGIN_ID,
+  pluginConfigFrom,
+} from "./accounts.js";
 import { writeGatewayConfig } from "./config-write.js";
 import {
   AGENT_ID_PATTERN,
@@ -16,8 +28,20 @@ import {
   listGatewayAgents,
   RESERVED_ACCOUNT_IDS,
 } from "./gateway.js";
-import { consoleOut, login, LoginError, type LoginFlow, type Out } from "./oauth-login.js";
+import {
+  authorizationCodeLogin,
+  consoleOut,
+  discover,
+  LoginError,
+  pollDeviceToken,
+  startDeviceLogin,
+  type DeviceLoginOptions,
+  type Out,
+} from "./oauth-login.js";
 import { DEFAULT_MCP_URL } from "./settings.js";
+import { parsePendingSignIn, toPendingSignIn, type PendingSignIn } from "./sign-in.js";
+import { loadIdentity, type AgentIdentity } from "./state/identities.js";
+import { loadSignInEnd, type SignInEnd } from "./state/sign-in.js";
 
 export const CLI_ROOT = "filament";
 
@@ -147,6 +171,9 @@ export function resolveLoginUrl(
   return url;
 }
 
+/** What a login leaves on the account: the token, or a device sign-in for the gateway to finish. */
+export type LoginCredential = { connectToken: string } | { pendingSignIn: PendingSignIn };
+
 /**
  * The account install.sh writes for `OPENCLAW_AGENT=<agentId>`: account id = agent id, bound to
  * it, replacing whatever account the agent had. The account keeps `mcpUrl` only when the plugin's
@@ -155,12 +182,20 @@ export function resolveLoginUrl(
 export function applyLogin(
   draft: Record<string, unknown>,
   agentId: string,
-  token: string,
+  credential: LoginCredential,
   mcpUrl: string,
 ): { displaced: string[] } {
+  const token = "connectToken" in credential ? credential.connectToken : "";
   const result = applyAgentConnect(draft, agentId, token);
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   const account = asRecord(asRecord(config.accounts)[agentId]);
+  if ("pendingSignIn" in credential) {
+    // No token until the owner approves: the old one belongs to the agent this login replaces.
+    delete account.connectToken;
+    account.pendingSignIn = credential.pendingSignIn;
+  } else {
+    delete account.pendingSignIn;
+  }
   if (mcpUrl === (trimUrl(config.mcpUrl) ?? DEFAULT_MCP_URL)) delete account.mcpUrl;
   else account.mcpUrl = mcpUrl;
   return result;
@@ -173,16 +208,19 @@ export interface LoginCommandOptions {
   browser?: boolean;
   /** Commander's `--no-open`. */
   open?: boolean;
+  /** Redeem the device code here instead of leaving it to the gateway. */
+  wait?: boolean;
 }
 
-export interface LoginDeps {
+export interface LoginDeps extends Pick<DeviceLoginOptions, "fetch" | "sleep" | "now"> {
   gatewayConfig: unknown;
   workspace?: WorkspaceContext;
   out?: Out;
   warn?: Out;
   env?: NodeJS.ProcessEnv;
-  login?: typeof login;
   writeConfig?: (mutate: (draft: Record<string, unknown>) => void) => Promise<boolean>;
+  /** Where a pasted browser redirect is read from (browser flow). */
+  pasteInput?: NodeJS.ReadableStream | null;
 }
 
 const consoleWarn: Out = (line) =>
@@ -190,15 +228,27 @@ const consoleWarn: Out = (line) =>
     process.stderr.write(`${line}\n`, () => resolve());
   });
 
-/** Returns the exit code. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Returns the exit code. The device flow, the default, ends once the code is saved: the gateway
+ * redeems it (sign-in.ts), so nothing here has to outlive the shell that ran it. `--wait` and the
+ * browser flow sign in here and save the token.
+ */
 export async function runLogin(opts: LoginCommandOptions, deps: LoginDeps): Promise<number> {
   const out = deps.out ?? consoleOut;
   const warn = deps.warn ?? consoleWarn;
+  const fetchImpl = deps.fetch ?? fetch;
+  const now = deps.now ?? Date.now;
   try {
     if (opts.device && opts.browser) {
       throw new LoginError("--device and --browser are mutually exclusive.");
     }
-    const flow: LoginFlow = opts.device ? "device" : opts.browser ? "browser" : "auto";
+    if (opts.wait && opts.browser) {
+      throw new LoginError("--wait is for the device sign-in; the browser sign-in always waits.");
+    }
     const { agentId, reason } = resolveLoginAgent(deps.gatewayConfig, opts.agent, deps.workspace);
     const mcpUrl = resolveLoginUrl(
       pluginConfigFrom(deps.gatewayConfig),
@@ -208,26 +258,57 @@ export async function runLogin(opts: LoginCommandOptions, deps: LoginDeps): Prom
     );
     await out(`Connecting OpenClaw agent "${agentId}" (${reason}).`);
     await out(`Signing in to Filament at ${mcpUrl} ...`);
-    const token = await (deps.login ?? login)(mcpUrl, {
-      flow,
-      out,
-      openBrowser: opts.open ?? true,
-    });
-    await out("Signed in. Saving the configuration ...");
+    const meta = await discover(mcpUrl, fetchImpl);
+    const device = opts.device || (!opts.browser && meta.deviceAuthorizationEndpoint !== undefined);
+
+    let credential: LoginCredential;
+    if (!device) {
+      const token = await authorizationCodeLogin(meta, {
+        fetch: fetchImpl,
+        out,
+        openBrowser: opts.open ?? true,
+        pasteInput: deps.pasteInput,
+      });
+      credential = { connectToken: token };
+    } else {
+      const auth = await startDeviceLogin(meta, { fetch: fetchImpl, out, now });
+      if (opts.wait) {
+        await out("Waiting for approval ...");
+        const token = await pollDeviceToken(auth, { fetch: fetchImpl, sleep: deps.sleep, now });
+        credential = { connectToken: token };
+      } else {
+        credential = { pendingSignIn: toPendingSignIn(auth) };
+      }
+    }
+
+    const handoff = "pendingSignIn" in credential;
+    if (!handoff) await out("Signed in. Saving the configuration ...");
     let displaced: string[] = [];
     try {
       await (deps.writeConfig ?? writeGatewayConfig)((draft) => {
-        displaced = applyLogin(draft, agentId, token, mcpUrl).displaced;
+        displaced = applyLogin(draft, agentId, credential, mcpUrl).displaced;
       });
     } catch (error) {
       throw new LoginError(
-        `Signed in, but the configuration could not be saved: ${error instanceof Error ? error.message : String(error)}. Run the login again.`,
+        `${handoff ? "The sign-in could not be handed to the gateway" : "Signed in, but the configuration could not be saved"}: ${errorText(error)}. Run the login again.`,
       );
     }
     for (const other of displaced) {
       await warn(
         `Agent '${agentId}' was bound to Filament account '${other}'; removed that account.`,
       );
+    }
+    if ("pendingSignIn" in credential) {
+      const minutes = Math.max(
+        1,
+        Math.round((Date.parse(credential.pendingSignIn.expiresAt) - now()) / 60_000),
+      );
+      await out(`The link expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+      await out(
+        `Approve the link above. This gateway finishes the sign-in by itself and brings '${agentId}' online; no need to keep this command running.`,
+      );
+      await out(`Check on it with: openclaw filament status --agent ${agentId}`);
+      return 0;
     }
     await out("Connected. Configuration saved.");
     await out(
@@ -239,6 +320,101 @@ export async function runLogin(opts: LoginCommandOptions, deps: LoginDeps): Prom
     await warn(`error: ${error.message}`);
     return 1;
   }
+}
+
+export interface StatusDeps {
+  gatewayConfig: unknown;
+  out?: Out;
+  warn?: Out;
+  now?: () => number;
+  /** The plugin's state lives in the gateway's store; a CLI that cannot open it knows less. */
+  loadIdentity?: (accountId: string) => AgentIdentity | undefined;
+  loadSignInEnd?: (accountId: string) => SignInEnd | undefined;
+}
+
+function tryLoad<T>(load: (accountId: string) => T | undefined, accountId: string): T | undefined {
+  try {
+    return load(accountId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** One account's state, as `openclaw filament status` words it. */
+export function describeAccount(
+  pluginConfig: unknown,
+  accountId: string,
+  deps: Required<Pick<StatusDeps, "now" | "loadIdentity" | "loadSignInEnd">>,
+): string {
+  const cfg = asRecord(pluginConfig);
+  const entry = asRecord(asRecord(cfg.accounts)[accountId]);
+  if (hasPendingSignIn(entry)) {
+    const pending = parsePendingSignIn(entry.pendingSignIn);
+    const left = pending ? Math.floor((pending.expiresAt - deps.now()) / 1000) : 0;
+    return left > 0 ? `waiting for sign-in approval (expires in ${left}s)` : "sign-in expired";
+  }
+  const token =
+    hasTokenInput(entry.connectToken) ||
+    (accountId === DEFAULT_ACCOUNT_ID && hasTokenInput(cfg.connectToken));
+  if (token) {
+    const identity = tryLoad(deps.loadIdentity, accountId);
+    return identity
+      ? `connected as ${identity.mxid}`
+      : "signed in; waiting for the gateway to connect";
+  }
+  const end = tryLoad(deps.loadSignInEnd, accountId);
+  if (end?.reason === "expired") return "sign-in expired";
+  if (end?.reason === "denied") return "sign-in declined";
+  if (end?.reason === "failed") return "sign-in failed";
+  return "not signed in";
+}
+
+/** One line per OpenClaw agent, then one per account bound to none; always exit 0. */
+export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Promise<number> {
+  const out = deps.out ?? consoleOut;
+  const describeDeps = {
+    now: deps.now ?? Date.now,
+    loadIdentity: deps.loadIdentity ?? loadIdentity,
+    loadSignInEnd: deps.loadSignInEnd ?? loadSignInEnd,
+  };
+  const pluginConfig = pluginConfigFrom(deps.gatewayConfig);
+  const agents = listGatewayAgents(deps.gatewayConfig).filter(
+    (agent) => !RESERVED_ACCOUNT_IDS.has(agent.id),
+  );
+  let shown = agents;
+  if (opts.agent !== undefined) {
+    const wanted = opts.agent.trim().toLowerCase();
+    shown = agents.filter((agent) => agent.id === wanted);
+    if (shown.length === 0) {
+      await (deps.warn ?? consoleWarn)(
+        `error: This gateway has no OpenClaw agent "${wanted}" (agents: ${agents.map((a) => a.id).join(", ") || "none"}).`,
+      );
+      return 1;
+    }
+  }
+  for (const agent of shown) {
+    // A login's account carries the agent's id, and an ended sign-in is kept under it too.
+    const accountId = agent.boundAccount ?? agent.id;
+    await out(`${agent.id}: ${describeAccount(pluginConfig, accountId, describeDeps)}`);
+  }
+  if (opts.agent !== undefined) return 0;
+  const claimed = new Set(agents.flatMap((agent) => [agent.boundAccount, agent.id]));
+  const unbound = listConfiguredAccountIds(pluginConfig, {}).filter(
+    (id) =>
+      !claimed.has(id) &&
+      (id !== DEFAULT_ACCOUNT_ID || hasTokenInput(asRecord(pluginConfig).connectToken)),
+  );
+  for (const accountId of unbound) {
+    const role = isControlAccount(pluginConfig, accountId)
+      ? " (gateway control account)"
+      : isPendingAccount(pluginConfig, accountId)
+        ? " (choosing its OpenClaw agent)"
+        : "";
+    await out(
+      `account ${accountId}${role}: ${describeAccount(pluginConfig, accountId, describeDeps)}`,
+    );
+  }
+  return 0;
 }
 
 /** The slice of Commander's `Command` used here; the real type ships with OpenClaw. */
@@ -273,11 +449,19 @@ export function registerFilamentCli(api: FilamentCliApi): void {
           "--url <url>",
           `Filament MCP endpoint (default: FILAMENT_MCP_URL, else ${DEFAULT_MCP_URL})`,
         )
-        .option("--device", "sign in from any device with a link and a code")
+        .option("--device", "sign in from any device with a link and a code (the default)")
+        .option("--wait", "wait here for the approval instead of leaving it to the gateway")
         .option("--browser", "sign in with a browser and a local callback")
         .option("--no-open", "print the sign-in link rather than opening a browser")
         .action(async (options) => {
           process.exitCode = await runLogin(options, { gatewayConfig: config });
+        });
+      root
+        .command("status")
+        .description("Show whether each OpenClaw agent is signed in to Filament")
+        .option("--agent <id>", "only this OpenClaw agent")
+        .action(async (options) => {
+          process.exitCode = await runStatus(options, { gatewayConfig: config });
         });
     },
     { descriptors: [{ name: CLI_ROOT, description: ROOT_DESCRIPTION, hasSubcommands: true }] },
