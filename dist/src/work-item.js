@@ -1,4 +1,8 @@
+function turnPeerKind(item) {
+  return item.is_backchannel ? "direct" : "group";
+}
 const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";
 export {
-  ATTACHMENT_ONLY_BODY
+  ATTACHMENT_ONLY_BODY,
+  turnPeerKind
 };

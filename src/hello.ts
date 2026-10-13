@@ -29,6 +29,12 @@ export const FALLBACK_HELLO =
 const HELLO_TURN_TIMEOUT_MS = 90_000;
 
 /**
+ * The hello runs in a side session of the backchannel's: its gateway-written prompt never shows as
+ * the owner's message in the main session, in Filament or in OpenClaw's own chat.
+ */
+export const HELLO_SIDE_SESSION = "filament-first-hello";
+
+/**
  * Due when the server asks for a first contact (it stops once the agent has posted in its
  * backchannel), or when this account connects as a Filament agent it has not been before; never
  * twice for the same account and agent.

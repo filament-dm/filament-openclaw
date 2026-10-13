@@ -37,7 +37,7 @@ import {
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
-import { helloDue, sayFirstHello } from "./hello.js";
+import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
 import {
   parseIdentityMarkdown,
   seedName,
@@ -67,7 +67,7 @@ import {
   updateFailureMessage,
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
-import type { WorkItem } from "./work-item.js";
+import { turnPeerKind, type WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
 
@@ -252,7 +252,11 @@ export function registerFilamentChannel(
           }
         };
 
-        const runTurn = async (item: WorkItem, media?: InboundMedia[]): Promise<TurnResult> => {
+        const runTurn = async (
+          item: WorkItem,
+          media?: InboundMedia[],
+          opts?: { sideSession?: string },
+        ): Promise<TurnResult> => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
@@ -267,7 +271,8 @@ export function registerFilamentChannel(
               channel: FILAMENT_CHANNEL_ID,
               channelLabel: "Filament",
               accountId,
-              peerKind: item.is_backchannel || item.is_direct ? "direct" : "group",
+              peerKind: turnPeerKind(item),
+              sideSession: opts?.sideSession,
               channelId: item.channel_id,
               threadId: item.thread_id,
               messages: item.messages,
@@ -381,7 +386,7 @@ export function registerFilamentChannel(
             setFilamentClient(connection.client, accountId);
             const hello = await sayFirstHello({
               identity: connection.identity,
-              runTurn: (item) => runTurn(item),
+              runTurn: (item) => runTurn(item, undefined, { sideSession: HELLO_SIDE_SESSION }),
               say: sayToPrincipal,
               log: accountLog,
               filamentName: seeded?.name,

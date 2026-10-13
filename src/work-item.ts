@@ -29,6 +29,16 @@ export interface WorkItem {
   messages: WorkMessage[];
 }
 
+/**
+ * How OpenClaw files the turn. Only the principal's backchannel is a direct chat, which OpenClaw's
+ * default `session.dmScope` puts in the agent's main session, as it does the owner's DMs on any
+ * channel. Every other room, a DM from someone else included, is a group with a session of its
+ * own: other people's words never reach the owner's main conversation.
+ */
+export function turnPeerKind(item: Pick<WorkItem, "is_backchannel">): "direct" | "group" {
+  return item.is_backchannel ? "direct" : "group";
+}
+
 export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";
 
 export type DispatchOutcome =

@@ -27,9 +27,10 @@ async function dispatchWorkItemTurn(params) {
     accountId: params.accountId,
     peer
   });
-  const sessionKey = params.threadId ? resolveThreadSessionKeys({
+  const childKey = params.sideSession ?? params.threadId;
+  const sessionKey = childKey ? resolveThreadSessionKeys({
     baseSessionKey: route.sessionKey,
-    threadId: params.threadId,
+    threadId: childKey,
     normalizeThreadId: (id) => id
   }).sessionKey : route.sessionKey;
   const effectiveRoute = { ...route, sessionKey };
@@ -69,6 +70,13 @@ async function dispatchWorkItemTurn(params) {
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // The gateway, not the principal, wrote a side session's prompt.
+    ...params.sideSession ? {
+      InputProvenance: {
+        kind: "internal_system",
+        sourceTool: `filament:${params.sideSession}`
+      }
+    } : {},
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {},
     ...inboundMediaFields(params.media)

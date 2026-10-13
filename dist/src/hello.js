@@ -5,6 +5,7 @@ function helloPrompt(filamentName) {
 }
 const FALLBACK_HELLO = "Hi \u2014 I'm connected to Filament and listening here. Ask me anything, give me tasks, or tell me how you'd like me to behave.";
 const HELLO_TURN_TIMEOUT_MS = 9e4;
+const HELLO_SIDE_SESSION = "filament-first-hello";
 function helloDue(params) {
   if (params.helloSentAs === params.mxid) return false;
   return isFirstContact(params.instructions) || params.previousMxid !== params.mxid;
@@ -57,6 +58,7 @@ async function sayFirstHello(ctx) {
 }
 export {
   FALLBACK_HELLO,
+  HELLO_SIDE_SESSION,
   helloDue,
   helloItem,
   helloPrompt,

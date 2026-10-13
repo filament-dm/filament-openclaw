@@ -28,8 +28,16 @@ export interface DispatchWorkItemParams {
   channel: string;
   channelLabel: string;
   accountId: string;
-  /** `"direct"` collapses to the agent's main session; `"group"` gets a per-channel session. */
+  /**
+   * `"direct"` follows `session.dmScope` (by default the agent's main session); `"group"` gets a
+   * per-channel session. Only the principal's backchannel is direct (`turnPeerKind`).
+   */
   peerKind: "direct" | "group";
+  /**
+   * A side session of the channel's own, for a turn the gateway starts rather than a person:
+   * its prompt stays out of the conversation the owner sees, in OpenClaw's chat too.
+   */
+  sideSession?: string;
   channelId: string;
   threadId: string | null;
   messages: WorkMessage[];
@@ -88,10 +96,11 @@ export async function dispatchWorkItemTurn(
   // Thread isolation: two threads in the same channel must not share a
   // session. `normalizeThreadId` is the identity function so a Matrix thread
   // (event) id keeps its case — the helper's default normalizer lowercases.
-  const sessionKey = params.threadId
+  const childKey = params.sideSession ?? params.threadId;
+  const sessionKey = childKey
     ? resolveThreadSessionKeys({
         baseSessionKey: route.sessionKey,
-        threadId: params.threadId,
+        threadId: childKey,
         normalizeThreadId: (id: string) => id,
       }).sessionKey
     : route.sessionKey;
@@ -135,6 +144,15 @@ export async function dispatchWorkItemTurn(
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // The gateway, not the principal, wrote a side session's prompt.
+    ...(params.sideSession
+      ? {
+          InputProvenance: {
+            kind: "internal_system",
+            sourceTool: `filament:${params.sideSession}`,
+          },
+        }
+      : {}),
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...(params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {}),
     ...inboundMediaFields(params.media),

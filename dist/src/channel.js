@@ -27,7 +27,7 @@ import {
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
-import { helloDue, sayFirstHello } from "./hello.js";
+import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
 import {
   parseIdentityMarkdown,
   seedName,
@@ -53,6 +53,7 @@ import {
   updateFailureMessage
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
+import { turnPeerKind } from "./work-item.js";
 const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
@@ -188,7 +189,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             await sayToPrincipal(otherCommandBody(command.verb));
           }
         };
-        const runTurn = async (item, media) => {
+        const runTurn = async (item, media, opts) => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
@@ -203,7 +204,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               channel: FILAMENT_CHANNEL_ID,
               channelLabel: "Filament",
               accountId,
-              peerKind: item.is_backchannel || item.is_direct ? "direct" : "group",
+              peerKind: turnPeerKind(item),
+              sideSession: opts?.sideSession,
               channelId: item.channel_id,
               threadId: item.thread_id,
               messages: item.messages,
@@ -299,7 +301,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             setFilamentClient(connection.client, accountId);
             const hello = await sayFirstHello({
               identity: connection.identity,
-              runTurn: (item) => runTurn(item),
+              runTurn: (item) => runTurn(item, void 0, { sideSession: HELLO_SIDE_SESSION }),
               say: sayToPrincipal,
               log: accountLog,
               filamentName: seeded?.name
