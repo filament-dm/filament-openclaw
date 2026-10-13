@@ -1,9 +1,10 @@
 /**
- * A new Filament agent arrives named "<Owner>'s agent" (numbered from the second), with no
- * picture. On its first connect the plugin gives it the bound OpenClaw agent's name and avatar,
- * in code, before the first hello. A name the owner already chose in the app is kept: only the
- * server's default is replaced, and a picture only where there is none. Filament has no emoji
- * avatar an agent can set, so an identity emoji is not carried over.
+ * A new Filament agent arrives named "<Owner>'s agent" (numbered from the second), with the app's
+ * stock picture. On its first connect the plugin gives it the bound OpenClaw agent's name and avatar,
+ * in code, before the first hello. A name the owner already chose in the app is kept: the profile
+ * is seeded only while its name is still the server's default, and then the stock picture the app
+ * gave it is replaced too. Filament has no emoji avatar an agent can set, so an identity emoji is
+ * not carried over.
  */
 import { asRecord } from "./accounts.js";
 import type { ToolCallResult } from "./mcp-client.js";
@@ -143,6 +144,36 @@ export interface SeedResult {
   image: boolean;
 }
 
+/**
+ * Why set_profile did not apply, if it did not. A refusal can come back as a successful call whose
+ * result is `{error}` (a taken name, an image it cannot use), so `ok` alone is not success.
+ */
+export function setProfileError(result: ToolCallResult): string | undefined {
+  if (!result.ok) return result.error?.message ?? result.kind ?? "failed";
+  const error = asRecord(result.data).error;
+  return typeof error === "string" && error ? error : undefined;
+}
+
+/** How many numbered names to try when the plain one is another of the owner's agents'. */
+const NAME_ATTEMPTS = 5;
+
+/** The name, or "<name> 2", "<name> 3", … when the owner's other agents hold it; the one set. */
+async function setName(ctx: SeedContext, wanted: string): Promise<string | undefined> {
+  for (let n = 1; n <= NAME_ATTEMPTS; n++) {
+    const candidate = n === 1 ? wanted : `${wanted} ${n}`;
+    const refused = setProfileError(
+      await ctx.client.callTool("set_profile", { name: candidate }, { signal: ctx.signal }),
+    );
+    if (!refused) return candidate;
+    if (!/already uses that name|name.*taken/i.test(refused)) {
+      ctx.log(`filament-profile: the name "${candidate}" was refused: ${refused}`);
+      return undefined;
+    }
+  }
+  ctx.log(`filament-profile: "${wanted}" and its numbered forms are all taken; name left as is`);
+  return undefined;
+}
+
 /** Never throws: a profile it cannot seed stays as the server made it. */
 export async function seedProfile(ctx: SeedContext): Promise<SeedResult | null> {
   const { client, log, signal } = ctx;
@@ -157,27 +188,39 @@ export async function seedProfile(ctx: SeedContext): Promise<SeedResult | null> 
       log("filament-profile: the owner named this agent; profile left as is");
       return null;
     }
-    const args: Record<string, string> = {};
-    if (ctx.name && ctx.name !== data.display_name) args.name = ctx.name;
-    const hasPicture = typeof data.avatar_url === "string" && data.avatar_url !== "";
-    if (!hasPicture && ctx.avatar.kind !== "none") {
+    // Name and picture go separately: the server refuses the whole call over either one.
+    let name: string | undefined;
+    if (ctx.name && ctx.name !== data.display_name) {
+      name = await setName(ctx, ctx.name);
+    }
+    let image = false;
+    if (ctx.avatar.kind === "none") {
+      log("filament-profile: the OpenClaw agent has no avatar");
+    } else {
+      // The app gives a new agent a stock picture; a name still the default means it is that one.
+      let source: string | undefined;
       try {
-        const image = await avatarImage(ctx);
-        if (image) args.image = image;
+        source = await avatarImage(ctx);
       } catch (error) {
         log(`filament-profile: could not upload the avatar: ${String(error)}`);
       }
+      if (source === undefined) {
+        log(
+          `filament-profile: the OpenClaw agent's avatar (${ctx.avatar.kind}) is not an image Filament takes`,
+        );
+      } else {
+        const refused = setProfileError(
+          await client.callTool("set_profile", { image: source }, { signal }),
+        );
+        if (refused) log(`filament-profile: the avatar was refused: ${refused}`);
+        else image = true;
+      }
     }
-    if (Object.keys(args).length === 0) return null;
-    const set = await client.callTool("set_profile", args, { signal });
-    if (!set.ok) {
-      log(`filament-profile: set_profile failed (${set.error?.message ?? "?"})`);
-      return null;
-    }
+    if (name === undefined && !image) return null;
     log(
-      `filament-profile: set ${[args.name ? "the name" : "", args.image ? "the avatar" : ""].filter(Boolean).join(" and ")} from the OpenClaw agent`,
+      `filament-profile: set ${[name ? `the name "${name}"` : "", image ? "the avatar" : ""].filter(Boolean).join(" and ")} from the OpenClaw agent`,
     );
-    return { ...(args.name ? { name: args.name } : {}), image: args.image !== undefined };
+    return { ...(name ? { name } : {}), image };
   } catch (error) {
     log(`filament-profile: ${String(error)}`);
     return null;

@@ -72,6 +72,27 @@ async function avatarImage(ctx) {
   }
   return void 0;
 }
+function setProfileError(result) {
+  if (!result.ok) return result.error?.message ?? result.kind ?? "failed";
+  const error = asRecord(result.data).error;
+  return typeof error === "string" && error ? error : void 0;
+}
+const NAME_ATTEMPTS = 5;
+async function setName(ctx, wanted) {
+  for (let n = 1; n <= NAME_ATTEMPTS; n++) {
+    const candidate = n === 1 ? wanted : `${wanted} ${n}`;
+    const refused = setProfileError(
+      await ctx.client.callTool("set_profile", { name: candidate }, { signal: ctx.signal })
+    );
+    if (!refused) return candidate;
+    if (!/already uses that name|name.*taken/i.test(refused)) {
+      ctx.log(`filament-profile: the name "${candidate}" was refused: ${refused}`);
+      return void 0;
+    }
+  }
+  ctx.log(`filament-profile: "${wanted}" and its numbered forms are all taken; name left as is`);
+  return void 0;
+}
 async function seedProfile(ctx) {
   const { client, log, signal } = ctx;
   try {
@@ -85,27 +106,37 @@ async function seedProfile(ctx) {
       log("filament-profile: the owner named this agent; profile left as is");
       return null;
     }
-    const args = {};
-    if (ctx.name && ctx.name !== data.display_name) args.name = ctx.name;
-    const hasPicture = typeof data.avatar_url === "string" && data.avatar_url !== "";
-    if (!hasPicture && ctx.avatar.kind !== "none") {
+    let name;
+    if (ctx.name && ctx.name !== data.display_name) {
+      name = await setName(ctx, ctx.name);
+    }
+    let image = false;
+    if (ctx.avatar.kind === "none") {
+      log("filament-profile: the OpenClaw agent has no avatar");
+    } else {
+      let source;
       try {
-        const image = await avatarImage(ctx);
-        if (image) args.image = image;
+        source = await avatarImage(ctx);
       } catch (error) {
         log(`filament-profile: could not upload the avatar: ${String(error)}`);
       }
+      if (source === void 0) {
+        log(
+          `filament-profile: the OpenClaw agent's avatar (${ctx.avatar.kind}) is not an image Filament takes`
+        );
+      } else {
+        const refused = setProfileError(
+          await client.callTool("set_profile", { image: source }, { signal })
+        );
+        if (refused) log(`filament-profile: the avatar was refused: ${refused}`);
+        else image = true;
+      }
     }
-    if (Object.keys(args).length === 0) return null;
-    const set = await client.callTool("set_profile", args, { signal });
-    if (!set.ok) {
-      log(`filament-profile: set_profile failed (${set.error?.message ?? "?"})`);
-      return null;
-    }
+    if (name === void 0 && !image) return null;
     log(
-      `filament-profile: set ${[args.name ? "the name" : "", args.image ? "the avatar" : ""].filter(Boolean).join(" and ")} from the OpenClaw agent`
+      `filament-profile: set ${[name ? `the name "${name}"` : "", image ? "the avatar" : ""].filter(Boolean).join(" and ")} from the OpenClaw agent`
     );
-    return { ...args.name ? { name: args.name } : {}, image: args.image !== void 0 };
+    return { ...name ? { name } : {}, image };
   } catch (error) {
     log(`filament-profile: ${String(error)}`);
     return null;
@@ -115,5 +146,6 @@ export {
   isDefaultAgentName,
   parseIdentityMarkdown,
   seedName,
-  seedProfile
+  seedProfile,
+  setProfileError
 };

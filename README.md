@@ -43,9 +43,11 @@ again`.
 
 Once connected for the first time, the agent takes its OpenClaw agent's name and avatar in Filament
 (the identity's name, else IDENTITY.md's, else the agent entry's; the avatar from
-`identity.avatar` or IDENTITY.md), unless you already named it in the app, and then says hello in
+`identity.avatar` or IDENTITY.md; it replaces the app's stock picture), unless you already named
+it in the app, and then says hello in
 your private chat with it, in its own voice (one agent turn); the Filament app waits for that
-hello. Both happen once per agent. An identity emoji is not carried over: Filament agents cannot
+hello. Both happen once per agent. If another of your agents already has the name, it takes the
+next number ("Carl 2"). An identity emoji is not carried over: Filament agents cannot
 set one themselves.
 
 `openclaw filament status [--agent <id>]` prints one line per OpenClaw agent (then any account
