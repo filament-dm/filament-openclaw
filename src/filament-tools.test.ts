@@ -12,6 +12,7 @@ import {
   getFilamentClient,
   KNOWN_TOOL_NAMES,
   logToolDrift,
+  normalizeEventIdArgs,
   registerFilamentToolsFromSnapshot,
   REPLIED_UNKNOWN_ROOM,
   setFilamentClient,
@@ -382,4 +383,19 @@ test("a quote counts as the turn's reply", async () => {
     {},
   );
   assert.ok(endFilamentTurn().has(REPLIED_UNKNOWN_ROOM));
+});
+
+test("normalizeEventIdArgs: a `#$event` id from OpenClaw's history lines loses the `#`", () => {
+  assert.deepEqual(
+    normalizeEventIdArgs({
+      message_id: "#$a1:x",
+      about_message_id: "#$b2:x",
+      up_to: "#$c3",
+      key: "👍",
+    }),
+    { message_id: "$a1:x", about_message_id: "$b2:x", up_to: "$c3", key: "👍" },
+  );
+  // Only id arguments: a body or a room alias keeps its `#`.
+  const same = { message_id: "$a1:x", channel: "#general", markdown_body: "#$ is fine here" };
+  assert.equal(normalizeEventIdArgs(same), same);
 });

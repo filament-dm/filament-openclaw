@@ -15,8 +15,18 @@ function inboundMediaFields(media) {
   const facts = toInboundMediaFacts(media);
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
-function renderMessages(messages) {
-  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+function inboundMessageFields(messages) {
+  const current = messages[messages.length - 1];
+  return {
+    body: current?.body ?? "",
+    current,
+    history: messages.slice(0, -1).map((m) => ({
+      sender: m.sender,
+      body: m.body,
+      timestamp: m.ts,
+      messageId: m.event_id
+    }))
+  };
 }
 async function dispatchWorkItemTurn(params) {
   const runtime = params.channelRuntime;
@@ -44,8 +54,7 @@ async function dispatchWorkItemTurn(params) {
     resolveEnvelopeFormatOptions: runtime.reply.resolveEnvelopeFormatOptions,
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope
   });
-  const rawBody = renderMessages(params.messages);
-  const lastMessage = params.messages[params.messages.length - 1];
+  const { body: rawBody, current: lastMessage, history } = inboundMessageFields(params.messages);
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -63,6 +72,8 @@ async function dispatchWorkItemTurn(params) {
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
     SenderId: lastMessage?.sender ?? "unknown",
+    ...lastMessage ? { Timestamp: lastMessage.ts } : {},
+    ...history.length > 0 ? { InboundHistory: history } : {},
     Provider: params.channel,
     Surface: params.channel,
     MessageSid: lastMessage?.event_id ?? params.channelId,
@@ -139,5 +150,6 @@ async function dispatchWorkItemTurn(params) {
   };
 }
 export {
-  dispatchWorkItemTurn
+  dispatchWorkItemTurn,
+  inboundMessageFields
 };

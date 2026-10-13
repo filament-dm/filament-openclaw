@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dispatchWorkItemTurn, type DispatchWorkItemParams } from "./turn.js";
+import { dispatchWorkItemTurn, inboundMessageFields, type DispatchWorkItemParams } from "./turn.js";
 import { turnPeerKind } from "./work-item.js";
 
 /** Stands in for the gateway: OpenClaw's default dmScope ("main") and groupScope ("per-group"). */
@@ -97,4 +97,56 @@ test("dispatchWorkItemTurn: a side session keeps a gateway-written prompt out of
   // An ordinary turn carries no provenance of its own.
   await dispatchWorkItemTurn(params({}, runtime));
   assert.equal(contexts[1]!.InputProvenance, undefined);
+});
+
+test("inboundMessageFields: the last message is the turn's; earlier ones are history with ids", () => {
+  const messages = [
+    { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 1 },
+    { event_id: "$b2", sender: "@bob:x", body: "not yet", ts: 2 },
+    { event_id: "$c3", sender: "@owner:x", body: "react 👍 to Alice", ts: 3 },
+  ];
+  assert.deepEqual(inboundMessageFields(messages), {
+    body: "react 👍 to Alice",
+    current: messages[2],
+    history: [
+      { sender: "@alice:x", body: "ship it?", timestamp: 1, messageId: "$a1" },
+      { sender: "@bob:x", body: "not yet", timestamp: 2, messageId: "$b2" },
+    ],
+  });
+  assert.deepEqual(inboundMessageFields([]), { body: "", current: undefined, history: [] });
+});
+
+test("dispatchWorkItemTurn: plain text in the body, ids and senders in OpenClaw's context fields", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  await dispatchWorkItemTurn(
+    params(
+      {
+        peerKind: "group",
+        channelId: "!room:x",
+        messages: [
+          { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 10 },
+          { event_id: "$c3", sender: "@owner:x", body: "quote Alice", ts: 20 },
+        ],
+      },
+      runtime,
+    ),
+  );
+  const ctx = contexts[0]!;
+  // What the owner sees: the words alone, no `[sender event]` prefix.
+  for (const key of ["Body", "BodyForAgent", "RawBody", "CommandBody"]) {
+    assert.equal(ctx[key], "quote Alice", key);
+  }
+  // What OpenClaw puts in the model's `Conversation info` and history blocks.
+  assert.equal(ctx.MessageSid, "$c3");
+  assert.equal(ctx.SenderId, "@owner:x");
+  assert.equal(ctx.From, "@owner:x");
+  assert.equal(ctx.OriginatingTo, "!room:x");
+  assert.equal(ctx.Timestamp, 20);
+  assert.deepEqual(ctx.InboundHistory, [
+    { sender: "@alice:x", body: "ship it?", timestamp: 10, messageId: "$a1" },
+  ]);
+  // A one-message item carries no history.
+  await dispatchWorkItemTurn(params({}, runtime));
+  assert.equal(contexts[1]!.InboundHistory, undefined);
+  assert.equal(contexts[1]!.Body, "hi");
 });

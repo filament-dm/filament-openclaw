@@ -74,8 +74,37 @@ function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, u
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
 
-function renderMessages(messages: WorkMessage[]): string {
-  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+/** OpenClaw's history entry: rendered to the model as `#<message_id> <sender>: <body>`. */
+export interface InboundHistoryEntry {
+  sender: string;
+  body: string;
+  timestamp: number;
+  messageId: string;
+}
+
+/**
+ * The item as OpenClaw's inbound context wants it: the last message is the turn's own (its
+ * text the visible body; its event id and sender the `Conversation info` block's `message_id`
+ * and `sender`), and the ones before it are `InboundHistory`, each with its own id and sender.
+ * Ids and senders reach the model as OpenClaw-built context blocks, which its chat views strip,
+ * so the conversation shows plain text and the agent can still react, quote and reply by id.
+ */
+export function inboundMessageFields(messages: readonly WorkMessage[]): {
+  body: string;
+  current: WorkMessage | undefined;
+  history: InboundHistoryEntry[];
+} {
+  const current = messages[messages.length - 1];
+  return {
+    body: current?.body ?? "",
+    current,
+    history: messages.slice(0, -1).map((m) => ({
+      sender: m.sender,
+      body: m.body,
+      timestamp: m.ts,
+      messageId: m.event_id,
+    })),
+  };
 }
 
 /** Never publishes: the transport publishes at most once after this resolves. */
@@ -117,8 +146,7 @@ export async function dispatchWorkItemTurn(
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope,
   });
 
-  const rawBody = renderMessages(params.messages);
-  const lastMessage = params.messages[params.messages.length - 1];
+  const { body: rawBody, current: lastMessage, history } = inboundMessageFields(params.messages);
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -137,6 +165,8 @@ export async function dispatchWorkItemTurn(
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
     SenderId: lastMessage?.sender ?? "unknown",
+    ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),
+    ...(history.length > 0 ? { InboundHistory: history } : {}),
     Provider: params.channel,
     Surface: params.channel,
     MessageSid: lastMessage?.event_id ?? params.channelId,

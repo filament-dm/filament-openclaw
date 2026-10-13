@@ -67,6 +67,20 @@ const FALLBACK_PARAMETERS = { type: "object", properties: {}, additionalProperti
 function toLabel(name) {
   return name.split("_").map((w) => w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
 }
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+function normalizeEventIdArgs(params) {
+  let changed = false;
+  const out = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
+      out[key] = value.slice(1);
+      changed = true;
+    } else {
+      out[key] = value;
+    }
+  }
+  return changed ? out : params;
+}
 function makeExecute(toolName, tier, accountId, getClient, log) {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params, signal) => {
@@ -82,7 +96,7 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
     }
     let result;
     try {
-      result = await client.callTool(toolName, params, { signal });
+      result = await client.callTool(toolName, normalizeEventIdArgs(params), { signal });
     } catch (error) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: call failed \u2014 ${String(error)}`);
@@ -171,6 +185,7 @@ export {
   endFilamentTurn,
   getFilamentClient,
   logToolDrift,
+  normalizeEventIdArgs,
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 };
