@@ -90,6 +90,25 @@ test("applyPendingChoice: binds the agent under its own account and drops the pe
   ]);
 });
 
+test("applyPendingChoice: a SecretRef token stays a reference on the bound account", () => {
+  const ref = { source: "store", provider: "default", id: "FILAMENT_CONNECT_TOKEN" };
+  const draft: Record<string, unknown> = {
+    plugins: {
+      entries: {
+        "filament-openclaw": {
+          config: { accounts: { "pending-abc": { connectToken: ref, pending: true } } },
+        },
+      },
+    },
+    bindings: [],
+  };
+  assert.equal(applyPendingChoice(draft, "pending-abc", "writer", ref), true);
+  const plugins = draft.plugins as { entries: Record<string, { config: { accounts: unknown } }> };
+  assert.deepEqual(plugins.entries["filament-openclaw"]!.config.accounts, {
+    writer: { connectToken: ref },
+  });
+});
+
 function item(body: string, overrides: Partial<WorkItem> = {}): WorkItem {
   return {
     channel_id: "!cc",

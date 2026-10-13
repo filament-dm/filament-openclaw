@@ -95,6 +95,7 @@ function boundAccountOf(draft: Record<string, unknown>, agentId: string): string
 
 /**
  * Binds `agentId` to this account's token under its own account id and drops the pending one.
+ * `token` is the token input as config holds it, so a SecretRef stays a reference.
  * Checked against the draft it is applied to, not the options the question was built from: two
  * pending accounts asked at once may both be answered with the same agent, and the second write
  * must not displace the first. Returns false when the agent was taken meanwhile.
@@ -103,7 +104,7 @@ export function applyPendingChoice(
   draft: Record<string, unknown>,
   pendingAccountId: string,
   agentId: string,
-  token: string,
+  token: unknown,
 ): boolean {
   const holder = boundAccountOf(draft, agentId);
   if (holder !== undefined && holder !== pendingAccountId && holder !== agentId) return false;
@@ -111,7 +112,11 @@ export function applyPendingChoice(
   const accounts = asRecord(config.accounts);
   const current = asRecord(accounts[holder ?? ""]);
   // Bound to a live account already (its own id): taken, unless it is this very token.
-  if (holder === agentId && current.connectToken !== undefined && current.connectToken !== token) {
+  if (
+    holder === agentId &&
+    current.connectToken !== undefined &&
+    JSON.stringify(current.connectToken) !== JSON.stringify(token)
+  ) {
     return false;
   }
   applyAgentConnect(draft, agentId, token);
