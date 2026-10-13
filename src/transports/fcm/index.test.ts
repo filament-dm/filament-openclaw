@@ -155,15 +155,16 @@ function harness(
   };
 }
 
-test("fcm: registers the receiver's token, then greets on first contact", async () => {
+test("fcm: registers the receiver's token; the first hello is left to the channel", async () => {
   const h = harness({ instructions: "First contact: say hello" });
-  await until(() => h.calls.some((c) => c.name === "message_principal"));
+  await until(() => h.calls.some((c) => c.name === "register_push_token"));
   assert.deepEqual(h.calls[0], {
     name: "register_push_token",
     args: { token: "fcm-token", platform: "android" },
   });
   h.stop();
   assert.deepEqual(await h.done, {});
+  assert.ok(!h.calls.some((c) => c.name === "message_principal"));
 });
 
 test("fcm: a mention in a channel runs one turn and threads the reply off it", async () => {

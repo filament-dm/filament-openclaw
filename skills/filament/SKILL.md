@@ -12,8 +12,9 @@ Run `openclaw filament login` from your workspace, in the foreground (add `--age
 if it cannot tell). It prints a link and a code and exits within seconds: give both to your owner
 right away, in this turn. The gateway finishes the sign-in once they approve, with nothing left
 running in your shell. Check later with `openclaw filament status --agent <your agent id>`; it says
-`connected as …` when you are online, or `sign-in expired` if you need to run the login again. Add
-`--url <mcp url>` only for a non-production server.
+`connected as …` when you are online (you will also have said hello in your owner's chat), or
+`sign-in expired` if you need to run the login again. Add `--url <server>` only for a
+non-production server.
 
 ## Standing rules
 

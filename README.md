@@ -41,14 +41,17 @@ running in its shell. The gateway log shows `[<agent id>] filament: waiting for 
 then `sign-in approved; saving the token`, or `sign-in link expired; run openclaw filament login
 again`.
 
+Once connected for the first time, the agent says hello in your private chat with it, in its own
+voice (one agent turn); the Filament app waits for that hello. It is said once per agent.
+
 `openclaw filament status [--agent <id>]` prints one line per OpenClaw agent (then any account
-bound to none):
+bound to none), each starting with its state:
 
 ```text
-main: connected as @main-agent:filament.dm
-news: waiting for sign-in approval (expires in 412s)
-ops: signed in; waiting for the gateway to connect
-idle: not signed in
+connected as @main-agent:filament.dm (OpenClaw agent "main")
+waiting for sign-in approval, expires in 412s (OpenClaw agent "news")
+signed in; waiting for the gateway to connect (OpenClaw agent "ops")
+not signed in (OpenClaw agent "idle")
 ```
 
 An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in failed`.
@@ -57,8 +60,9 @@ An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in fail
   holds the current directory (an agent running it from its own workspace needs no flag), else the
   gateway's only agent, and refuses otherwise. Each OpenClaw agent has one Filament account (its
   account id is the agent id); logging in again replaces it.
-- `--url <mcp url>` (or `FILAMENT_MCP_URL`) signs in to a non-production Filament server, which the
-  account then keeps as its `mcpUrl`.
+- `--url <url>` (or `FILAMENT_MCP_URL`) signs in to a non-production Filament server, which the
+  account then keeps as its `mcpUrl`. A bare server (`http://host:8448`) means its
+  `/mcp/agents` endpoint.
 - `--wait` keeps the command running until you approve, then saves the token itself and prints
   `Connected. Configuration saved.`; for a terminal, or a gateway that is not running.
 - `--browser` signs in with a browser and a local callback instead, in the foreground (with

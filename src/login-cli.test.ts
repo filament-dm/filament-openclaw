@@ -112,14 +112,24 @@ test("resolveLoginUrl: flag, env, the account's, the plugin's, production", () =
     mcpUrl: "https://top/mcp/agents/",
     accounts: { main: { mcpUrl: "https://acct/x" } },
   };
-  assert.equal(resolveLoginUrl(cfg, "main", `${DEV}/`, { FILAMENT_MCP_URL: "https://env" }), DEV);
+  assert.equal(resolveLoginUrl(cfg, "main", `${DEV}/`, { FILAMENT_MCP_URL: "https://env/x" }), DEV);
   assert.equal(
-    resolveLoginUrl(cfg, "main", undefined, { FILAMENT_MCP_URL: "https://env" }),
-    "https://env",
+    resolveLoginUrl(cfg, "main", undefined, { FILAMENT_MCP_URL: "https://env/x" }),
+    "https://env/x",
   );
   assert.equal(resolveLoginUrl(cfg, "main", undefined, {}), "https://acct/x");
   assert.equal(resolveLoginUrl(cfg, "other", undefined, {}), "https://top/mcp/agents");
   assert.equal(resolveLoginUrl(undefined, "main", undefined, {}), PROD);
+  // A bare server means its agents endpoint; any other path is taken as given.
+  assert.equal(
+    resolveLoginUrl({}, "main", "http://filament-dev.local:8448", {}),
+    "http://filament-dev.local:8448/mcp/agents",
+  );
+  assert.equal(
+    resolveLoginUrl({}, "main", undefined, { FILAMENT_MCP_URL: "https://staging.example/" }),
+    "https://staging.example/mcp/agents",
+  );
+  assert.equal(resolveLoginUrl({}, "main", "https://x/custom/", {}), "https://x/custom");
   assert.throws(() => resolveLoginUrl({}, "main", "ftp://x", {}), /not a Filament MCP URL/);
   assert.throws(() => resolveLoginUrl({}, "main", "nope", {}), /not a Filament MCP URL/);
 });
@@ -435,19 +445,25 @@ test("describeAccount / runStatus: one line per agent, then accounts bound to no
   assert.deepEqual(await lines(T0 + 1_000), {
     code: 0,
     out: [
-      "main: connected as @main:filament.dm",
-      "news: waiting for sign-in approval (expires in 599s)",
-      "ops: signed in; waiting for the gateway to connect",
-      "idle: not signed in",
-      "account gateway (gateway control account): connected as @gateway:filament.dm",
-      "account pending-abc (choosing its OpenClaw agent): signed in; waiting for the gateway to connect",
+      'connected as @main:filament.dm (OpenClaw agent "main")',
+      'waiting for sign-in approval, expires in 599s (OpenClaw agent "news")',
+      'signed in; waiting for the gateway to connect (OpenClaw agent "ops")',
+      'not signed in (OpenClaw agent "idle")',
+      'connected as @gateway:filament.dm (Filament account "gateway", the gateway control account)',
+      'signed in; waiting for the gateway to connect (Filament account "pending-abc", choosing its OpenClaw agent)',
     ],
   });
-  assert.deepEqual((await lines(T0 + 600_000, { agent: "news" })).out, ["news: sign-in expired"]);
+  assert.deepEqual((await lines(T0 + 600_000, { agent: "news" })).out, [
+    'sign-in expired (OpenClaw agent "news")',
+  ]);
   const expired = { reason: "expired" as const, at: T0 };
-  assert.deepEqual((await lines(T0, { agent: "idle" }, expired)).out, ["idle: sign-in expired"]);
+  assert.deepEqual((await lines(T0, { agent: "idle" }, expired)).out, [
+    'sign-in expired (OpenClaw agent "idle")',
+  ]);
   const declined = { reason: "denied" as const, at: T0 };
-  assert.deepEqual((await lines(T0, { agent: "idle" }, declined)).out, ["idle: sign-in declined"]);
+  assert.deepEqual((await lines(T0, { agent: "idle" }, declined)).out, [
+    'sign-in declined (OpenClaw agent "idle")',
+  ]);
   const unknown = await lines(T0, { agent: "nope" });
   assert.equal(unknown.code, 1);
   assert.match(unknown.out[0]!, /no OpenClaw agent "nope"/);
@@ -463,7 +479,7 @@ test("describeAccount / runStatus: one line per agent, then accounts bound to no
       },
     },
   );
-  assert.deepEqual(out, ["main: signed in; waiting for the gateway to connect"]);
+  assert.deepEqual(out, ['signed in; waiting for the gateway to connect (OpenClaw agent "main")']);
 });
 
 test("registerFilamentCli: `openclaw filament login` and `status` with a lazy root descriptor", async () => {

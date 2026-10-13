@@ -27,7 +27,7 @@ import {
   pollDeviceToken,
   startDeviceLogin
 } from "./oauth-login.js";
-import { DEFAULT_MCP_URL } from "./settings.js";
+import { DEFAULT_MCP_URL, normalizeMcpUrl } from "./settings.js";
 import { parsePendingSignIn, toPendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import { loadSignInEnd } from "./state/sign-in.js";
@@ -91,7 +91,7 @@ function resolveLoginAgent(gatewayConfig, requested, workspace = {}) {
   );
 }
 function trimUrl(raw) {
-  return typeof raw === "string" && raw.trim() ? raw.trim().replace(/\/+$/, "") : void 0;
+  return typeof raw === "string" && raw.trim() ? normalizeMcpUrl(raw) : void 0;
 }
 function resolveLoginUrl(pluginConfig, agentId, flagUrl, env = process.env) {
   const cfg = asRecord(pluginConfig);
@@ -224,7 +224,7 @@ function describeAccount(pluginConfig, accountId, deps) {
   if (hasPendingSignIn(entry)) {
     const pending = parsePendingSignIn(entry.pendingSignIn);
     const left = pending ? Math.floor((pending.expiresAt - deps.now()) / 1e3) : 0;
-    return left > 0 ? `waiting for sign-in approval (expires in ${left}s)` : "sign-in expired";
+    return left > 0 ? `waiting for sign-in approval, expires in ${left}s` : "sign-in expired";
   }
   const token = hasTokenInput(entry.connectToken) || accountId === DEFAULT_ACCOUNT_ID && hasTokenInput(cfg.connectToken);
   if (token) {
@@ -261,7 +261,9 @@ async function runStatus(opts, deps) {
   }
   for (const agent of shown) {
     const accountId = agent.boundAccount ?? agent.id;
-    await out(`${agent.id}: ${describeAccount(pluginConfig, accountId, describeDeps)}`);
+    await out(
+      `${describeAccount(pluginConfig, accountId, describeDeps)} (OpenClaw agent "${agent.id}")`
+    );
   }
   if (opts.agent !== void 0) return 0;
   const claimed = new Set(agents.flatMap((agent) => [agent.boundAccount, agent.id]));
@@ -269,9 +271,9 @@ async function runStatus(opts, deps) {
     (id) => !claimed.has(id) && (id !== DEFAULT_ACCOUNT_ID || hasTokenInput(asRecord(pluginConfig).connectToken))
   );
   for (const accountId of unbound) {
-    const role = isControlAccount(pluginConfig, accountId) ? " (gateway control account)" : isPendingAccount(pluginConfig, accountId) ? " (choosing its OpenClaw agent)" : "";
+    const role = isControlAccount(pluginConfig, accountId) ? ", the gateway control account" : isPendingAccount(pluginConfig, accountId) ? ", choosing its OpenClaw agent" : "";
     await out(
-      `account ${accountId}${role}: ${describeAccount(pluginConfig, accountId, describeDeps)}`
+      `${describeAccount(pluginConfig, accountId, describeDeps)} (Filament account "${accountId}"${role})`
     );
   }
   return 0;

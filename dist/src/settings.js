@@ -1,5 +1,10 @@
 import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+const MCP_PATH = "/mcp/agents";
+function normalizeMcpUrl(raw) {
+  const url = raw.trim().replace(/\/+$/, "");
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+$/i.test(url) ? `${url}${MCP_PATH}` : url;
+}
 const MIN_POLL_WAIT_SECONDS = 1;
 const MAX_POLL_WAIT_SECONDS = 60;
 const DEFAULT_TRANSPORT = "poll";
@@ -52,7 +57,7 @@ function resolveMcpSettings(pluginConfig, env = process.env) {
   const envToken = env.FILAMENT_MCP_TOKEN?.trim();
   const tokenInput = hasTokenInput(cfgToken) ? cfgToken : envToken || void 0;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
+  const mcpUrl = normalizeMcpUrl(cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL);
   const transport = parseTransport(cfg.transport) ?? parseTransport(env.FILAMENT_TRANSPORT) ?? DEFAULT_TRANSPORT;
   return {
     tokenInput,
@@ -68,6 +73,7 @@ export {
   MAX_POLL_WAIT_SECONDS,
   MIN_POLL_WAIT_SECONDS,
   connectTokenConfigPath,
+  normalizeMcpUrl,
   parseTransport,
   resolveAccountSettings,
   resolveMcpSettings

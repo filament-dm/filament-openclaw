@@ -5,7 +5,6 @@
  */
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
-import { isFirstContact } from "../../onboarding-core.js";
 import { isGatewayCommandItem } from "../../gateway.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
@@ -318,14 +317,7 @@ export async function runFcmTransport(
   }
   log(`filament-fcm: push token registered with Filament (project ${settings.firebase.projectId})`);
 
-  if (!ctx.control && isFirstContact(client.instructions)) {
-    const hello = await client.callTool(
-      "message_principal",
-      { markdown_body: "Hi — I'm connected to Filament and ready." },
-      { signal: abortSignal },
-    );
-    log(hello.ok ? "filament-fcm: sent first-contact hello" : "filament-fcm: greeting failed");
-  }
+  // The first hello is the channel's, for both transports (hello.ts).
 
   await new Promise<void>((resolve) => {
     if (abortSignal.aborted) return resolve();

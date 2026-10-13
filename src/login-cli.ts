@@ -38,7 +38,7 @@ import {
   type DeviceLoginOptions,
   type Out,
 } from "./oauth-login.js";
-import { DEFAULT_MCP_URL } from "./settings.js";
+import { DEFAULT_MCP_URL, normalizeMcpUrl } from "./settings.js";
 import { parsePendingSignIn, toPendingSignIn, type PendingSignIn } from "./sign-in.js";
 import { loadIdentity, type AgentIdentity } from "./state/identities.js";
 import { loadSignInEnd, type SignInEnd } from "./state/sign-in.js";
@@ -142,10 +142,13 @@ export function resolveLoginAgent(
 }
 
 function trimUrl(raw: unknown): string | undefined {
-  return typeof raw === "string" && raw.trim() ? raw.trim().replace(/\/+$/, "") : undefined;
+  return typeof raw === "string" && raw.trim() ? normalizeMcpUrl(raw) : undefined;
 }
 
-/** `--url`, then FILAMENT_MCP_URL, then the server this account or the plugin already uses. */
+/**
+ * `--url`, then FILAMENT_MCP_URL, then the server this account or the plugin already uses. A bare
+ * server (`http://host:8448`) means its agents endpoint.
+ */
 export function resolveLoginUrl(
   pluginConfig: unknown,
   agentId: string,
@@ -351,7 +354,7 @@ export function describeAccount(
   if (hasPendingSignIn(entry)) {
     const pending = parsePendingSignIn(entry.pendingSignIn);
     const left = pending ? Math.floor((pending.expiresAt - deps.now()) / 1000) : 0;
-    return left > 0 ? `waiting for sign-in approval (expires in ${left}s)` : "sign-in expired";
+    return left > 0 ? `waiting for sign-in approval, expires in ${left}s` : "sign-in expired";
   }
   const token =
     hasTokenInput(entry.connectToken) ||
@@ -369,7 +372,10 @@ export function describeAccount(
   return "not signed in";
 }
 
-/** One line per OpenClaw agent, then one per account bound to none; always exit 0. */
+/**
+ * One line per OpenClaw agent, then one per account bound to none. Each line starts with the
+ * state, so a reader can match on it, and names its agent or account at the end.
+ */
 export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Promise<number> {
   const out = deps.out ?? consoleOut;
   const describeDeps = {
@@ -395,7 +401,9 @@ export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Pro
   for (const agent of shown) {
     // A login's account carries the agent's id, and an ended sign-in is kept under it too.
     const accountId = agent.boundAccount ?? agent.id;
-    await out(`${agent.id}: ${describeAccount(pluginConfig, accountId, describeDeps)}`);
+    await out(
+      `${describeAccount(pluginConfig, accountId, describeDeps)} (OpenClaw agent "${agent.id}")`,
+    );
   }
   if (opts.agent !== undefined) return 0;
   const claimed = new Set(agents.flatMap((agent) => [agent.boundAccount, agent.id]));
@@ -406,12 +414,12 @@ export async function runStatus(opts: { agent?: string }, deps: StatusDeps): Pro
   );
   for (const accountId of unbound) {
     const role = isControlAccount(pluginConfig, accountId)
-      ? " (gateway control account)"
+      ? ", the gateway control account"
       : isPendingAccount(pluginConfig, accountId)
-        ? " (choosing its OpenClaw agent)"
+        ? ", choosing its OpenClaw agent"
         : "";
     await out(
-      `account ${accountId}${role}: ${describeAccount(pluginConfig, accountId, describeDeps)}`,
+      `${describeAccount(pluginConfig, accountId, describeDeps)} (Filament account "${accountId}"${role})`,
     );
   }
   return 0;

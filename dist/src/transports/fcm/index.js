@@ -1,5 +1,4 @@
 import { acceptPending } from "../../accept-pending.js";
-import { isFirstContact } from "../../onboarding-core.js";
 import { isGatewayCommandItem } from "../../gateway.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
@@ -243,14 +242,6 @@ async function runFcmTransport(ctx, deps = {}) {
     };
   }
   log(`filament-fcm: push token registered with Filament (project ${settings.firebase.projectId})`);
-  if (!ctx.control && isFirstContact(client.instructions)) {
-    const hello = await client.callTool(
-      "message_principal",
-      { markdown_body: "Hi \u2014 I'm connected to Filament and ready." },
-      { signal: abortSignal }
-    );
-    log(hello.ok ? "filament-fcm: sent first-contact hello" : "filament-fcm: greeting failed");
-  }
   await new Promise((resolve) => {
     if (abortSignal.aborted) return resolve();
     abortSignal.addEventListener("abort", () => resolve(), { once: true });

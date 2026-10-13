@@ -50,6 +50,7 @@ import {
   MAX_REPORTED_STATUSES,
 } from "./gateway.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
+import { helloDue, sayFirstHello } from "./hello.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
@@ -65,6 +66,7 @@ import {
   saveUpdateState,
   takeUpdateRequest,
 } from "./state/updates.js";
+import { helloSentAs, markHelloSent } from "./state/hello.js";
 import { clearSignInEnd, saveSignInEnd } from "./state/sign-in.js";
 import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
@@ -397,6 +399,9 @@ export function registerFilamentChannel(
               asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pendingSignIn,
             );
 
+        // Read before connecting, which overwrites it: a new Filament agent here says hello.
+        const previousMxid = token ? loadIdentity(accountId)?.mxid : undefined;
+
         if (token) {
           try {
             connection = await retryConnect(
@@ -457,11 +462,37 @@ export function registerFilamentChannel(
         if (connection && !handlesOwnWork) {
           // Markers are taken before the send; a send that fails puts them back for the next connect.
           const greeting = takeGreeting(accountId);
-          if (greeting && !(await sayToPrincipal(greeting))) {
+          const greeted = greeting !== undefined && (await sayToPrincipal(greeting));
+          if (greeting && !greeted) {
             accountLog(
               "filament-choose: could not greet as the bound agent; will retry on connect",
             );
             leaveGreeting(accountId, accountId, greeting);
+          }
+          const { mxid } = connection.identity;
+          if (greeted) {
+            // Choosing the agent already said who answers here.
+            markHelloSent(accountId, mxid);
+          } else if (
+            helloDue({
+              instructions: connection.client.instructions,
+              mxid,
+              previousMxid,
+              helloSentAs: helloSentAs(accountId),
+            })
+          ) {
+            // Before the transport starts: a turn's reply tracking is one per account.
+            setFilamentClient(connection.client, accountId);
+            const hello = await sayFirstHello({
+              identity: connection.identity,
+              runTurn: (item) => runTurn(item),
+              say: sayToPrincipal,
+              log: accountLog,
+            }).catch((error) => {
+              accountLog(`filament-hello: ${String(error)}`);
+              return "failed" as const;
+            });
+            if (hello !== "failed" && hello !== "skipped") markHelloSent(accountId, mxid);
           }
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
