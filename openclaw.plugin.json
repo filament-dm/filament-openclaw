@@ -40,6 +40,20 @@
       "filament_get_backchannel"
     ]
   },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "connectToken",
+          "expected": "string"
+        },
+        {
+          "path": "accounts.*.connectToken",
+          "expected": "string"
+        }
+      ]
+    }
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -56,7 +70,8 @@
             "enum": [
               "env",
               "file",
-              "exec"
+              "exec",
+              "store"
             ]
           },
           "provider": {
