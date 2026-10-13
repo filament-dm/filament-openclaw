@@ -60,7 +60,7 @@ function applyPendingChoice(draft, pendingAccountId, agentId, token) {
   const config = asRecord(asRecord(asRecord(asRecord(draft.plugins).entries)[PLUGIN_ID]).config);
   const accounts = asRecord(config.accounts);
   const current = asRecord(accounts[holder ?? ""]);
-  if (holder === agentId && current.connectToken !== void 0 && current.connectToken !== token) {
+  if (holder === agentId && current.connectToken !== void 0 && JSON.stringify(current.connectToken) !== JSON.stringify(token)) {
     return false;
   }
   applyAgentConnect(draft, agentId, token);

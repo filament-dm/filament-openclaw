@@ -16,7 +16,10 @@
 # One Filament agent per OpenClaw agent: connecting a new one replaces the old.
 #
 # Environment:
-#   CONNECT_TOKEN           token from the Filament app (required)
+#   CONNECT_TOKEN           token from the Filament app (this or CONNECT_TOKEN_SECRET)
+#   CONNECT_TOKEN_SECRET    name of an OpenClaw secret-store entry holding that token,
+#                           for example one the agent requested with its secrets tool;
+#                           the config then keeps a SecretRef, never the token
 #   OPENCLAW_AGENT          OpenClaw agent to connect; without it the plugin binds the
 #                           gateway's only agent, or asks in Filament which one to use
 #   OPENCLAW_GATEWAY=1      pair the gateway instead; the app then connects its
@@ -35,9 +38,15 @@ warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 # --- Required/optional environment -------------------------------------------
-[ -n "${CONNECT_TOKEN:-}" ] || err \
-  "CONNECT_TOKEN is not set. Use the connect command shown in the Filament app."
-export CONNECT_TOKEN
+if [ -n "${CONNECT_TOKEN_SECRET:-}" ]; then
+  printf '%s' "$CONNECT_TOKEN_SECRET" | grep -Eq '^[A-Za-z0-9_.-]{1,128}$' || err \
+    "CONNECT_TOKEN_SECRET='$CONNECT_TOKEN_SECRET' is not a valid secret name."
+  CONNECT_TOKEN=""
+else
+  [ -n "${CONNECT_TOKEN:-}" ] || err \
+    "CONNECT_TOKEN is not set. Use the connect command shown in the Filament app."
+fi
+export CONNECT_TOKEN CONNECT_TOKEN_SECRET="${CONNECT_TOKEN_SECRET:-}"
 
 PLUGIN_ID="filament-openclaw"
 PLUGIN_REF="${PLUGIN_REF:-main}"
@@ -65,7 +74,7 @@ else
   # Pending until the plugin learns which OpenClaw agent this is. Keyed by the
   # token, so connecting several agents never overwrites one with another.
   PENDING_MODE=1
-  ACCOUNT_ID="pending-$(python3 -c 'import hashlib, os; print(hashlib.sha256(os.environ["CONNECT_TOKEN"].encode()).hexdigest()[:12])')"
+  ACCOUNT_ID="pending-$(python3 -c 'import hashlib, os; print(hashlib.sha256((os.environ["CONNECT_TOKEN"] or "secret:" + os.environ["CONNECT_TOKEN_SECRET"]).encode()).hexdigest()[:12])')"
 fi
 
 TRANSPORT="$(printf '%s' "${FILAMENT_TRANSPORT:-}" | tr '[:upper:]' '[:lower:]')"
@@ -241,7 +250,12 @@ def load(raw, default):
         return default
 bindings = load(raw_bindings, [])
 cfg = load(raw_cfg, {})
-token = os.environ["CONNECT_TOKEN"]
+secret_name = os.environ.get("CONNECT_TOKEN_SECRET", "")
+token = (
+    {"source": "store", "provider": "default", "id": secret_name}
+    if secret_name
+    else os.environ["CONNECT_TOKEN"]
+)
 mcp_url = os.environ.get("FILAMENT_MCP_URL", "").strip()
 
 plugin_cfg = {}

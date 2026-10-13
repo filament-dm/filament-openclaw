@@ -205,7 +205,8 @@ export function registerFilamentChannel(
           leaveGreeting(agentId, accountId, greetingBody(label));
           try {
             await mutateConfig((draft) => {
-              bound = applyPendingChoice(draft, accountId, agentId, token);
+              // The input as configured, not the resolved token: a SecretRef stays a reference.
+              bound = applyPendingChoice(draft, accountId, agentId, mcp.tokenInput ?? token);
             });
             written = true;
           } finally {

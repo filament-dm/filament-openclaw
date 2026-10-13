@@ -153,7 +153,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           leaveGreeting(agentId, accountId, greetingBody(label));
           try {
             await mutateConfig((draft) => {
-              bound = applyPendingChoice(draft, accountId, agentId, token);
+              bound = applyPendingChoice(draft, accountId, agentId, mcp.tokenInput ?? token);
             });
             written = true;
           } finally {

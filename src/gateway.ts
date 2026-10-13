@@ -184,12 +184,13 @@ export function parseGatewayCommand(
 
 /**
  * One Filament account per OpenClaw agent, with account id = agent id. Other bindings of either are
- * removed: an unbound account would land on the system agent.
+ * removed: an unbound account would land on the system agent. `token` is the token input as config
+ * holds it: a string, or a SecretRef that must stay a reference.
  */
 export function applyAgentConnect(
   draft: Record<string, unknown>,
   agentId: string,
-  token: string,
+  token: unknown,
 ): { displaced: string[] } {
   const plugins = ensureRecord(draft, "plugins");
   const entries = ensureRecord(plugins, "entries");
