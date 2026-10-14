@@ -25,7 +25,7 @@ import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import type { InboundMedia } from "./media.js";
-import { turnInstructions } from "./onboarding-core.js";
+import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -286,7 +286,9 @@ export function registerFilamentChannel(
               threadId: item.thread_id,
               messages: item.messages,
               media,
-              systemPrompt: turnInstructions(connection?.client.instructions),
+              systemPrompt: turnInstructions(connection?.client.instructions, {
+                signedMedia: signedMediaOffered(connection?.client.toolNames),
+              }),
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: room.label,
               groupSubject: room.subject,
