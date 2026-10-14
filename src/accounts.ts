@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 /**
  * Channel accounts: one per Filament agent, since a connect token belongs to exactly one agent.
  * OpenClaw `bindings` route an account to an OpenClaw agent, and a `filament_*` tool call must use
@@ -12,16 +10,8 @@ export const FILAMENT_CHANNEL_ID = "filament";
 
 export const PLUGIN_ID = "filament-openclaw";
 
-/** install.sh writes this id. */
+/** Older install.sh wrote the retired gateway control account under this id. */
 export const GATEWAY_ACCOUNT_ID = "gateway";
-
-/** A connect token not yet bound to an OpenClaw agent lives under this id; see choose-agent.ts. */
-export const PENDING_ACCOUNT_PREFIX = "pending-";
-
-/** The same id install.sh derives, so the two paths never duplicate an account for one token. */
-export function pendingAccountId(token: string): string {
-  return PENDING_ACCOUNT_PREFIX + createHash("sha256").update(token).digest("hex").slice(0, 12);
-}
 
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -36,14 +26,23 @@ export function hasTokenInput(value: unknown): boolean {
   );
 }
 
+export function hasPendingSignIn(entry: Record<string, unknown>): boolean {
+  const pending = entry.pendingSignIn;
+  return typeof pending === "object" && pending !== null && !Array.isArray(pending);
+}
+
 /** With nothing configured, `default` is still listed so the channel shows up (idle) in status. */
 export function listConfiguredAccountIds(
   pluginConfig: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
   const cfg = asRecord(pluginConfig);
+  // A pending sign-in has no token yet: its account starts to finish it (sign-in.ts).
   const ids = Object.entries(asRecord(cfg.accounts))
-    .filter(([, entry]) => hasTokenInput(asRecord(entry).connectToken))
+    .filter(
+      ([, entry]) =>
+        hasTokenInput(asRecord(entry).connectToken) || hasPendingSignIn(asRecord(entry)),
+    )
     .map(([id]) => id);
   const hasDefault = hasTokenInput(cfg.connectToken) || !!env.FILAMENT_MCP_TOKEN?.trim();
   if ((hasDefault || ids.length === 0) && !ids.includes(DEFAULT_ACCOUNT_ID)) {
@@ -52,13 +51,19 @@ export function listConfiguredAccountIds(
   return ids;
 }
 
-export function isControlAccount(pluginConfig: unknown, accountId: string): boolean {
-  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).control === true;
-}
-
-/** install.sh added it without naming an OpenClaw agent; see choose-agent.ts. */
-export function isPendingAccount(pluginConfig: unknown, accountId: string): boolean {
-  return asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]).pending === true;
+/**
+ * An account an older version wrote for flows that are gone: a gateway control account
+ * (`control: true`, install.sh OPENCLAW_GATEWAY=1) or one that was to pick its OpenClaw agent in
+ * chat (`pending: true`). They run nothing; `openclaw filament login` replaces both.
+ */
+export function retiredAccountKind(
+  pluginConfig: unknown,
+  accountId: string,
+): "control" | "pending" | undefined {
+  const entry = asRecord(asRecord(asRecord(pluginConfig).accounts)[accountId]);
+  if (entry.control === true) return "control";
+  if (entry.pending === true) return "pending";
+  return undefined;
 }
 
 export function pluginConfigFrom(gatewayConfig: unknown): unknown {
@@ -101,7 +106,7 @@ export function resolveToolAccountId(
   if (ours.length > 0) return null;
   const pluginConfig = pluginConfigFrom(gatewayConfig) ?? fallbackPluginConfig;
   const configured = listConfiguredAccountIds(pluginConfig, env).filter(
-    (id) => !isControlAccount(pluginConfig, id) && !isPendingAccount(pluginConfig, id),
+    (id) => retiredAccountKind(pluginConfig, id) === undefined,
   );
   return configured.length === 1 ? configured[0]! : null;
 }

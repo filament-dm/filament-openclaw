@@ -1,6 +1,5 @@
 import { acceptPending } from "../../accept-pending.js";
-import { isFirstContact } from "../../onboarding-core.js";
-import { isGatewayCommandItem } from "../../gateway.js";
+import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
   decodeDirectPusher,
@@ -71,10 +70,7 @@ async function runFcmTransport(ctx, deps = {}) {
         }
       ]
     };
-    if (ctx.control) {
-      return isBackchannel ? () => ctx.handleControl(item) : null;
-    }
-    if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
+    if (ctx.handleCommand && isBackchannelCommandItem(item, identity.principal, identity.ccRoomId)) {
       const handleCommand = ctx.handleCommand;
       return () => handleCommand(item);
     }
@@ -166,7 +162,6 @@ async function runFcmTransport(ctx, deps = {}) {
       return;
     }
     if (isInvite(push.branchType) || isVouch(push.branchType)) {
-      if (ctx.control) return;
       const targetId = isVouch(push.branchType) ? push.loopId ?? push.roomId : push.roomId;
       if (!targetId) return;
       const accept = isVouch(push.branchType) ? client.acceptVouch(targetId, { signal: abortSignal }) : client.acceptInvite(targetId, { signal: abortSignal });
@@ -190,7 +185,7 @@ async function runFcmTransport(ctx, deps = {}) {
     const turn = admitChat(push, push.roomId, push.eventId);
     if (turn) enqueueTurn(turn);
   };
-  if (!ctx.control) await acceptPending(client, log, abortSignal);
+  await acceptPending(client, log, abortSignal);
   const createReceiver = deps.createReceiver ?? ((opts) => new FcmReceiver(opts));
   const receiver = createReceiver({
     accountId,
@@ -243,14 +238,6 @@ async function runFcmTransport(ctx, deps = {}) {
     };
   }
   log(`filament-fcm: push token registered with Filament (project ${settings.firebase.projectId})`);
-  if (!ctx.control && isFirstContact(client.instructions)) {
-    const hello = await client.callTool(
-      "message_principal",
-      { markdown_body: "Hi \u2014 I'm connected to Filament and ready." },
-      { signal: abortSignal }
-    );
-    log(hello.ok ? "filament-fcm: sent first-contact hello" : "filament-fcm: greeting failed");
-  }
   await new Promise((resolve) => {
     if (abortSignal.aborted) return resolve();
     abortSignal.addEventListener("abort", () => resolve(), { once: true });

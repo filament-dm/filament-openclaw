@@ -55,3 +55,14 @@ test("resolveMcpSettings: firebase is config, then FILAMENT_FIREBASE_*, then pro
   assert.equal(custom.appId, "1:1:android:abc");
   assert.equal(custom.messagingSenderId, "143821144946");
 });
+
+test("resolveMcpSettings: a bare server means its agents endpoint", () => {
+  assert.equal(
+    resolveMcpSettings({ mcpUrl: "http://filament-dev.local:8448/" }, {}).mcpUrl,
+    "http://filament-dev.local:8448/mcp/agents",
+  );
+  assert.equal(
+    resolveMcpSettings({}, { FILAMENT_MCP_URL: "https://x/custom" }).mcpUrl,
+    "https://x/custom",
+  );
+});

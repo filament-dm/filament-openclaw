@@ -187,6 +187,27 @@ function toLabel(name: string): string {
     .join(" ");
 }
 
+/** Arguments that name a message by its event id. */
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+
+/**
+ * OpenClaw lists earlier messages to the model as `#<message_id> <sender>: <body>`, so a model
+ * may hand back `#$event` for an id. Matrix event ids start with `$`; the `#` is never part of one.
+ */
+export function normalizeEventIdArgs(params: Record<string, unknown>): Record<string, unknown> {
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
+      out[key] = value.slice(1);
+      changed = true;
+    } else {
+      out[key] = value;
+    }
+  }
+  return changed ? out : params;
+}
+
 function makeExecute(
   toolName: string,
   tier: ToolTier,
@@ -208,7 +229,7 @@ function makeExecute(
     }
     let result: ToolCallResult;
     try {
-      result = await client.callTool(toolName, params, { signal });
+      result = await client.callTool(toolName, normalizeEventIdArgs(params), { signal });
     } catch (error) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: call failed — ${String(error)}`);

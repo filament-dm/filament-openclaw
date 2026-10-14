@@ -4,7 +4,15 @@
  */
 import { asRecord, DEFAULT_ACCOUNT_ID, hasTokenInput } from "./accounts.js";
 
-const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+export const DEFAULT_MCP_URL = "https://api.filament.dm/mcp/agents";
+
+const MCP_PATH = "/mcp/agents";
+
+/** Trailing slashes off; a bare server (`https://host`, no path) gets the agents endpoint's path. */
+export function normalizeMcpUrl(raw: string): string {
+  const url = raw.trim().replace(/\/+$/, "");
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+$/i.test(url) ? `${url}${MCP_PATH}` : url;
+}
 
 // The server caps `wait_seconds` at 60, and an intermediary proxy can time out around 60s.
 export const MIN_POLL_WAIT_SECONDS = 1;
@@ -106,7 +114,7 @@ export function resolveMcpSettings(
   const envToken = env.FILAMENT_MCP_TOKEN?.trim();
   const tokenInput = hasTokenInput(cfgToken) ? cfgToken : envToken || undefined;
   const cfgUrl = typeof cfg.mcpUrl === "string" ? cfg.mcpUrl.trim() : "";
-  const mcpUrl = (cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL).replace(/\/+$/, "");
+  const mcpUrl = normalizeMcpUrl(cfgUrl || env.FILAMENT_MCP_URL?.trim() || DEFAULT_MCP_URL);
   const transport =
     parseTransport(cfg.transport) ?? parseTransport(env.FILAMENT_TRANSPORT) ?? DEFAULT_TRANSPORT;
   return {

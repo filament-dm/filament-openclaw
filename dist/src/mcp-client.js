@@ -370,9 +370,6 @@ class FilamentMcpClient {
   pong(nonce, opts) {
     return this.sideChannelPost("/pong", { nonce }, opts);
   }
-  reportTools(tools, opts) {
-    return this.sideChannelPost("/tools", { tools }, opts);
-  }
 }
 export {
   FilamentMcpClient,

@@ -28,8 +28,16 @@ export interface DispatchWorkItemParams {
   channel: string;
   channelLabel: string;
   accountId: string;
-  /** `"direct"` collapses to the agent's main session; `"group"` gets a per-channel session. */
+  /**
+   * `"direct"` follows `session.dmScope` (by default the agent's main session); `"group"` gets a
+   * per-channel session. Only the principal's backchannel is direct (`turnPeerKind`).
+   */
   peerKind: "direct" | "group";
+  /**
+   * A side session of the channel's own, for a turn the gateway starts rather than a person:
+   * its prompt stays out of the conversation the owner sees, in OpenClaw's chat too.
+   */
+  sideSession?: string;
   channelId: string;
   threadId: string | null;
   messages: WorkMessage[];
@@ -38,7 +46,10 @@ export interface DispatchWorkItemParams {
   /** Attachments already saved for the turn (poll_work only). */
   media?: InboundMedia[];
   recipientAddress: string;
+  /** The session's title in OpenClaw ("Filament · …"); see room-labels.ts. */
   conversationLabel: string;
+  /** A group session's subject: the room's name, or its people. */
+  groupSubject?: string;
   commandAuthorized: boolean;
   log: (message: string) => void;
 }
@@ -66,8 +77,37 @@ function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, u
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
 
-function renderMessages(messages: WorkMessage[]): string {
-  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+/** OpenClaw's history entry: rendered to the model as `#<message_id> <sender>: <body>`. */
+export interface InboundHistoryEntry {
+  sender: string;
+  body: string;
+  timestamp: number;
+  messageId: string;
+}
+
+/**
+ * The item as OpenClaw's inbound context wants it: the last message is the turn's own (its
+ * text the visible body; its event id and sender the `Conversation info` block's `message_id`
+ * and `sender`), and the ones before it are `InboundHistory`, each with its own id and sender.
+ * Ids and senders reach the model as OpenClaw-built context blocks, which its chat views strip,
+ * so the conversation shows plain text and the agent can still react, quote and reply by id.
+ */
+export function inboundMessageFields(messages: readonly WorkMessage[]): {
+  body: string;
+  current: WorkMessage | undefined;
+  history: InboundHistoryEntry[];
+} {
+  const current = messages[messages.length - 1];
+  return {
+    body: current?.body ?? "",
+    current,
+    history: messages.slice(0, -1).map((m) => ({
+      sender: m.sender,
+      body: m.body,
+      timestamp: m.ts,
+      messageId: m.event_id,
+    })),
+  };
 }
 
 /** Never publishes: the transport publishes at most once after this resolves. */
@@ -88,10 +128,11 @@ export async function dispatchWorkItemTurn(
   // Thread isolation: two threads in the same channel must not share a
   // session. `normalizeThreadId` is the identity function so a Matrix thread
   // (event) id keeps its case — the helper's default normalizer lowercases.
-  const sessionKey = params.threadId
+  const childKey = params.sideSession ?? params.threadId;
+  const sessionKey = childKey
     ? resolveThreadSessionKeys({
         baseSessionKey: route.sessionKey,
-        threadId: params.threadId,
+        threadId: childKey,
         normalizeThreadId: (id: string) => id,
       }).sessionKey
     : route.sessionKey;
@@ -108,8 +149,7 @@ export async function dispatchWorkItemTurn(
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope,
   });
 
-  const rawBody = renderMessages(params.messages);
-  const lastMessage = params.messages[params.messages.length - 1];
+  const { body: rawBody, current: lastMessage, history } = inboundMessageFields(params.messages);
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -127,7 +167,12 @@ export async function dispatchWorkItemTurn(
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
+    ...(params.groupSubject && params.peerKind === "group"
+      ? { GroupSubject: params.groupSubject }
+      : {}),
     SenderId: lastMessage?.sender ?? "unknown",
+    ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),
+    ...(history.length > 0 ? { InboundHistory: history } : {}),
     Provider: params.channel,
     Surface: params.channel,
     MessageSid: lastMessage?.event_id ?? params.channelId,
@@ -135,6 +180,15 @@ export async function dispatchWorkItemTurn(
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // The gateway, not the principal, wrote a side session's prompt.
+    ...(params.sideSession
+      ? {
+          InputProvenance: {
+            kind: "internal_system",
+            sourceTool: `filament:${params.sideSession}`,
+          },
+        }
+      : {}),
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...(params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {}),
     ...inboundMediaFields(params.media),
