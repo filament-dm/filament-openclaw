@@ -1,0 +1,170 @@
+---
+name: Publish to npm
+run-name: "Publish to npm · ${{ inputs.ref || github.ref_name }} · ${{ inputs.dist_tag }}${{ inputs.dry_run && ' · dry run' || '' }} · by @${{ github.actor }}"
+
+# Manually-triggered npm publish. Builds one specific commit with a pinned Node
+# (.nvmrc) and a locked dependency tree (`npm ci`), runs the tests, and refuses
+# to publish unless the committed dist/ matches the build (same check as
+# dist.yml), the package.json / openclaw.plugin.json / src/version.ts versions
+# agree, and that version is not already on npm. Then `npm publish` under the
+# requested dist-tag, with a provenance attestation tying the tarball to this
+# commit and run.
+#
+# Defaults to a dry run: nothing reaches the registry until dry_run is unticked.
+# Needs the repository secret NPM_TOKEN (an npm automation token) for a real run.
+# Bump the version first with the "Bump version" workflow; this one never does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref or commit SHA to publish (default: the branch/tag this run was started from)."
+        required: false
+        default: ""
+      dist_tag:
+        description: "npm dist-tag to publish under (beta, latest, ...)."
+        required: true
+        default: beta
+      dry_run:
+        description: "Dry run: run every check and `npm publish --dry-run`, upload nothing."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for `npm publish --provenance`
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DIST_TAG: ${{ inputs.dist_tag }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Require NPM_TOKEN for a real publish
+        if: ${{ !inputs.dry_run }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::The NPM_TOKEN repository secret is empty or missing. Add an npm automation token, or re-run with dry_run ticked."
+            exit 1
+          fi
+
+      - name: Resolve ref
+        id: ref
+        env:
+          REF: ${{ inputs.ref || github.ref }}
+        run: echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the exact ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0 # full history so any tag/SHA can be checked out
+
+      - name: Record the exact commit
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty='publishing commit %H%nauthored %aI'
+
+      - name: Set up Node (pinned via .nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Record tool versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build # same command everyday CI uses (package.json → scripts.build)
+
+      - name: Test
+        run: npm test
+
+      - name: Committed dist/ matches the build
+        run: |
+          # Same check as dist.yml: gateways that install from a git ref run the
+          # committed dist/, so npm must ship exactly that.
+          changed="$(git status --porcelain -- dist)"
+          if [ -n "$changed" ]; then
+            echo "::error::dist/ does not match the source. Run 'npm run build' and commit dist/."
+            echo "$changed"
+            git diff --stat -- dist
+            exit 1
+          fi
+
+      - name: Versions agree
+        id: pkg
+        run: |
+          name="$(node -p 'require("./package.json").name')"
+          version="$(node -p 'require("./package.json").version')"
+          manifest="$(node -p 'require("./openclaw.plugin.json").version')"
+          source="$(sed -n 's/^export const PLUGIN_VERSION = "\(.*\)";$/\1/p' src/version.ts)"
+          echo "package.json ${version} · openclaw.plugin.json ${manifest} · src/version.ts ${source}"
+          if [ "$version" != "$manifest" ] || [ "$version" != "$source" ]; then
+            echo "::error::Version mismatch: package.json ${version}, openclaw.plugin.json ${manifest}, src/version.ts ${source}. Bump with the 'Bump version' workflow (npm version), which keeps all three in sync."
+            exit 1
+          fi
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Version is not on npm yet
+        env:
+          SPEC: ${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}
+        run: |
+          # An existing package without this version prints nothing and exits 0;
+          # a package that was never published fails with E404. Both mean "free".
+          if out="$(npm view "$SPEC" version 2>&1)"; then
+            if [ -n "$out" ]; then
+              echo "::error::${SPEC} is already published. Bump the version first."
+              exit 1
+            fi
+          elif ! grep -q 'E404' <<<"$out"; then
+            echo "::error::Could not ask the registry whether ${SPEC} exists."
+            echo "$out"
+            exit 1
+          fi
+          echo "${SPEC} is not on npm yet."
+
+      - name: Package contents
+        run: |
+          # --ignore-scripts: the `prepare` script would rebuild; ship exactly the
+          # dist/ verified above.
+          npm pack --dry-run --ignore-scripts
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          args=(--access public --provenance --tag "$DIST_TAG" --ignore-scripts)
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          npm publish "${args[@]}"
+
+      - name: Summary
+        if: ${{ always() && steps.pkg.outputs.version != '' }}
+        run: |
+          {
+            echo "### npm publish${{ inputs.dry_run && ' (dry run)' || '' }}"
+            echo "- package: \`${{ steps.pkg.outputs.name }}\`"
+            echo "- version: \`${{ steps.pkg.outputs.version }}\`"
+            echo "- dist-tag: \`${DIST_TAG}\`"
+            echo "- commit: \`${{ steps.commit.outputs.sha }}\`"
+            echo "- dry run: \`${DRY_RUN}\`"
+            echo "- outcome: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
