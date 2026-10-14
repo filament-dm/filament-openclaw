@@ -37,6 +37,7 @@ import {
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
+import { createRoomLabels } from "./room-labels.js";
 import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
 import {
   parseIdentityMarkdown,
@@ -252,6 +253,7 @@ export function registerFilamentChannel(
           }
         };
 
+        let roomLabels: ReturnType<typeof createRoomLabels> | undefined;
         const runTurn = async (
           item: WorkItem,
           media?: InboundMedia[],
@@ -261,6 +263,13 @@ export function registerFilamentChannel(
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
           }
           const identity = loadIdentity(accountId);
+          const room = connection
+            ? await (roomLabels ??= createRoomLabels(
+                connection.client,
+                connection.identity,
+                accountLog,
+              ))(item.channel_id, abortSignal)
+            : { label: item.channel_id };
           beginFilamentTurn(item.is_backchannel === true, accountId);
           let repliedTo: ReadonlySet<string> = new Set();
           let result;
@@ -279,7 +288,8 @@ export function registerFilamentChannel(
               media,
               systemPrompt: turnInstructions(connection?.client.instructions),
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
-              conversationLabel: item.channel_id,
+              conversationLabel: room.label,
+              groupSubject: room.subject,
               // Filament, not OpenClaw, decides who can reach the agent; only the
               // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,

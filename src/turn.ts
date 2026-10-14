@@ -46,7 +46,10 @@ export interface DispatchWorkItemParams {
   /** Attachments already saved for the turn (poll_work only). */
   media?: InboundMedia[];
   recipientAddress: string;
+  /** The session's title in OpenClaw ("Filament · …"); see room-labels.ts. */
   conversationLabel: string;
+  /** A group session's subject: the room's name, or its people. */
+  groupSubject?: string;
   commandAuthorized: boolean;
   log: (message: string) => void;
 }
@@ -164,6 +167,9 @@ export async function dispatchWorkItemTurn(
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
+    ...(params.groupSubject && params.peerKind === "group"
+      ? { GroupSubject: params.groupSubject }
+      : {}),
     SenderId: lastMessage?.sender ?? "unknown",
     ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),
     ...(history.length > 0 ? { InboundHistory: history } : {}),

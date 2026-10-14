@@ -150,3 +150,26 @@ test("dispatchWorkItemTurn: plain text in the body, ids and senders in OpenClaw'
   assert.equal(contexts[1]!.InboundHistory, undefined);
   assert.equal(contexts[1]!.Body, "hi");
 });
+
+test("dispatchWorkItemTurn: the session is titled by its label; a group also gets its subject", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  await dispatchWorkItemTurn(
+    params({ conversationLabel: "Filament · Test One", groupSubject: "x" }, runtime),
+  );
+  await dispatchWorkItemTurn(
+    params(
+      {
+        peerKind: "group",
+        channelId: "!room:x",
+        conversationLabel: "Filament · Design review",
+        groupSubject: "Design review",
+      },
+      runtime,
+    ),
+  );
+  assert.equal(contexts[0]!.ConversationLabel, "Filament · Test One");
+  // The backchannel is direct: no group subject.
+  assert.equal(contexts[0]!.GroupSubject, undefined);
+  assert.equal(contexts[1]!.ConversationLabel, "Filament · Design review");
+  assert.equal(contexts[1]!.GroupSubject, "Design review");
+});

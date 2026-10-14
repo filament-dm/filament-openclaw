@@ -71,6 +71,7 @@ async function dispatchWorkItemTurn(params) {
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
+    ...params.groupSubject && params.peerKind === "group" ? { GroupSubject: params.groupSubject } : {},
     SenderId: lastMessage?.sender ?? "unknown",
     ...lastMessage ? { Timestamp: lastMessage.ts } : {},
     ...history.length > 0 ? { InboundHistory: history } : {},
