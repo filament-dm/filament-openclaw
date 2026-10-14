@@ -189,6 +189,10 @@ export interface PollLoopOptions {
   sweepPending?: () => Promise<void>;
   backoffMs?: (attempt: number) => number;
   now?: () => number;
+  /** The cursor the last run sent (`onCursorSent`), to resume from after a restart. */
+  initialCursor?: string;
+  /** Called with each cursor as a poll sends it: everything before it is acknowledged. */
+  onCursorSent?: (cursor: string) => void;
 }
 
 export interface PollLoopResult {
@@ -215,7 +219,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
 
-  let cursor: string | undefined;
+  let cursor: string | undefined = opts.initialCursor;
   let pendingAck: string[] = [];
   let failureStreak = 0;
   // The server re-offers an unanswered, unacked item on the next poll, so without these a turn that
@@ -234,6 +238,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
 
+    if (cursor) opts.onCursorSent?.(cursor);
     let result;
     try {
       result = await client.pollWork(

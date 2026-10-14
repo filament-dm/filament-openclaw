@@ -1,5 +1,6 @@
 import { acceptPending } from "../../accept-pending.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
+import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { runPollLoop } from "./poll-work.js";
@@ -129,7 +130,9 @@ async function runPollTransport(ctx, deps = {}) {
     log,
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
-    sweepPending: () => acceptPending(client, log, abortSignal)
+    sweepPending: () => acceptPending(client, log, abortSignal),
+    initialCursor: loadPollCursor(ctx.accountId, ctx.identity.mxid),
+    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor)
   });
 }
 export {

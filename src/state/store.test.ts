@@ -23,3 +23,12 @@ test("update requests: the marker survives until the account that left it reads 
   assert.deepEqual(takeUpdateRequest("writer"), { fromVersion: "0.1.0" });
   assert.equal(takeUpdateRequest("writer"), undefined);
 });
+
+test("poll cursors: kept per account, and only for the agent that sent them", async () => {
+  const { loadPollCursor, savePollCursor } = await import("./poll-cursors.js");
+  savePollCursor("main", "@a:server", "c:5");
+  assert.equal(loadPollCursor("main", "@a:server"), "c:5");
+  // After a sign-in as another agent, the old agent's position means nothing.
+  assert.equal(loadPollCursor("main", "@b:server"), undefined);
+  assert.equal(loadPollCursor("other", "@a:server"), undefined);
+});

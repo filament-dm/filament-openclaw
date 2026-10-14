@@ -3,9 +3,13 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
+import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
 import { classifyPublish, type PollTransportDeps, runPollTransport } from "./index.js";
+
+// The poll transport saves its cursor; keep it out of a real gateway's state.
+useMemoryState();
 
 const SELF = "@a_test1.1:example.test";
 const PRINCIPAL = "@u_test1:example.test";

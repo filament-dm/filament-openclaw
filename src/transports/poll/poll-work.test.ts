@@ -675,3 +675,52 @@ test("parsePollWorkResponse: keeps the room facts a newer server sends; blank na
   assert.equal(item.loop_name, "Acme");
   assert.deepEqual(item.sender_names, { "@ada:server": "Ada" });
 });
+
+test("restart: the first poll resumes from initialCursor, and each sent cursor is reported", async () => {
+  // A poll the server was still holding when the gateway stopped can save a position past work
+  // the gateway never got; resuming from what the gateway itself sent re-offers that work.
+  const controller = new AbortController();
+  const { client, calls } = fakeClient([
+    okResult({ work: [], cursor: "c:8", truncated: false, acknowledged: 0 }),
+    () => {
+      controller.abort();
+      return Promise.resolve(
+        okResult({ work: [], cursor: "c:9", truncated: false, acknowledged: 0 }),
+      );
+    },
+  ]);
+  const sent: string[] = [];
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => ({ kind: "published" }),
+    initialCursor: "c:7",
+    onCursorSent: (cursor) => sent.push(cursor),
+  });
+  assert.deepEqual(calls[0], { cursor: "c:7", ack: undefined, wait_seconds: 30, max_items: 1 });
+  assert.deepEqual(calls[1], { cursor: "c:8", ack: undefined, wait_seconds: 30, max_items: 1 });
+  assert.deepEqual(sent, ["c:7", "c:8"]);
+});
+
+test("no saved cursor: the first poll sends none and nothing is reported for it", async () => {
+  const controller = new AbortController();
+  const { client, calls } = fakeClient([
+    () => {
+      controller.abort();
+      return Promise.resolve(
+        okResult({ work: [], cursor: "c:1", truncated: false, acknowledged: 0 }),
+      );
+    },
+  ]);
+  const sent: string[] = [];
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => ({ kind: "published" }),
+    onCursorSent: (cursor) => sent.push(cursor),
+  });
+  assert.equal((calls[0] as { cursor?: string }).cursor, undefined);
+  assert.deepEqual(sent, []);
+});

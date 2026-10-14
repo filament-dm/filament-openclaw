@@ -103,7 +103,7 @@ async function runPollLoop(opts) {
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
-  let cursor;
+  let cursor = opts.initialCursor;
   let pendingAck = [];
   let failureStreak = 0;
   const ambiguousSeen = /* @__PURE__ */ new Set();
@@ -117,6 +117,7 @@ async function runPollLoop(opts) {
   while (!abortSignal.aborted) {
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
+    if (cursor) opts.onCursorSent?.(cursor);
     let result;
     try {
       result = await client.pollWork(
