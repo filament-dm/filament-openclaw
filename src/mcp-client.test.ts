@@ -310,6 +310,82 @@ test("downloadMedia: stops reading a stream with no Content-Length once it passe
   assert.ok(pulled <= 4, `read only past the limit (pulled ${pulled})`);
 });
 
+function toolResult(data: unknown): Response {
+  return new Response(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { content: [{ type: "text", text: JSON.stringify(data) }] },
+    }),
+    { headers: { "content-type": "application/json" } },
+  );
+}
+
+test("downloadMedia: a server with get_media_download_url gets the message id; the signed URL goes without the bearer", async () => {
+  const seen: Array<{ url: string; init?: RequestInit }> = [];
+  const c = client([
+    (url, init) => {
+      seen.push({ url, init });
+      return toolResult({ download_url: "https://example.test/mcp/agents/media/signed/tok" });
+    },
+    (url, init) => {
+      seen.push({ url, init });
+      return new Response(new Uint8Array([7, 8]), { headers: { "content-type": "image/png" } });
+    },
+  ]);
+  c.toolNames = new Set(["get_media_download_url"]);
+  const got = await c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" });
+  assert.deepEqual(JSON.parse(String(seen[0]!.init?.body)).params, {
+    name: "get_media_download_url",
+    arguments: { mxc_url: "mxc://server/abc", message_id: "$m" },
+  });
+  assert.equal(seen[1]!.url, "https://example.test/mcp/agents/media/signed/tok");
+  assert.equal(seen[1]!.init?.method, "GET");
+  assert.equal(seen[1]!.init?.headers, undefined);
+  assert.deepEqual([...got.bytes], [7, 8]);
+  assert.equal(got.contentType, "image/png");
+});
+
+test("downloadMedia: a refusal inside an ok result skips the file, with no fallback to the bearer", async () => {
+  let calls = 0;
+  const c = client([
+    () => {
+      calls += 1;
+      return toolResult({ error: "mxc://server/abc is not an attachment of message $m" });
+    },
+  ]);
+  c.toolNames = new Set(["get_media_download_url"]);
+  await assert.rejects(
+    c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" }),
+    /not an attachment of message/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("downloadMedia: the signed URL keeps the size cap", async () => {
+  const c = client([
+    () => toolResult({ download_url: "https://example.test/signed/tok" }),
+    () => new Response(new Uint8Array(10)),
+  ]);
+  c.toolNames = new Set(["get_media_download_url"]);
+  await assert.rejects(c.downloadMedia("mxc://server/abc", 5, { messageId: "$m" }), /limit 5/);
+});
+
+test("downloadMedia: an older server, or no message id, uses the /media side-channel", async () => {
+  const urls: string[] = [];
+  const c = sideChannelClient((url) => {
+    urls.push(url);
+    return new Response(new Uint8Array([1]));
+  });
+  await c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" });
+  c.toolNames = new Set(["get_media_download_url"]);
+  await c.downloadMedia("mxc://server/abc", 1024);
+  assert.deepEqual(urls, [
+    "https://example.test/mcp/agents/media?mxc_url=mxc%3A%2F%2Fserver%2Fabc",
+    "https://example.test/mcp/agents/media?mxc_url=mxc%3A%2F%2Fserver%2Fabc",
+  ]);
+});
+
 test("uploadMedia: POSTs the bytes to /upload and returns the mxc url", async () => {
   let seen: { url: string; init?: RequestInit } | null = null;
   const c = sideChannelClient((url, init) => {

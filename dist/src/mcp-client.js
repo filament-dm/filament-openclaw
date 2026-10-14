@@ -339,9 +339,15 @@ class FilamentMcpClient {
       signal: AbortSignal.any(signals)
     });
   }
-  /** An attachment's bytes, from the `/media` side-channel. Throws on HTTP errors and oversize. */
+  /**
+   * An attachment's bytes. Throws on HTTP errors, refusals and oversize. Given the message it came
+   * from, and a server that lists `get_media_download_url`, from a short-lived URL that tool mints
+   * once the server has checked the agent can read that message's room, applied that room's
+   * capability grant and found the mxc among its attachments; fetched with no bearer. Otherwise
+   * from the `/media` side-channel, which applies only the agent's default grant.
+   */
   async downloadMedia(mxcUrl, maxBytes, opts) {
-    const res = await this.sideChannelBytes(
+    const res = opts?.messageId && this.toolNames?.has("get_media_download_url") ? await this.signedMedia(mxcUrl, opts.messageId, opts) : await this.sideChannelBytes(
       `/media?mxc_url=${encodeURIComponent(mxcUrl)}`,
       { method: "GET" },
       opts
@@ -354,7 +360,32 @@ class FilamentMcpClient {
     }
     return { bytes: await readCapped(res, maxBytes), contentType: res.headers.get("content-type") };
   }
-  /** Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. */
+  /** The response for an attachment's signed download URL; the URL itself is never logged. */
+  async signedMedia(mxcUrl, messageId, opts) {
+    const minted = await this.callTool(
+      "get_media_download_url",
+      { mxc_url: mxcUrl, message_id: messageId },
+      { signal: opts?.signal }
+    );
+    if (!minted.ok) {
+      throw new Error(
+        `get_media_download_url failed (${minted.kind ?? "?"}: ${minted.error?.message ?? "?"})`
+      );
+    }
+    const data = minted.data ?? {};
+    if (typeof data.error === "string") throw new Error(`get_media_download_url: ${data.error}`);
+    const url = typeof data.download_url === "string" ? data.download_url : "";
+    if (!/^https?:\/\//.test(url))
+      throw new Error("get_media_download_url returned no download_url");
+    const signals = [AbortSignal.timeout(opts?.timeoutMs ?? MEDIA_TIMEOUT_MS)];
+    if (opts?.signal) signals.push(opts.signal);
+    return await this.fetchImpl(url, { method: "GET", signal: AbortSignal.any(signals) });
+  }
+  /**
+   * Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. Not through
+   * `create_media_upload`: the server authorizes an upload the same way on both, and this is one
+   * request instead of two.
+   */
   async uploadMedia(bytes, contentType, filename, opts) {
     const query = filename ? `?filename=${encodeURIComponent(filename)}` : "";
     const res = await this.sideChannelBytes(
