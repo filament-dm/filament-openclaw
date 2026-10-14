@@ -70,6 +70,9 @@ async function runPollTransport(ctx, deps = {}) {
     }
     let result;
     try {
+      log(
+        `filament-poll: turn for ${item.messages.length} message(s) in ${item.channel_id}` + (item.messages.some((m) => m.media?.length) ? " (with attachments)" : "")
+      );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
       result = await ctx.runTurn(item, media);
     } catch (error) {
