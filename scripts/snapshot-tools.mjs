@@ -11,7 +11,12 @@ import { fileURLToPath } from "node:url";
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 
 // Same list as EXCLUDED_TOOLS in src/filament-tools.ts.
-const EXCLUDED_TOOLS = new Set(["poll_work", "register_push_token", "list_push_tokens"]);
+const EXCLUDED_TOOLS = new Set([
+  "poll_work",
+  "register_push_token",
+  "list_push_tokens",
+  "get_wake_url",
+]);
 
 const OUTPUT_PATH = fileURLToPath(new URL("../src/filament-tools.snapshot.json", import.meta.url));
 

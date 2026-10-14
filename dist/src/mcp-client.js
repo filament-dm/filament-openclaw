@@ -74,6 +74,8 @@ class FilamentMcpClient {
   initialized = false;
   /** From the initialize response; carries the server's first-contact directive. */
   instructions = null;
+  /** The tools the server listed, from the last successful `tools/list`; null before one. */
+  toolNames = null;
   /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   async post(url, body, expectJson, opts) {
     const controller = new AbortController();
@@ -280,6 +282,7 @@ class FilamentMcpClient {
       inputSchema: t.inputSchema,
       annotations: t.annotations && typeof t.annotations === "object" ? t.annotations : void 0
     }));
+    this.toolNames = new Set(parsed.map((t) => t.name));
     return { ok: true, tools: parsed };
   }
   getSelf(opts) {

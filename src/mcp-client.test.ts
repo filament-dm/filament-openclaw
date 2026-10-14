@@ -253,6 +253,24 @@ function sideChannelClient(handler: Handler): FilamentMcpClient {
   );
 }
 
+test("listTools: remembers the live tool names; a failed list keeps the last ones", async () => {
+  const listed: Handler = () =>
+    new Response(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { tools: [{ name: "get_self" }, { name: "poll_work" }] },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  const c = client([listed, () => new Response("down", { status: 503 })]);
+  assert.equal(c.toolNames, null);
+  await c.listTools();
+  assert.deepEqual([...c.toolNames!], ["get_self", "poll_work"]);
+  assert.equal((await c.listTools()).ok, false);
+  assert.deepEqual([...c.toolNames!], ["get_self", "poll_work"]);
+});
+
 test("downloadMedia: GETs /media with the mxc url and the bearer", async () => {
   let seen: { url: string; init?: RequestInit } | null = null;
   const c = sideChannelClient((url, init) => {

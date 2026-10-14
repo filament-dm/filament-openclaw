@@ -143,6 +143,8 @@ export class FilamentMcpClient {
   private initialized = false;
   /** From the initialize response; carries the server's first-contact directive. */
   instructions: string | null = null;
+  /** The tools the server listed, from the last successful `tools/list`; null before one. */
+  toolNames: ReadonlySet<string> | null = null;
 
   constructor(
     private readonly mcpUrl: string,
@@ -401,6 +403,7 @@ export class FilamentMcpClient {
             ? (t.annotations as McpToolDescriptor["annotations"])
             : undefined,
       }));
+    this.toolNames = new Set(parsed.map((t) => t.name));
     return { ok: true, tools: parsed };
   }
 
