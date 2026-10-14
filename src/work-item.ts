@@ -26,6 +26,14 @@ export interface WorkItem {
   is_backchannel: boolean;
   /** A room created as a DM, other than the backchannel. */
   is_direct?: boolean;
+  /**
+   * What a push said about the room, from servers that put it on poll_work items
+   * (filament-dm/synapse#1156): its name, its loop's name, and each sender's display name by
+   * user id. `sender_names` present means the server sent them; older servers send none.
+   */
+  channel_name?: string;
+  loop_name?: string;
+  sender_names?: Record<string, string>;
   messages: WorkMessage[];
 }
 

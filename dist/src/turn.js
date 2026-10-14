@@ -15,13 +15,17 @@ function inboundMediaFields(media) {
   const facts = toInboundMediaFacts(media);
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
-function inboundMessageFields(messages) {
+function senderLabel(sender, names) {
+  const name = names?.[sender];
+  return name ? `${name} (${sender})` : sender;
+}
+function inboundMessageFields(messages, senderNames) {
   const current = messages[messages.length - 1];
   return {
     body: current?.body ?? "",
     current,
     history: messages.slice(0, -1).map((m) => ({
-      sender: m.sender,
+      sender: senderLabel(m.sender, senderNames),
       body: m.body,
       timestamp: m.ts,
       messageId: m.event_id
@@ -54,7 +58,13 @@ async function dispatchWorkItemTurn(params) {
     resolveEnvelopeFormatOptions: runtime.reply.resolveEnvelopeFormatOptions,
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope
   });
-  const { body: rawBody, current: lastMessage, history } = inboundMessageFields(params.messages);
+  const {
+    body: rawBody,
+    current: lastMessage,
+    history
+  } = inboundMessageFields(params.messages, params.senderNames);
+  const senderName = lastMessage ? params.senderNames?.[lastMessage.sender] : void 0;
+  const isGroup = params.peerKind === "group";
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -71,8 +81,11 @@ async function dispatchWorkItemTurn(params) {
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
-    ...params.groupSubject && params.peerKind === "group" ? { GroupSubject: params.groupSubject } : {},
+    ...params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {},
+    ...params.channelName && isGroup ? { GroupChannel: params.channelName } : {},
+    ...params.loopName && isGroup ? { GroupSpace: params.loopName } : {},
     SenderId: lastMessage?.sender ?? "unknown",
+    ...senderName ? { SenderName: senderName } : {},
     ...lastMessage ? { Timestamp: lastMessage.ts } : {},
     ...history.length > 0 ? { InboundHistory: history } : {},
     Provider: params.channel,
@@ -152,5 +165,6 @@ async function dispatchWorkItemTurn(params) {
 }
 export {
   dispatchWorkItemTurn,
-  inboundMessageFields
+  inboundMessageFields,
+  senderLabel
 };

@@ -77,6 +77,29 @@ function withMedia(raw: unknown): { media?: WorkMedia[] } {
   return media.length ? { media } : {};
 }
 
+/** The room facts a newer server puts on an item; display names that are null or blank are left out. */
+function withRoomFacts(
+  r: Record<string, unknown>,
+): Pick<WorkItem, "channel_name" | "loop_name" | "sender_names"> {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const channelName = text(r.channel_name);
+  const loopName = text(r.loop_name);
+  const raw = r.sender_names;
+  const names =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>).flatMap(([id, name]) =>
+            text(name) ? [[id, text(name)!]] : [],
+          ),
+        )
+      : undefined;
+  return {
+    ...(channelName ? { channel_name: channelName } : {}),
+    ...(loopName ? { loop_name: loopName } : {}),
+    ...(names ? { sender_names: names } : {}),
+  };
+}
+
 export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -126,6 +149,7 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
       is_backchannel: r.is_backchannel === true,
       is_direct: r.is_direct === true,
+      ...withRoomFacts(r),
       messages,
       reply_with: replyWith,
     });

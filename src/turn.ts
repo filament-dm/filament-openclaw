@@ -50,6 +50,10 @@ export interface DispatchWorkItemParams {
   conversationLabel: string;
   /** A group session's subject: the room's name, or its people. */
   groupSubject?: string;
+  /** Display names by user id, and the room's and its loop's names, when the item carries them. */
+  senderNames?: Readonly<Record<string, string>>;
+  channelName?: string;
+  loopName?: string;
   commandAuthorized: boolean;
   log: (message: string) => void;
 }
@@ -77,6 +81,12 @@ function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, u
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
 
+/** A sender as the model reads them: "Name (@id)" when the name is known, so the id stays to mention. */
+export function senderLabel(sender: string, names?: Readonly<Record<string, string>>): string {
+  const name = names?.[sender];
+  return name ? `${name} (${sender})` : sender;
+}
+
 /** OpenClaw's history entry: rendered to the model as `#<message_id> <sender>: <body>`. */
 export interface InboundHistoryEntry {
   sender: string;
@@ -92,7 +102,10 @@ export interface InboundHistoryEntry {
  * Ids and senders reach the model as OpenClaw-built context blocks, which its chat views strip,
  * so the conversation shows plain text and the agent can still react, quote and reply by id.
  */
-export function inboundMessageFields(messages: readonly WorkMessage[]): {
+export function inboundMessageFields(
+  messages: readonly WorkMessage[],
+  senderNames?: Readonly<Record<string, string>>,
+): {
   body: string;
   current: WorkMessage | undefined;
   history: InboundHistoryEntry[];
@@ -102,7 +115,7 @@ export function inboundMessageFields(messages: readonly WorkMessage[]): {
     body: current?.body ?? "",
     current,
     history: messages.slice(0, -1).map((m) => ({
-      sender: m.sender,
+      sender: senderLabel(m.sender, senderNames),
       body: m.body,
       timestamp: m.ts,
       messageId: m.event_id,
@@ -149,7 +162,13 @@ export async function dispatchWorkItemTurn(
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope,
   });
 
-  const { body: rawBody, current: lastMessage, history } = inboundMessageFields(params.messages);
+  const {
+    body: rawBody,
+    current: lastMessage,
+    history,
+  } = inboundMessageFields(params.messages, params.senderNames);
+  const senderName = lastMessage ? params.senderNames?.[lastMessage.sender] : undefined;
+  const isGroup = params.peerKind === "group";
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -167,10 +186,11 @@ export async function dispatchWorkItemTurn(
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
-    ...(params.groupSubject && params.peerKind === "group"
-      ? { GroupSubject: params.groupSubject }
-      : {}),
+    ...(params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {}),
+    ...(params.channelName && isGroup ? { GroupChannel: params.channelName } : {}),
+    ...(params.loopName && isGroup ? { GroupSpace: params.loopName } : {}),
     SenderId: lastMessage?.sender ?? "unknown",
+    ...(senderName ? { SenderName: senderName } : {}),
     ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),
     ...(history.length > 0 ? { InboundHistory: history } : {}),
     Provider: params.channel,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ToolCallResult } from "./mcp-client.js";
-import { createRoomLabels, roomLabelFrom } from "./room-labels.js";
+import { createRoomLabels, roomLabelFrom, roomLabelFromFacts } from "./room-labels.js";
 
 const IDENTITY = { mxid: "@carl:x", principal: "@owner:x", ccRoomId: "!cc:x" };
 
@@ -76,4 +76,62 @@ test("createRoomLabels: one get_channel_details per room; a failure falls back a
     IDENTITY,
   );
   assert.deepEqual(await down("!cc:x"), { label: "Filament · @owner:x" });
+});
+
+test("roomLabelFromFacts: an item's own room facts name the room; without them, null", () => {
+  const names = { "@owner:x": "Test One", "@alice:x": "Alice", "@carl:x": "Carl" };
+  assert.deepEqual(roomLabelFromFacts({ sender_names: names }, "!cc:x", ["@owner:x"], IDENTITY), {
+    label: "Filament · Test One",
+  });
+  assert.deepEqual(
+    roomLabelFromFacts(
+      { channel_name: "Design review", sender_names: names },
+      "!room:x",
+      ["@alice:x"],
+      IDENTITY,
+    ),
+    { label: "Filament · Design review", subject: "Design review" },
+  );
+  // A DM by the people in it other than the agent; an unnamed sender by their id.
+  assert.deepEqual(
+    roomLabelFromFacts(
+      { sender_names: names },
+      "!dm:x",
+      ["@alice:x", "@carl:x", "@bob:x"],
+      IDENTITY,
+    ),
+    { label: "Filament · Alice, @bob:x", subject: "Alice, @bob:x" },
+  );
+  // Nothing to go on: an older server, a backchannel item without the owner, only the agent.
+  assert.equal(roomLabelFromFacts({}, "!room:x", ["@alice:x"], IDENTITY), null);
+  assert.equal(roomLabelFromFacts({ sender_names: {} }, "!cc:x", ["@carl:x"], IDENTITY), null);
+  assert.equal(roomLabelFromFacts({ sender_names: names }, "!dm:x", ["@carl:x"], IDENTITY), null);
+});
+
+test("createRoomLabels: an item with room facts needs no get_channel_details", async () => {
+  const calls: string[] = [];
+  const client = {
+    callTool: async (name: string) => {
+      calls.push(name);
+      return { ok: true, data: { name: "Looked up", members: [] } } as ToolCallResult;
+    },
+  };
+  const labelOf = createRoomLabels(client, IDENTITY);
+  const item = {
+    channel_name: "General",
+    sender_names: { "@alice:x": "Alice" },
+    messages: [{ event_id: "$1", sender: "@alice:x", body: "hi", ts: 1 }],
+  };
+  assert.deepEqual(await labelOf("!room:x", undefined, item), {
+    label: "Filament · General",
+    subject: "General",
+  });
+  assert.deepEqual(calls, []);
+  // An item from an older server falls back to the lookup.
+  const old = { messages: item.messages };
+  assert.deepEqual(await labelOf("!other:x", undefined, old), {
+    label: "Filament · Looked up",
+    subject: "Looked up",
+  });
+  assert.deepEqual(calls, ["get_channel_details"]);
 });

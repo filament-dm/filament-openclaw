@@ -114,6 +114,47 @@ test("inboundMessageFields: the last message is the turn's; earlier ones are his
     ],
   });
   assert.deepEqual(inboundMessageFields([]), { body: "", current: undefined, history: [] });
+  // Known names lead, with the id kept for mentions.
+  assert.deepEqual(inboundMessageFields(messages, { "@alice:x": "Alice" }).history, [
+    { sender: "Alice (@alice:x)", body: "ship it?", timestamp: 1, messageId: "$a1" },
+    { sender: "@bob:x", body: "not yet", timestamp: 2, messageId: "$b2" },
+  ]);
+});
+
+test("dispatchWorkItemTurn: an item's room facts become the sender's name and the group's channel and loop", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  const facts = {
+    senderNames: { "@owner:x": "Test One", "@alice:x": "Alice" },
+    channelName: "Design review",
+    loopName: "Acme",
+  };
+  await dispatchWorkItemTurn(
+    params(
+      {
+        ...facts,
+        peerKind: "group",
+        channelId: "!room:x",
+        messages: [
+          { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 10 },
+          { event_id: "$c3", sender: "@owner:x", body: "quote Alice", ts: 20 },
+        ],
+      },
+      runtime,
+    ),
+  );
+  await dispatchWorkItemTurn(params(facts, runtime));
+  const group = contexts[0]!;
+  assert.equal(group.SenderName, "Test One");
+  assert.equal(group.SenderId, "@owner:x");
+  assert.equal(group.GroupChannel, "Design review");
+  assert.equal(group.GroupSpace, "Acme");
+  assert.deepEqual(group.InboundHistory, [
+    { sender: "Alice (@alice:x)", body: "ship it?", timestamp: 10, messageId: "$a1" },
+  ]);
+  // The backchannel is direct: a sender name, but no group channel or loop.
+  assert.equal(contexts[1]!.SenderName, "Test One");
+  assert.equal(contexts[1]!.GroupChannel, undefined);
+  assert.equal(contexts[1]!.GroupSpace, undefined);
 });
 
 test("dispatchWorkItemTurn: plain text in the body, ids and senders in OpenClaw's context fields", async () => {

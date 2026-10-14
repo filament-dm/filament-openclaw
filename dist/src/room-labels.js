@@ -20,17 +20,44 @@ function roomLabelFrom(details, roomId, identity) {
   if (name && name !== roomId) return { label: `${PREFIX}${name}`, subject: name };
   const others = members.filter((m) => m.mxid !== identity.mxid).map((m) => m.name);
   if (others.length > 0) {
-    const people = others.slice(0, 3).join(", ") + (others.length > 3 ? ` +${others.length - 3}` : "");
+    const people = peopleLabel(others);
     return { label: `${PREFIX}${people}`, subject: people };
   }
   return { label: `${PREFIX}${roomId}` };
 }
+function peopleLabel(names) {
+  return names.slice(0, 3).join(", ") + (names.length > 3 ? ` +${names.length - 3}` : "");
+}
+function roomLabelFromFacts(facts, roomId, senders, identity) {
+  const names = facts.sender_names;
+  if (!names) return null;
+  if (roomId === identity.ccRoomId) {
+    const owner = names[identity.principal];
+    return owner ? { label: `${PREFIX}${owner}` } : null;
+  }
+  const name = facts.channel_name;
+  if (name && name !== roomId) return { label: `${PREFIX}${name}`, subject: name };
+  const others = [...new Set(senders)].filter((id) => id !== identity.mxid).map((id) => names[id] ?? id);
+  if (others.length === 0) return null;
+  const people = peopleLabel(others);
+  return { label: `${PREFIX}${people}`, subject: people };
+}
 function createRoomLabels(client, identity, log = () => {
 }) {
   const known = /* @__PURE__ */ new Map();
-  return async (roomId, signal) => {
+  return async (roomId, signal, item) => {
     const cached = known.get(roomId);
     if (cached) return cached;
+    const fromFacts = item ? roomLabelFromFacts(
+      item,
+      roomId,
+      item.messages.map((m) => m.sender),
+      identity
+    ) : null;
+    if (fromFacts) {
+      known.set(roomId, fromFacts);
+      return fromFacts;
+    }
     try {
       const result = await client.callTool(
         "get_channel_details",
@@ -53,5 +80,6 @@ function createRoomLabels(client, identity, log = () => {
 }
 export {
   createRoomLabels,
-  roomLabelFrom
+  roomLabelFrom,
+  roomLabelFromFacts
 };

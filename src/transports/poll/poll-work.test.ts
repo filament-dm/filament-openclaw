@@ -418,6 +418,9 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
   assert.equal(parsed.work[0]!.messages[0]!.reply_expected, false);
   assert.equal(parsed.work[0]!.messages[0]!.body, ATTACHMENT_ONLY_BODY);
   assert.deepEqual(parsed.invites, [{ room_id: "!loop:server" }]);
+  // No room facts from this server.
+  assert.equal(parsed.work[0]!.sender_names, undefined);
+  assert.equal(parsed.work[0]!.channel_name, undefined);
 });
 
 // A `poll_work` response in the shape synapse develop sends: rows are `AgentMessage`
@@ -646,4 +649,29 @@ test("ambiguous outcome: re-offered item is left alone once, then ack'd the seco
   assert.equal(dispatches, 2);
   assert.equal((calls[1] as { ack?: string[] }).ack, undefined);
   assert.deepEqual((calls[2] as { ack?: string[] }).ack, ["$e1"]);
+});
+
+test("parsePollWorkResponse: keeps the room facts a newer server sends; blank names are left out", () => {
+  const parsed = parsePollWorkResponse({
+    work: [
+      {
+        kind: "message",
+        channel_id: "!room:server",
+        thread_id: null,
+        is_backchannel: false,
+        is_direct: false,
+        channel_name: "Design review",
+        loop_name: "Acme",
+        sender_names: { "@ada:server": "Ada", "@bob:server": null, "@cy:server": " " },
+        messages: [{ event_id: "$e1", sender: "@ada:server", body: "hi", timestamp: 1 }],
+        reply_with: null,
+      },
+    ],
+    cursor: "c:1",
+  });
+  assert.ok(parsed);
+  const item = parsed.work[0]!;
+  assert.equal(item.channel_name, "Design review");
+  assert.equal(item.loop_name, "Acme");
+  assert.deepEqual(item.sender_names, { "@ada:server": "Ada" });
 });
