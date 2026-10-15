@@ -198,7 +198,7 @@ test("execute: a snapshot tool the live server doesn't list is refused without a
 });
 
 test("the signed-URL media tools are registered; get_wake_url is not", () => {
-  for (const name of ["get_media_download_url", "create_media_upload", "upload_media_from_url"]) {
+  for (const name of ["get_media_download_url", "create_media_upload"]) {
     assert.ok(KNOWN_TOOL_NAMES.includes(name), name);
   }
   assert.ok(!KNOWN_TOOL_NAMES.includes("get_wake_url"));

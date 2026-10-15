@@ -105,7 +105,6 @@ test("attachmentsGuidance: the turn's files are local and replies use MEDIA:; to
   }
   assert.match(withTools, /filament_get_media_download_url/);
   assert.match(withTools, /filament_create_media_upload/);
-  assert.match(withTools, /filament_upload_media_from_url/);
   assert.doesNotMatch(without, /filament_create_media_upload/);
   assert.match(without, /send it as your reply instead/);
 });

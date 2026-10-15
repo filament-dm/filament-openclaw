@@ -52,8 +52,7 @@
       "filament_set_channel_notification_level",
       "filament_get_backchannel",
       "filament_get_media_download_url",
-      "filament_create_media_upload",
-      "filament_upload_media_from_url"
+      "filament_create_media_upload"
     ]
   },
   "configSchema": {

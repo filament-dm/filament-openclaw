@@ -73,7 +73,7 @@ export function attachmentsGuidance(signedMedia: boolean): string {
       "filament_get_media_download_url and curl its download_url to a local file. To attach a " +
       "file to a message you post with a filament_ tool, or to use it as set_profile's image, " +
       "call filament_create_media_upload, curl the file to its upload_url, and pass the returned " +
-      "mxc_url (filament_upload_media_from_url takes a public URL instead)."
+      "mxc_url."
     : " This Filament server has no way for you to attach a new file to a message you post with " +
       "a filament_ tool: send it as your reply instead.";
   return `${turn}${tools} You never need a token for files: never look for one in the plugin's files or config.`;
