@@ -1,7 +1,9 @@
 /**
- * Attachments between Filament and an OpenClaw turn, over the agent's bearer-authenticated
- * side-channels: `/media` to fetch a message's attachment, `/upload` to send one. Only the
- * poll_work transport uses this for now: FCM pushes carry no attachment urls.
+ * Attachments between Filament and an OpenClaw turn, moved by the gateway so their bytes never
+ * pass through the model: a message's attachment is fetched from a `get_media_download_url` URL
+ * where the server has that tool (else the bearer `/media` side-channel), and a reply's is sent
+ * through the bearer `/upload` side-channel. Only the poll_work transport uses this for now: FCM
+ * pushes carry no attachment urls.
  */
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";
@@ -30,7 +32,7 @@ interface MediaClient {
   downloadMedia(
     mxcUrl: string,
     maxBytes: number,
-    opts?: CallOptions,
+    opts?: CallOptions & { messageId?: string },
   ): Promise<{ bytes: Buffer; contentType: string | null }>;
   uploadMedia(
     bytes: Uint8Array,
@@ -78,6 +80,7 @@ export async function fetchInboundMedia(
     try {
       const { bytes, contentType } = await client.downloadMedia(media.mxc_url, MEDIA_MAX_BYTES, {
         signal: opts.signal,
+        messageId: m.event_id,
       });
       const file = await save(bytes, contentType ?? media.mimetype, media.filename);
       saved.push({

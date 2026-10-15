@@ -169,6 +169,47 @@ test("execute: after setFilamentClient(client) calls the live client", async () 
   assert.deepEqual(result.details, { channels: ["!a:server"] });
 });
 
+test("execute: a snapshot tool the live server doesn't list is refused without a call", async () => {
+  const { api, tools } = fakeApi();
+  const { log, lines } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const tool = tools.get(`${TOOL_NAME_PREFIX}get_media_download_url`)!;
+
+  const calls: string[] = [];
+  const client: FilamentToolClient = {
+    callTool: async (name) => {
+      calls.push(name);
+      return okResult({ download_url: "https://example.test/x" });
+    },
+    toolNames: new Set(["list_channels"]),
+  };
+  setFilamentClient(client);
+  await assert.rejects(
+    () => tool.execute("call-1", { mxc_url: "mxc://s/1" }, undefined, undefined, {}),
+    /this Filament server doesn't offer get_media_download_url yet/,
+  );
+  assert.deepEqual(calls, []);
+  assert.ok(lines.some((l) => l.includes("get_media_download_url not offered by this server")));
+
+  // Listed: the call goes through.
+  setFilamentClient({ ...client, toolNames: new Set(["get_media_download_url"]) });
+  await tool.execute("call-2", { mxc_url: "mxc://s/1" }, undefined, undefined, {});
+  assert.deepEqual(calls, ["get_media_download_url"]);
+});
+
+test("the signed-URL media tools are registered; get_wake_url is not", () => {
+  for (const name of ["get_media_download_url", "create_media_upload"]) {
+    assert.ok(KNOWN_TOOL_NAMES.includes(name), name);
+  }
+  assert.ok(!KNOWN_TOOL_NAMES.includes("get_wake_url"));
+  const { log, lines } = fakeLog();
+  logToolDrift(
+    [...TOOL_SNAPSHOT.map((t) => readDescriptor(t.name)), readDescriptor("get_wake_url")],
+    log,
+  );
+  assert.ok(lines.some((l) => l.includes("snapshot matches the live server's tool surface")));
+});
+
 test("ring0 write tool (set_profile): denied outside a backchannel turn, allowed inside one", async () => {
   const { api, tools } = fakeApi();
   const { log, lines } = fakeLog();

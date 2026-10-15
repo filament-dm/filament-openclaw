@@ -7,6 +7,7 @@
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
+import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import type { DispatchOutcome } from "../../work-item.js";
@@ -106,6 +107,10 @@ export async function runPollTransport(
 
     let result;
     try {
+      log(
+        `filament-poll: turn for ${item.messages.length} message(s) in ${item.channel_id}` +
+          (item.messages.some((m) => m.media?.length) ? " (with attachments)" : ""),
+      );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
       result = await ctx.runTurn(item, media);
     } catch (error) {
@@ -165,5 +170,7 @@ export async function runPollTransport(
     dispatchItem,
     waitSeconds: ctx.settings.pollWaitSeconds,
     sweepPending: () => acceptPending(client, log, abortSignal),
+    initialCursor: loadPollCursor(ctx.accountId, ctx.identity.mxid),
+    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor),
   });
 }

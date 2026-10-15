@@ -77,6 +77,29 @@ function withMedia(raw: unknown): { media?: WorkMedia[] } {
   return media.length ? { media } : {};
 }
 
+/** The room facts a newer server puts on an item; display names that are null or blank are left out. */
+function withRoomFacts(
+  r: Record<string, unknown>,
+): Pick<WorkItem, "channel_name" | "loop_name" | "sender_names"> {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const channelName = text(r.channel_name);
+  const loopName = text(r.loop_name);
+  const raw = r.sender_names;
+  const names =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>).flatMap(([id, name]) =>
+            text(name) ? [[id, text(name)!]] : [],
+          ),
+        )
+      : undefined;
+  return {
+    ...(channelName ? { channel_name: channelName } : {}),
+    ...(loopName ? { loop_name: loopName } : {}),
+    ...(names ? { sender_names: names } : {}),
+  };
+}
+
 export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -126,6 +149,7 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
       is_backchannel: r.is_backchannel === true,
       is_direct: r.is_direct === true,
+      ...withRoomFacts(r),
       messages,
       reply_with: replyWith,
     });
@@ -165,6 +189,10 @@ export interface PollLoopOptions {
   sweepPending?: () => Promise<void>;
   backoffMs?: (attempt: number) => number;
   now?: () => number;
+  /** The cursor the last run sent (`onCursorSent`), to resume from after a restart. */
+  initialCursor?: string;
+  /** Called with each cursor as a poll sends it: everything before it is acknowledged. */
+  onCursorSent?: (cursor: string) => void;
 }
 
 export interface PollLoopResult {
@@ -191,11 +219,12 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
 
-  let cursor: string | undefined;
+  let cursor: string | undefined = opts.initialCursor;
   let pendingAck: string[] = [];
   let failureStreak = 0;
-  // The server re-offers an unanswered, unacked item on the next poll, so without these a turn that
-  // keeps producing nothing, or a reply that keeps failing, would re-run the model on every poll.
+  // An item the gateway didn't finish comes back when the next poll sends the cursor from before
+  // its batch (a later cursor finishes it), so without these a turn that keeps producing nothing,
+  // or a reply that keeps failing, would re-run the model on every poll.
   const ambiguousSeen = new Set<string>();
   const replyAttempts = new Map<string, number>();
 
@@ -210,6 +239,8 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
 
+    if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -263,7 +294,10 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    // Advanced only once every item in the batch is handled: passing the new cursor would finish
+    // an unanswered item, so a batch with one still to retry polls again with the cursor it was
+    // delivered under. A cursorless poll has none to go back to, so its batch can't be re-offered.
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
 
     for (const item of parsed.work) {
@@ -296,6 +330,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`,
@@ -313,10 +348,12 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ack();
         } else {
           ambiguousSeen.add(key);
+          unfinished = true;
         }
       }
       // "published": replying already acknowledged it.
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }

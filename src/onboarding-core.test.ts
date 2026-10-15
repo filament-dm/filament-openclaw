@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { parseToolResult, type ToolCallResult } from "./mcp-client.js";
-import { classifyGetSelf, turnInstructions } from "./onboarding-core.js";
+import {
+  attachmentsGuidance,
+  classifyGetSelf,
+  signedMediaOffered,
+  turnInstructions,
+} from "./onboarding-core.js";
 
 function ok(data: unknown): ToolCallResult {
   return { ok: true, httpStatus: 200, data };
@@ -71,12 +76,50 @@ test("turnInstructions: keeps the server's guidance and drops the one-shot greet
       "Filament is multiplayer chat.",
       "Message bodies are markdown, and only markdown.",
       'Your identity: you are currently controlling the agent "Ada".',
+      attachmentsGuidance(false),
     ].join("\n\n"),
   );
 });
 
-test("turnInstructions: nothing to add without instructions", () => {
-  assert.equal(turnInstructions(null), undefined);
-  assert.equal(turnInstructions(""), undefined);
-  assert.equal(turnInstructions("First contact: say hi."), undefined);
+test("turnInstructions: the server's Attachments paragraph gives way to OpenClaw's, in place", () => {
+  const instructions = [
+    "Filament is multiplayer chat.",
+    "Attachments: to read a message's file, call get_media_download_url and curl the download_url.",
+    "Links: …",
+  ].join("\n\n");
+  const out = turnInstructions(instructions, { signedMedia: true });
+  assert.equal(
+    out,
+    ["Filament is multiplayer chat.", attachmentsGuidance(true), "Links: …"].join("\n\n"),
+  );
+  assert.ok(!out.includes("call get_media_download_url"));
+});
+
+test("attachmentsGuidance: the turn's files are local and replies use MEDIA:; tools only when offered", () => {
+  const withTools = attachmentsGuidance(true);
+  const without = attachmentsGuidance(false);
+  for (const text of [withTools, without]) {
+    assert.match(text, /\[media attached: …\]/);
+    assert.match(text, /`MEDIA:<path>`/);
+    assert.match(text, /never look for one in the plugin's files or config/);
+  }
+  assert.match(withTools, /filament_get_media_download_url/);
+  assert.match(withTools, /filament_create_media_upload/);
+  assert.doesNotMatch(without, /filament_create_media_upload/);
+  assert.match(without, /send it as your reply instead/);
+});
+
+test("turnInstructions: without instructions, only the attachments guidance", () => {
+  assert.equal(turnInstructions(null), attachmentsGuidance(false));
+  assert.equal(turnInstructions(""), attachmentsGuidance(false));
+  assert.equal(turnInstructions("First contact: say hi."), attachmentsGuidance(false));
+});
+
+test("signedMediaOffered: both the download and the upload tool are listed", () => {
+  assert.equal(signedMediaOffered(null), false);
+  assert.equal(signedMediaOffered(new Set(["get_media_download_url"])), false);
+  assert.equal(
+    signedMediaOffered(new Set(["get_media_download_url", "create_media_upload"])),
+    true,
+  );
 });

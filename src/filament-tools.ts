@@ -42,6 +42,7 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["poll_work", "the poll transport owns this call exclusively"],
   ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
   ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
+  ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"],
 ]);
 
 // Tools that change the agent itself: callable only from a backchannel (principal) turn.
@@ -128,6 +129,8 @@ export interface FilamentToolClient {
     args?: Record<string, unknown>,
     opts?: CallOptions,
   ): Promise<ToolCallResult>;
+  /** The live server's tools (`FilamentMcpClient.toolNames`); null or absent until listed. */
+  readonly toolNames?: ReadonlySet<string> | null;
 }
 
 export type GetFilamentClient = (accountId: string) => FilamentToolClient | null;
@@ -226,6 +229,14 @@ function makeExecute(
     if (!client) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
+    }
+    // The snapshot can be newer than the server (e.g. the signed-URL media tools): say so rather
+    // than send a call the server will reject as unknown. Unlisted yet: call through.
+    if (client.toolNames && !client.toolNames.has(toolName)) {
+      log(`filament-tools: ${qualifiedName} not offered by this server`);
+      throw new Error(
+        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`,
+      );
     }
     let result: ToolCallResult;
     try {

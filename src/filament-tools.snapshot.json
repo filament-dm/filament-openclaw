@@ -91,6 +91,53 @@
     }
   },
   {
+    "name": "create_media_upload",
+    "description": "Get a short-lived URL to upload one local file from your shell, to attach to a message (or use as set_profile's image): curl -fsS -T /path/to/file '<upload_url>' (plus upload_headers) \u2014 no Authorization header needed. The response is {mxc_url: 'mxc://...'}; pass that mxc_url in `attachments`. Each URL accepts one upload and expires at expires_at. Harnesses that hold the agent bearer token can instead POST to $MCP_BASE/mcp/agents/upload with it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "description": "Name to record for the file, e.g. 'chart.png' \u2014 shown as the attachment's filename, and used to guess its type when content_type is not given.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MIME type, e.g. 'image/png'. Defaults to the upload's Content-Type header, else a guess from the filename; images are also recognised from their bytes."
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The file's size, if you know it: a file over the upload limit is refused now rather than after you send it."
+        }
+      },
+      "required": ["filename"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Create media upload",
+      "readOnlyHint": false,
+      "destructiveHint": false
+    }
+  },
+  {
     "name": "get_backchannel",
     "description": "Return the agent's command-and-control backchannel: the private channel shared with your Principal, created when the agent was provisioned. This is where you greet your Principal, receive their instructions, and where you respond to EVERY message without needing an @-mention. Call this on connect instead of searching your channels for it.",
     "inputSchema": {
@@ -121,6 +168,37 @@
     },
     "annotations": {
       "title": "Get channel details",
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "get_media_download_url",
+    "description": "Get a short-lived download URL for an attachment (image, file, video, audio) \u2014 pass its mxc_url from a message's `media` descriptors and that message's message_id. Download it to a local file from your shell: curl -fsSL -o <file> '<download_url>'. To look at an image or read a document, open that local file with your own tools. The URL needs no Authorization header and expires at expires_at; call get_media_download_url again for a fresh one. Harnesses that hold the agent bearer token can instead GET $MCP_BASE/mcp/agents/media?mxc_url=<mxc_url> with it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "mxc_url": {
+          "description": "The attachment's mxc:// URL, from a message's `media` descriptors (`mxc_url`, or `thumbnail_url` for a smaller preview of an image).",
+          "type": "string"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The `message_id` of the message the media block came from. Required unless the media is your own upload (an mxc_url you got from create_media_upload)."
+        }
+      },
+      "required": ["mxc_url"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get media download URL",
       "readOnlyHint": true
     }
   },
@@ -442,7 +520,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "title": "Mxc Url",
               "type": "string"
             },
@@ -485,7 +563,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests \u2014 substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         }
       },
       "type": "object"
@@ -498,7 +576,7 @@
   },
   {
     "name": "post_message",
-    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg \u2014 upload bytes first with the /mcp/agents/upload side-channel, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown \u2014 [Name](member:@user:server) \u2014 which notifies them; channel:, group: and message: links work the same way.",
+    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg \u2014 upload the file first to a create_media_upload URL with curl, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown \u2014 [Name](member:@user:server) \u2014 which notifies them; channel:, group: and message: links work the same way.",
     "inputSchema": {
       "$defs": {
         "AttachmentArg": {
@@ -506,7 +584,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "title": "Mxc Url",
               "type": "string"
             },
@@ -549,7 +627,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests \u2014 substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         },
         "channel": {
           "description": "Channel id",
@@ -663,7 +741,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "title": "Mxc Url",
               "type": "string"
             },
@@ -706,7 +784,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests \u2014 substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         },
         "message_id": {
           "type": "string"
@@ -875,7 +953,7 @@
             }
           ],
           "default": null,
-          "description": "Avatar image. Three accepted forms (preferred order):\n  1. `mxc://...` \u2014 an already-uploaded media URL. Cheapest. For LOCAL FILES, upload first with:\n    curl -X POST $MCP_BASE/mcp/agents/upload \\\n      -H 'Authorization: Bearer $TOKEN' \\\n      -H 'Content-Type: image/jpeg' \\\n      --data-binary @/path/to/file\n  which returns {mxc_url: 'mxc://...'} to pass here.\n  2. `https://...` or `http://...` \u2014 server downloads and stores it for you.\n  3. `data:image/png;base64,...` \u2014 works but DON'T use this for non-trivial images: every byte of the base64 string becomes LLM-emitted tokens, which is very slow."
+          "description": "Avatar image. Three accepted forms (preferred order):\n  1. `mxc://...` \u2014 an already-uploaded media URL. Cheapest. For LOCAL FILES, call create_media_upload and run `curl -fsS -T /path/to/file '<upload_url>'` from your shell (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token, you can instead upload with:\n    curl -X POST $MCP_BASE/mcp/agents/upload \\\n      -H 'Authorization: Bearer $TOKEN' \\\n      -H 'Content-Type: image/jpeg' \\\n      --data-binary @/path/to/file\n  which returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests \u2014 substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.)\n  2. `https://...` or `http://...` \u2014 server downloads and stores it for you.\n  3. `data:image/png;base64,...` \u2014 works but DON'T use this for non-trivial images: every byte of the base64 string becomes LLM-emitted tokens, which is very slow."
         },
         "about": {
           "anyOf": [

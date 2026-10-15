@@ -16,7 +16,7 @@ import {
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
-import { turnInstructions } from "./onboarding-core.js";
+import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
   checkFilamentToolDrift,
@@ -200,7 +200,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             connection.client,
             connection.identity,
             accountLog
-          ))(item.channel_id, abortSignal) : { label: item.channel_id };
+          ))(item.channel_id, abortSignal, item) : { label: item.channel_id };
           beginFilamentTurn(item.is_backchannel === true, accountId);
           let repliedTo = /* @__PURE__ */ new Set();
           let result;
@@ -217,10 +217,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               threadId: item.thread_id,
               messages: item.messages,
               media,
-              systemPrompt: turnInstructions(connection?.client.instructions),
+              systemPrompt: turnInstructions(connection?.client.instructions, {
+                signedMedia: signedMediaOffered(connection?.client.toolNames)
+              }),
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: room.label,
               groupSubject: room.subject,
+              senderNames: item.sender_names,
+              channelName: item.channel_name,
+              loopName: item.loop_name,
               // Filament, not OpenClaw, decides who can reach the agent; only the
               // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,

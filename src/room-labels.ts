@@ -2,11 +2,13 @@
  * Human names for the OpenClaw sessions Filament rooms land in. OpenClaw titles a session by its
  * inbound `ConversationLabel` (and a group's by `GroupSubject`); a raw room id there reads as
  * "!StblYfTaMSOBkpLZNJ:filament.dm". The backchannel is named for the owner, a named channel for
- * its name, and a DM or unnamed room for the people in it, from `get_channel_details`.
+ * its name, and a DM or unnamed room for the people in it: from the room facts a poll_work item
+ * carries (filament-dm/synapse#1156), or else from `get_channel_details`.
  */
 import { asRecord } from "./accounts.js";
 import type { ToolCallResult } from "./mcp-client.js";
 import type { ResolvedIdentity } from "./onboarding-core.js";
+import type { WorkItem } from "./work-item.js";
 
 export interface RoomLabel {
   /** The session's title: "Filament · <who or what>". */
@@ -56,26 +58,72 @@ export function roomLabelFrom(
   if (name && name !== roomId) return { label: `${PREFIX}${name}`, subject: name };
   const others = members.filter((m) => m.mxid !== identity.mxid).map((m) => m.name);
   if (others.length > 0) {
-    const people =
-      others.slice(0, 3).join(", ") + (others.length > 3 ? ` +${others.length - 3}` : "");
+    const people = peopleLabel(others);
     return { label: `${PREFIX}${people}`, subject: people };
   }
   return { label: `${PREFIX}${roomId}` };
 }
 
+function peopleLabel(names: string[]): string {
+  return names.slice(0, 3).join(", ") + (names.length > 3 ? ` +${names.length - 3}` : "");
+}
+
 /**
- * Labels by room for one connection, looked up once each. A failed lookup labels the room by its
+ * The label for a room from an item's own room facts, or null when the item has none (an older
+ * server) or they don't name it: the owner absent from a backchannel item, nobody but the agent.
+ */
+export function roomLabelFromFacts(
+  facts: Pick<WorkItem, "channel_name" | "sender_names">,
+  roomId: string,
+  senders: readonly string[],
+  identity: Pick<ResolvedIdentity, "mxid" | "principal" | "ccRoomId">,
+): RoomLabel | null {
+  const names = facts.sender_names;
+  if (!names) return null;
+  if (roomId === identity.ccRoomId) {
+    const owner = names[identity.principal];
+    return owner ? { label: `${PREFIX}${owner}` } : null;
+  }
+  const name = facts.channel_name;
+  if (name && name !== roomId) return { label: `${PREFIX}${name}`, subject: name };
+  const others = [...new Set(senders)]
+    .filter((id) => id !== identity.mxid)
+    .map((id) => names[id] ?? id);
+  if (others.length === 0) return null;
+  const people = peopleLabel(others);
+  return { label: `${PREFIX}${people}`, subject: people };
+}
+
+/**
+ * Labels by room for one connection, worked out once each: from the first item's room facts
+ * when it carries them, else looked up. A failed lookup labels the room by its
  * id and is tried again next time.
  */
 export function createRoomLabels(
   client: RoomLabelClient,
   identity: Pick<ResolvedIdentity, "mxid" | "principal" | "ccRoomId">,
   log: (message: string) => void = () => {},
-): (roomId: string, signal?: AbortSignal) => Promise<RoomLabel> {
+): (
+  roomId: string,
+  signal?: AbortSignal,
+  item?: Pick<WorkItem, "channel_name" | "sender_names" | "messages">,
+) => Promise<RoomLabel> {
   const known = new Map<string, RoomLabel>();
-  return async (roomId, signal) => {
+  return async (roomId, signal, item) => {
     const cached = known.get(roomId);
     if (cached) return cached;
+    const fromFacts = item
+      ? roomLabelFromFacts(
+          item,
+          roomId,
+          item.messages.map((m) => m.sender),
+          identity,
+        )
+      : null;
+    if (fromFacts) {
+      known.set(roomId, fromFacts);
+      return fromFacts;
+    }
     try {
       const result = await client.callTool(
         "get_channel_details",

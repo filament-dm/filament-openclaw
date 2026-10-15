@@ -21,6 +21,22 @@ function withMedia(raw) {
   }
   return media.length ? { media } : {};
 }
+function withRoomFacts(r) {
+  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : void 0;
+  const channelName = text(r.channel_name);
+  const loopName = text(r.loop_name);
+  const raw = r.sender_names;
+  const names = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.fromEntries(
+    Object.entries(raw).flatMap(
+      ([id, name]) => text(name) ? [[id, text(name)]] : []
+    )
+  ) : void 0;
+  return {
+    ...channelName ? { channel_name: channelName } : {},
+    ...loopName ? { loop_name: loopName } : {},
+    ...names ? { sender_names: names } : {}
+  };
+}
 function parsePollWorkResponse(data) {
   if (!data || typeof data !== "object") return null;
   const d = data;
@@ -54,6 +70,7 @@ function parsePollWorkResponse(data) {
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
       is_backchannel: r.is_backchannel === true,
       is_direct: r.is_direct === true,
+      ...withRoomFacts(r),
       messages,
       reply_with: replyWith
     });
@@ -86,7 +103,7 @@ async function runPollLoop(opts) {
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
-  let cursor;
+  let cursor = opts.initialCursor;
   let pendingAck = [];
   let failureStreak = 0;
   const ambiguousSeen = /* @__PURE__ */ new Set();
@@ -100,6 +117,8 @@ async function runPollLoop(opts) {
   while (!abortSignal.aborted) {
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
+    if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -149,7 +168,7 @@ async function runPollLoop(opts) {
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
@@ -180,6 +199,7 @@ async function runPollLoop(opts) {
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`
@@ -196,9 +216,11 @@ async function runPollLoop(opts) {
           ack();
         } else {
           ambiguousSeen.add(key);
+          unfinished = true;
         }
       }
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }

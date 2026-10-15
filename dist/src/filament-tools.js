@@ -6,7 +6,8 @@ const KNOWN_TOOL_NAMES = TOOL_SNAPSHOT.map((t) => t.name);
 const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
   ["poll_work", "the poll transport owns this call exclusively"],
   ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
-  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"]
+  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
+  ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"]
 ]);
 const RING0_TOOL_NAMES = /* @__PURE__ */ new Set(["set_profile"]);
 function classifyToolTier(descriptor) {
@@ -93,6 +94,12 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
     if (!client) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
+    }
+    if (client.toolNames && !client.toolNames.has(toolName)) {
+      log(`filament-tools: ${qualifiedName} not offered by this server`);
+      throw new Error(
+        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`
+      );
     }
     let result;
     try {
