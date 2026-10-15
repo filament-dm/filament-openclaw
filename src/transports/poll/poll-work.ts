@@ -222,8 +222,9 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
   let cursor: string | undefined = opts.initialCursor;
   let pendingAck: string[] = [];
   let failureStreak = 0;
-  // The server re-offers an unanswered, unacked item on the next poll, so without these a turn that
-  // keeps producing nothing, or a reply that keeps failing, would re-run the model on every poll.
+  // An item the gateway didn't finish comes back when the next poll sends the cursor from before
+  // its batch (a later cursor finishes it), so without these a turn that keeps producing nothing,
+  // or a reply that keeps failing, would re-run the model on every poll.
   const ambiguousSeen = new Set<string>();
   const replyAttempts = new Map<string, number>();
 
@@ -239,6 +240,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     if (abortSignal.aborted) break;
 
     if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -292,7 +294,10 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    // Advanced only once every item in the batch is handled: passing the new cursor would finish
+    // an unanswered item, so a batch with one still to retry polls again with the cursor it was
+    // delivered under. A cursorless poll has none to go back to, so its batch can't be re-offered.
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
 
     for (const item of parsed.work) {
@@ -325,6 +330,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`,
@@ -342,10 +348,12 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ack();
         } else {
           ambiguousSeen.add(key);
+          unfinished = true;
         }
       }
       // "published": replying already acknowledged it.
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }

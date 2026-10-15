@@ -118,6 +118,7 @@ async function runPollLoop(opts) {
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
     if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -167,7 +168,7 @@ async function runPollLoop(opts) {
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
@@ -198,6 +199,7 @@ async function runPollLoop(opts) {
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`
@@ -214,9 +216,11 @@ async function runPollLoop(opts) {
           ack();
         } else {
           ambiguousSeen.add(key);
+          unfinished = true;
         }
       }
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }

@@ -724,3 +724,67 @@ test("no saved cursor: the first poll sends none and nothing is reported for it"
   assert.equal((calls[0] as { cursor?: string }).cursor, undefined);
   assert.deepEqual(sent, []);
 });
+
+// develop's poll_work: a delivered item is finished by a reply, an ack, or the next poll passing
+// its delivery's cursor or a later one. Only the cursor from before its batch brings it back.
+async function cursorsAfter(outcomes: DispatchOutcome[]): Promise<Array<string | undefined>> {
+  const controller = new AbortController();
+  const offer = (n: number) =>
+    okResult({ work: [itemFixture()], cursor: `c:${n}`, truncated: false, acknowledged: 0 });
+  const { client, calls } = fakeClient([
+    ...outcomes.map((_, i) => offer(i + 1)),
+    () => {
+      controller.abort();
+      return Promise.resolve(okResult({ work: [], cursor: "c:end", truncated: false }));
+    },
+  ]);
+  let i = 0;
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => outcomes[i++]!,
+    backoffMs: () => 0,
+    initialCursor: "c:0",
+  });
+  return calls.map((c) => (c as { cursor?: string }).cursor);
+}
+
+test("cursor: a published item advances it", async () => {
+  assert.deepEqual(await cursorsAfter([{ kind: "published" }]), ["c:0", "c:1"]);
+});
+
+test("cursor: a reply to retry keeps the cursor from before its batch, so the item comes back", async () => {
+  assert.deepEqual(
+    await cursorsAfter([
+      { kind: "retry", diagnostic: "transient: HTTP 502" },
+      { kind: "published" },
+    ]),
+    ["c:0", "c:0", "c:2"],
+  );
+});
+
+test("cursor: retries used up are acked and the cursor advances", async () => {
+  const retry: DispatchOutcome = { kind: "retry", diagnostic: "transient: HTTP 502" };
+  assert.deepEqual(await cursorsAfter(Array.from({ length: MAX_REPLY_ATTEMPTS }, () => retry)), [
+    "c:0",
+    "c:0",
+    "c:0",
+    `c:${MAX_REPLY_ATTEMPTS}`,
+  ]);
+});
+
+test("cursor: an ambiguous turn is re-offered once under the old cursor, then acked and passed", async () => {
+  assert.deepEqual(await cursorsAfter([{ kind: "ambiguous" }, { kind: "ambiguous" }]), [
+    "c:0",
+    "c:0",
+    "c:2",
+  ]);
+});
+
+test("cursor: silent and dropped items are acked and the cursor advances", async () => {
+  assert.deepEqual(
+    await cursorsAfter([{ kind: "silent" }, { kind: "dropped", diagnostic: "refused" }]),
+    ["c:0", "c:1", "c:2"],
+  );
+});
