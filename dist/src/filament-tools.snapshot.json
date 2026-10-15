@@ -576,7 +576,7 @@
   },
   {
     "name": "post_message",
-    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg \u2014 upload the file first (a local file to a create_media_upload URL with curl), then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown \u2014 [Name](member:@user:server) \u2014 which notifies them; channel:, group: and message: links work the same way.",
+    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg \u2014 upload the file first to a create_media_upload URL with curl, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown \u2014 [Name](member:@user:server) \u2014 which notifies them; channel:, group: and message: links work the same way.",
     "inputSchema": {
       "$defs": {
         "AttachmentArg": {
