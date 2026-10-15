@@ -34,7 +34,7 @@ test("poll cursors: kept per account, and only for the agent that sent them", as
 });
 
 test("in-flight: a restart's markers are found by room until recovery clears them; the live run's are not", async () => {
-  const { markInFlight, interruptedIn, clearAllInterrupted, setLiveRun, loadInFlight } =
+  const { markInFlight, interruptedIn, clearInterruptedIn, setLiveRun, loadInFlight } =
     await import("./in-flight.js");
   markInFlight("acct", "@a:s", {
     eventId: "$old",
@@ -54,7 +54,7 @@ test("in-flight: a restart's markers are found by room until recovery clears the
     ["$old"],
   );
   assert.deepEqual(interruptedIn("acct", "!other:s"), []);
-  clearAllInterrupted();
+  clearInterruptedIn("acct", "!r:s");
   assert.deepEqual(interruptedIn("acct", "!r:s"), []);
   assert.deepEqual(
     loadInFlight("acct", "@a:s").map((t) => t.eventId),

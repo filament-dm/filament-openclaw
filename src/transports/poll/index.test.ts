@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
-import { clearInterruptedIn, loadInFlight } from "../../state/in-flight.js";
+import { clearInterruptedIn, loadInFlight, releaseInterruptedIn } from "../../state/in-flight.js";
 import { loadPendingReplies } from "../../state/pending-replies.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
@@ -449,4 +449,29 @@ test("poll: a held restart blocks other messages too, so nothing races the recov
   // Held on the first offer; dispatched once the recovered answer landed.
   assert.equal(h.turns.length, 1);
   assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
+});
+
+test("poll: once OpenClaw's recovery has posted to the room, held work goes ahead after the grace", async () => {
+  await run([offer(item())], { accountId: "released", turn: nothing });
+  let clock = Date.now();
+  const other = item({ messages: [msg({ event_id: "$other" })] });
+  const h = await run(
+    [
+      offer(other),
+      () => {
+        // The recovery's first post (its announce) names the interrupted message and releases it.
+        releaseInterruptedIn("released", ROOM, clock + 5_000);
+        return offer(other);
+      },
+      () => {
+        clock += 5_001;
+        return offer(other);
+      },
+    ],
+    { accountId: "released", deps: { holdPollMs: 0, now: () => clock } },
+  );
+  // Held twice (before the post, and inside the grace), then dispatched.
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
+  assert.deepEqual(loadInFlight("released", SELF), []);
 });

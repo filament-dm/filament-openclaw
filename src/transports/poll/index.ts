@@ -184,7 +184,11 @@ export async function runPollTransport(
 
     // A turn the last gateway had running: OpenClaw is recovering it. Hold everything until its
     // answer lands (which clears the marker) or the wait runs out; then dispatch as usual.
-    const interrupted = loadInFlight(accountId, mxid, now()).filter((t) => t.run !== run);
+    const t0 = now();
+    const left = loadInFlight(accountId, mxid, t0).filter((t) => t.run !== run);
+    // Released: OpenClaw's recovery has posted, so its claim is adopted.
+    const interrupted = left.filter((t) => !(t.releaseAt !== undefined && t0 >= t.releaseAt));
+    if (left.length && !interrupted.length) clearInFlight(accountId, mxid, { notRun: run });
     if (interrupted.length) {
       if (now() - startedAt < RECOVERY_HOLD_MS) {
         return {

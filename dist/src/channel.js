@@ -18,7 +18,7 @@ import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
-import { clearAllInterrupted, interruptedIn } from "./state/in-flight.js";
+import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -58,6 +58,7 @@ import {
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 import { turnPeerKind } from "./work-item.js";
+const RECOVERY_RELEASE_GRACE_MS = 5e3;
 const TRANSPORTS = {
   fcm: runFcmTransport,
   poll: runPollTransport
@@ -101,15 +102,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       signal
     });
   };
-  try {
-    api.on?.("agent_end", (_event, hookCtx) => {
-      if (hookCtx?.channel === FILAMENT_CHANNEL_ID || hookCtx?.messageProvider === FILAMENT_CHANNEL_ID) {
-        clearAllInterrupted();
-      }
-    });
-  } catch (error) {
-    log(`filament: could not watch for restart recovery: ${String(error)}`);
-  }
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const deliverOutbound = async (ctx, mediaUrl) => {
     const accountId = ctx?.accountId ?? DEFAULT_ACCOUNT_ID;
@@ -136,6 +128,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       attachments
     });
     log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
+    if (interrupted) releaseInterruptedIn(accountId, to, Date.now() + RECOVERY_RELEASE_GRACE_MS);
     return {
       channel: FILAMENT_CHANNEL_ID,
       messageId: sent.messageId,
@@ -439,5 +432,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
 }
 export {
   FILAMENT_CHANNEL_ID,
+  RECOVERY_RELEASE_GRACE_MS,
   registerFilamentChannel
 };

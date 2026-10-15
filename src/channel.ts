@@ -26,7 +26,7 @@ import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
-import { clearAllInterrupted, interruptedIn } from "./state/in-flight.js";
+import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -74,6 +74,9 @@ import { turnPeerKind, type WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
 
+/** After OpenClaw's recovery first posts to a room, how long before held work there goes ahead. */
+export const RECOVERY_RELEASE_GRACE_MS = 5_000;
+
 const TRANSPORTS: Record<Transport, RunTransport> = {
   fcm: runFcmTransport,
   poll: runPollTransport,
@@ -85,11 +88,6 @@ export interface FilamentChannelApi extends FilamentToolsApi {
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
   registerChannel: (registration: { plugin: ChannelPlugin }) => void;
-  /** Plugin hooks; absent from older gateways. */
-  on?: (
-    hookName: string,
-    handler: (event: unknown, ctx: { channel?: string; messageProvider?: string }) => void,
-  ) => void;
   runtime?: {
     config?: {
       current?: () => unknown;
@@ -155,20 +153,6 @@ export function registerFilamentChannel(
     });
   };
 
-  // A Filament run that ends while a restart's turns are held is OpenClaw's recovery: end the hold.
-  try {
-    api.on?.("agent_end", (_event, hookCtx) => {
-      if (
-        hookCtx?.channel === FILAMENT_CHANNEL_ID ||
-        hookCtx?.messageProvider === FILAMENT_CHANNEL_ID
-      ) {
-        clearAllInterrupted();
-      }
-    });
-  } catch (error) {
-    log(`filament: could not watch for restart recovery: ${String(error)}`);
-  }
-
   // Before any connection exists: a session can resolve its toolset before connect finishes.
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
 
@@ -200,6 +184,7 @@ export function registerFilamentChannel(
       attachments,
     });
     log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
+    if (interrupted) releaseInterruptedIn(accountId, to, Date.now() + RECOVERY_RELEASE_GRACE_MS);
 
     return {
       channel: FILAMENT_CHANNEL_ID,

@@ -16,6 +16,8 @@ export interface InFlightTurn {
   startedAt: number;
   /** The transport run that started it: one from another run survived a restart. */
   run: string;
+  /** Set once OpenClaw's recovery has posted to the room: the hold ends at this time. */
+  releaseAt?: number;
 }
 
 interface Row {
@@ -73,6 +75,24 @@ export function interruptedIn(accountId: string, room: string, now = Date.now())
   );
 }
 
+/**
+ * OpenClaw's recovery has posted to a room: it is under way, so its claim is adopted, and the
+ * room's interrupted turns stop holding new work a short grace later. (The plugin can't see the
+ * recovery run end: the agent_end hook needs conversation access a non-bundled plugin doesn't get.)
+ */
+export function releaseInterruptedIn(accountId: string, room: string, at: number): void {
+  const row = rows.get(accountId);
+  const live = liveRuns.get(accountId);
+  if (!row) return;
+  let changed = false;
+  const turns = row.turns.map((t) => {
+    if (t.room !== room || t.run === live || t.releaseAt !== undefined) return t;
+    changed = true;
+    return { ...t, releaseAt: at };
+  });
+  if (changed) rows.set(accountId, { mxid: row.mxid, turns });
+}
+
 /** OpenClaw's recovery for a room is over: its interrupted turns wait no longer. */
 export function clearInterruptedIn(accountId: string, room: string): void {
   const row = rows.get(accountId);
@@ -82,21 +102,4 @@ export function clearInterruptedIn(accountId: string, room: string): void {
   if (kept.length === row.turns.length) return;
   if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
   else rows.delete(accountId);
-}
-
-/**
- * A Filament-channel agent run ended while a restart's turns were waiting: during the hold this
- * transport dispatches nothing, so it is OpenClaw's recovery, and its answer has gone out (the
- * outbound send). Its hook context names no room reliably, so every account's waits end.
- */
-export function clearAllInterrupted(): void {
-  for (const accountId of liveRuns.keys()) {
-    const row = rows.get(accountId);
-    if (!row) continue;
-    const live = liveRuns.get(accountId);
-    const kept = row.turns.filter((t) => t.run === live);
-    if (kept.length === row.turns.length) continue;
-    if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
-    else rows.delete(accountId);
-  }
 }

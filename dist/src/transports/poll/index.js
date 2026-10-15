@@ -121,7 +121,10 @@ async function runPollTransport(ctx, deps = {}) {
       await ctx.handleCommand(item);
       return { kind: "silent" };
     }
-    const interrupted = loadInFlight(accountId, mxid, now()).filter((t) => t.run !== run);
+    const t0 = now();
+    const left = loadInFlight(accountId, mxid, t0).filter((t) => t.run !== run);
+    const interrupted = left.filter((t) => !(t.releaseAt !== void 0 && t0 >= t.releaseAt));
+    if (left.length && !interrupted.length) clearInFlight(accountId, mxid, { notRun: run });
     if (interrupted.length) {
       if (now() - startedAt < RECOVERY_HOLD_MS) {
         return {
