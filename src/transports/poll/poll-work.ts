@@ -195,6 +195,8 @@ export interface PollLoopOptions {
   onCursorSent?: (cursor: string) => void;
   /** Between polls while an item waits out its hold (tests set 0). */
   holdPollMs?: number;
+  /** Called for each item acked: it is finished, answered or not. */
+  onAcked?: (item: PollWorkItem) => void;
 }
 
 export interface PollLoopResult {
@@ -328,7 +330,15 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
         continue;
       }
       const outcome = await dispatchItem(item);
-      const ack = () => pendingAck.push(...item.messages.map((m) => m.event_id));
+      const ack = () => {
+        pendingAck.push(...item.messages.map((m) => m.event_id));
+        opts.onAcked?.(item);
+      };
+      if (outcome.kind === "held") {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
       if (outcome.kind !== "retry") replyAttempts.delete(key);
       if (outcome.kind === "fatal") {
         log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);

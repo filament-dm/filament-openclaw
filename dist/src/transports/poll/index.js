@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { acceptPending } from "../../accept-pending.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
@@ -5,6 +6,7 @@ import {
   removePendingReply,
   savePendingReply
 } from "../../state/pending-replies.js";
+import { clearInFlight, loadInFlight, markInFlight } from "../../state/in-flight.js";
 import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
@@ -57,6 +59,7 @@ function classifyPublish(res) {
   return { kind: "retry", diagnostic: `publish failed (${res.kind ?? "?"}: ${message})` };
 }
 const SHUTDOWN_PUBLISH_TIMEOUT_MS = 5e3;
+const RECOVERY_HOLD_MS = 2 * 6e4;
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
@@ -64,6 +67,8 @@ async function runPollTransport(ctx, deps = {}) {
   const now = deps.now ?? Date.now;
   const { accountId } = ctx;
   const { mxid } = ctx.identity;
+  const startedAt = now();
+  const run = randomUUID();
   const publish = async (replyWith, text, mediaUrls, mediaLocalRoots, signal, channelId) => {
     const attachments = await uploadMedia(client, mediaUrls, { mediaLocalRoots, log, signal });
     if (!text.trim() && attachments.length === 0) {
@@ -115,6 +120,17 @@ async function runPollTransport(ctx, deps = {}) {
       await ctx.handleCommand(item);
       return { kind: "silent" };
     }
+    const interrupted = loadInFlight(accountId, mxid, now()).filter((t) => t.run !== run);
+    if (interrupted.length) {
+      if (now() - startedAt < RECOVERY_HOLD_MS) {
+        return {
+          kind: "held",
+          diagnostic: `OpenClaw is recovering ${interrupted.length} turn(s) a restart cut short`
+        };
+      }
+      log("filament: no recovered answer arrived after the restart; dispatching as usual");
+      clearInFlight(accountId, mxid, { notRun: run });
+    }
     const lastId = item.messages.at(-1)?.event_id;
     const kept = lastId ? loadPendingReplies(accountId, mxid, now()).find((r) => r.eventIds.at(-1) === lastId) : void 0;
     if (kept) {
@@ -132,10 +148,14 @@ async function runPollTransport(ctx, deps = {}) {
         `filament-poll: turn for ${item.messages.length} message(s) in ${item.channel_id}` + (item.messages.some((m) => m.media?.length) ? " (with attachments)" : "")
       );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
+      if (lastId) markInFlight(accountId, mxid, { eventId: lastId, startedAt: now(), run });
       result = await ctx.runTurn(item, media);
     } catch (error) {
+      if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
+    const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
+    if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
     if (result.sawError) {
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
     }
@@ -187,10 +207,18 @@ async function runPollTransport(ctx, deps = {}) {
     waitSeconds: ctx.settings.pollWaitSeconds,
     sweepPending: () => acceptPending(client, log, abortSignal),
     initialCursor: loadPollCursor(ctx.accountId, ctx.identity.mxid),
-    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor)
+    now,
+    ...deps.holdPollMs !== void 0 ? { holdPollMs: deps.holdPollMs } : {},
+    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor),
+    // Acked is finished: a marker left by a turn that produced nothing has nothing to wait for.
+    onAcked: (item) => {
+      const last = item.messages.at(-1)?.event_id;
+      if (last) clearInFlight(accountId, mxid, { eventId: last });
+    }
   });
 }
 export {
+  RECOVERY_HOLD_MS,
   SHUTDOWN_PUBLISH_TIMEOUT_MS,
   classifyPublish,
   runPollTransport,

@@ -18,6 +18,7 @@ import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
+import { clearInFlightAnswered } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -124,6 +125,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       attachments
     });
     log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
+    if (typeof ctx?.replyToId === "string") clearInFlightAnswered(accountId, ctx.replyToId);
     return {
       channel: FILAMENT_CHANNEL_ID,
       messageId: sent.messageId,

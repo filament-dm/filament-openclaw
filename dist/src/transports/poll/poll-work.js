@@ -187,7 +187,15 @@ async function runPollLoop(opts) {
         continue;
       }
       const outcome = await dispatchItem(item);
-      const ack = () => pendingAck.push(...item.messages.map((m) => m.event_id));
+      const ack = () => {
+        pendingAck.push(...item.messages.map((m) => m.event_id));
+        opts.onAcked?.(item);
+      };
+      if (outcome.kind === "held") {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
       if (outcome.kind !== "retry") replyAttempts.delete(key);
       if (outcome.kind === "fatal") {
         log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);

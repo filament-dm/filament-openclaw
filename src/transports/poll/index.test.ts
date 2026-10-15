@@ -3,11 +3,17 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
+import { clearInFlightAnswered, loadInFlight } from "../../state/in-flight.js";
 import { loadPendingReplies } from "../../state/pending-replies.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
-import { classifyPublish, type PollTransportDeps, runPollTransport } from "./index.js";
+import {
+  classifyPublish,
+  type PollTransportDeps,
+  RECOVERY_HOLD_MS,
+  runPollTransport,
+} from "./index.js";
 
 // The poll transport saves its cursor; keep it out of a real gateway's state.
 useMemoryState();
@@ -58,7 +64,8 @@ async function run(
     pollWork: async (args: { ack?: string[] }) => {
       pollArgs.push(args);
       events.push("poll");
-      const next = polls.shift();
+      const shifted = polls.shift();
+      const next = typeof shifted === "function" ? (shifted as () => unknown)() : shifted;
       if (next === undefined) {
         controller.abort();
         return ok({ work: [], cursor: "c:end" });
@@ -369,4 +376,77 @@ test("poll: a kept reply is per agent: another agent on the account never posts 
     publish: transient,
   });
   assert.equal(loadPendingReplies("kept-other", "@someone-else:example.test").length, 0);
+});
+
+const nothing: Partial<TurnResult> = { finalText: "", sawFinal: false };
+
+test("poll: a turn that produced nothing leaves its marker; one that answered leaves none", async () => {
+  await run([offer(item())], { accountId: "marker-answered" });
+  assert.deepEqual(loadInFlight("marker-answered", SELF), []);
+  await run([offer(item())], { accountId: "marker-nothing", turn: nothing });
+  assert.deepEqual(
+    loadInFlight("marker-nothing", SELF).map((t) => t.eventId),
+    ["$e1"],
+  );
+});
+
+test("poll: after a restart, a cut-short turn is held for OpenClaw's recovery; its answer ends the hold", async () => {
+  // The last gateway's turn produced nothing as it went down: its marker survives.
+  await run([offer(item())], { accountId: "recovering", turn: nothing });
+  // The new gateway is offered the message again. Nothing runs while OpenClaw recovers the turn;
+  // the recovered answer (the outbound send) names the message, which ends the hold.
+  const h = await run(
+    [
+      offer(item()),
+      offer(item()),
+      () => {
+        clearInFlightAnswered("recovering", "$e1");
+        return { work: [], cursor: "c:2" };
+      },
+    ],
+    { accountId: "recovering", deps: { holdPollMs: 0 } },
+  );
+  assert.equal(h.turns.length, 0);
+  assert.equal(h.publishes.length, 0);
+  // Held, not acked.
+  assert.equal(
+    h.pollArgs.some((a) => a.ack?.length),
+    false,
+  );
+  assert.deepEqual(loadInFlight("recovering", SELF), []);
+});
+
+test("poll: with no recovered answer in time, the held message is dispatched after all", async () => {
+  await run([offer(item())], { accountId: "unrecovered", turn: nothing });
+  let clock = Date.now();
+  const h = await run(
+    [
+      offer(item()),
+      () => {
+        clock += RECOVERY_HOLD_MS + 1;
+        return offer(item());
+      },
+    ],
+    { accountId: "unrecovered", deps: { holdPollMs: 0, now: () => clock } },
+  );
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.publishes.length, 1);
+  assert.deepEqual(loadInFlight("unrecovered", SELF), []);
+});
+
+test("poll: a held restart blocks other messages too, so nothing races the recovery claim", async () => {
+  await run([offer(item())], { accountId: "blocks-others", turn: nothing });
+  const h = await run(
+    [
+      offer(item({ messages: [msg({ event_id: "$other" })] })),
+      () => {
+        clearInFlightAnswered("blocks-others", "$e1");
+        return offer(item({ messages: [msg({ event_id: "$other" })] }));
+      },
+    ],
+    { accountId: "blocks-others", deps: { holdPollMs: 0 } },
+  );
+  // Held on the first offer; dispatched once the recovered answer landed.
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
 });

@@ -4,6 +4,8 @@
  * An item made only of messages that would never wake the agent (src/wake-rules.ts) is acked
  * without a turn.
  */
+import { randomUUID } from "node:crypto";
+
 import { acceptPending } from "../../accept-pending.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
@@ -13,6 +15,7 @@ import {
   removePendingReply,
   savePendingReply,
 } from "../../state/pending-replies.js";
+import { clearInFlight, loadInFlight, markInFlight } from "../../state/in-flight.js";
 import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
@@ -82,10 +85,19 @@ export interface PollTransportDeps {
   fetchInboundMedia?: typeof fetchInboundMedia;
   uploadOutboundMedia?: typeof uploadOutboundMedia;
   now?: () => number;
+  /** Passed to the poll loop (tests set 0). */
+  holdPollMs?: number;
 }
 
 /** How long a reply that was ready at shutdown gets to land before the gateway goes. */
 export const SHUTDOWN_PUBLISH_TIMEOUT_MS = 5_000;
+/**
+ * After a restart that cut a turn short, how long nothing is dispatched while OpenClaw's own
+ * restart recovery runs that turn again and posts its answer (outbound.ts). Dispatching meanwhile
+ * races the recovery (see state/in-flight.ts). The SDK has no hook for "recovery done", so this is
+ * a bounded wait that ends early once the recovered answer names the interrupted message.
+ */
+export const RECOVERY_HOLD_MS = 2 * 60_000;
 
 export async function runPollTransport(
   ctx: TransportContext,
@@ -97,6 +109,8 @@ export async function runPollTransport(
   const now = deps.now ?? Date.now;
   const { accountId } = ctx;
   const { mxid } = ctx.identity;
+  const startedAt = now();
+  const run = randomUUID();
 
   /** Uploads the reply's media and posts it where `reply_with` says. */
   const publish = async (
@@ -167,6 +181,20 @@ export async function runPollTransport(
       return { kind: "silent" };
     }
 
+    // A turn the last gateway had running: OpenClaw is recovering it. Hold everything until its
+    // answer lands (which clears the marker) or the wait runs out; then dispatch as usual.
+    const interrupted = loadInFlight(accountId, mxid, now()).filter((t) => t.run !== run);
+    if (interrupted.length) {
+      if (now() - startedAt < RECOVERY_HOLD_MS) {
+        return {
+          kind: "held",
+          diagnostic: `OpenClaw is recovering ${interrupted.length} turn(s) a restart cut short`,
+        };
+      }
+      log("filament: no recovered answer arrived after the restart; dispatching as usual");
+      clearInFlight(accountId, mxid, { notRun: run });
+    }
+
     // Its answer was ready before a restart: post that rather than run the turn again.
     const lastId = item.messages.at(-1)?.event_id;
     const kept = lastId
@@ -190,10 +218,15 @@ export async function runPollTransport(
           (item.messages.some((m) => m.media?.length) ? " (with attachments)" : ""),
       );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
+      if (lastId) markInFlight(accountId, mxid, { eventId: lastId, startedAt: now(), run });
       result = await ctx.runTurn(item, media);
     } catch (error) {
+      if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
+    // A turn that produced nothing may have been cut short: its marker stays for the next start.
+    const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
+    if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
 
     if (result.sawError) {
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
@@ -249,6 +282,13 @@ export async function runPollTransport(
     waitSeconds: ctx.settings.pollWaitSeconds,
     sweepPending: () => acceptPending(client, log, abortSignal),
     initialCursor: loadPollCursor(ctx.accountId, ctx.identity.mxid),
+    now,
+    ...(deps.holdPollMs !== undefined ? { holdPollMs: deps.holdPollMs } : {}),
     onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor),
+    // Acked is finished: a marker left by a turn that produced nothing has nothing to wait for.
+    onAcked: (item) => {
+      const last = item.messages.at(-1)?.event_id;
+      if (last) clearInFlight(accountId, mxid, { eventId: last });
+    },
   });
 }

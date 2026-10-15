@@ -55,4 +55,5 @@ export type DispatchOutcome =
   | { kind: "ambiguous" } // no finals, no explicit skip signal, no error: leave it be (no ack, no pause).
   | { kind: "dropped"; diagnostic: string } // the turn failed, or the server refused the reply: ack it.
   | { kind: "retry"; diagnostic: string } // the reply may not have landed (network, 5xx): no ack, back off.
-  | { kind: "fatal"; diagnostic: string }; // the bearer was rejected: no ack; the account stops.
+  | { kind: "fatal"; diagnostic: string } // the bearer was rejected: no ack; the account stops.
+  | { kind: "held"; diagnostic: string }; // not dispatched yet, on purpose: no ack, poll again shortly.
