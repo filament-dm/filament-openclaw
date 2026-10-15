@@ -16,6 +16,8 @@ import {
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
+import { uploadOutboundMedia } from "./media.js";
+import { sendToFilament, waitForClient } from "./outbound.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -99,6 +101,36 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     });
   };
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const deliverOutbound = async (ctx, mediaUrl) => {
+    const accountId = ctx?.accountId ?? DEFAULT_ACCOUNT_ID;
+    const client = await waitForClient(() => getFilamentClient(accountId));
+    let attachments = [];
+    if (mediaUrl && "uploadMedia" in client) {
+      attachments = await uploadOutboundMedia(
+        client,
+        [mediaUrl],
+        { mediaLocalRoots: ctx?.mediaLocalRoots ?? [], log: (m) => log(`[${accountId}] ${m}`) }
+      );
+    }
+    const text = typeof ctx?.text === "string" ? ctx.text : "";
+    if (!text.trim() && attachments.length === 0) {
+      throw new Error("filament: nothing to send (no text, and the media could not be uploaded)");
+    }
+    const sent = await sendToFilament(client, {
+      to: String(ctx?.to ?? ""),
+      text,
+      replyToId: ctx?.replyToId,
+      threadId: ctx?.threadId,
+      attachments
+    });
+    log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
+    return {
+      channel: FILAMENT_CHANNEL_ID,
+      messageId: sent.messageId,
+      roomId: sent.roomId,
+      chatId: sent.roomId
+    };
+  };
   const plugin = {
     id: FILAMENT_CHANNEL_ID,
     meta: {
@@ -377,6 +409,13 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         setFilamentClient(null, ctx?.accountId ?? DEFAULT_ACCOUNT_ID);
         onConnectionChange(null);
       }
+    },
+    outbound: {
+      deliveryMode: "direct",
+      // oxlint-disable-next-line typescript/no-explicit-any
+      sendText: async (ctx) => deliverOutbound(ctx),
+      // oxlint-disable-next-line typescript/no-explicit-any
+      sendMedia: async (ctx) => deliverOutbound(ctx, ctx?.mediaUrl)
     }
   };
   try {

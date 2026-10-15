@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
+import { loadPendingReplies } from "../../state/pending-replies.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
@@ -39,9 +40,12 @@ function item(overrides: Record<string, unknown> = {}) {
 async function run(
   polls: unknown[],
   opts: {
-    publish?: ToolCallResult;
+    publish?: ToolCallResult | ((n: number) => ToolCallResult);
     turn?: Partial<TurnResult>;
     deps?: PollTransportDeps;
+    accountId?: string;
+    /** As if the gateway began shutting down while the turn ran. */
+    abortDuringTurn?: boolean;
   } = {},
 ) {
   const controller = new AbortController();
@@ -63,7 +67,8 @@ async function run(
     },
     replyWith: async (spec: unknown, body: string, _opts: unknown, attachments: unknown = []) => {
       publishes.push({ spec, body, attachments });
-      return opts.publish ?? ok({ event_id: "$reply" });
+      const p = opts.publish;
+      return (typeof p === "function" ? p(publishes.length) : p) ?? ok({ event_id: "$reply" });
     },
     listPendingInvites: async () => {
       events.push("list_invites");
@@ -77,7 +82,7 @@ async function run(
     acceptVouch: async () => ok({}),
   };
   const ctx: TransportContext = {
-    accountId: "writer",
+    accountId: opts.accountId ?? "writer",
     client: client as unknown as FilamentMcpClient,
     identity: { mxid: SELF, principal: PRINCIPAL, ccRoomId: CC },
     settings: { pollWaitSeconds: 30 } as unknown as McpSettings,
@@ -86,6 +91,7 @@ async function run(
     runTurn: async (workItem, media) => {
       turns.push(workItem);
       turnMedia.push(media);
+      if (opts.abortDuringTurn) controller.abort();
       return {
         finalText: "the reply",
         mediaUrls: [],
@@ -304,4 +310,63 @@ test("poll: a media-only reply whose media all fails to send is dropped, not pos
   });
   assert.deepEqual(h.publishes, []);
   assert.deepEqual(h.pollArgs[1]?.ack, ["$e1"]);
+});
+
+const transient: ToolCallResult = {
+  ok: false,
+  httpStatus: 0,
+  kind: "transient",
+  error: { code: -1, message: "timed out" },
+};
+
+test("poll: an answer ready as the gateway shuts down is still posted, on its own short clock", async () => {
+  const h = await run([offer(item())], { accountId: "shutdown-ok", abortDuringTurn: true });
+  assert.equal(h.publishes.length, 1);
+  assert.equal((h.publishes[0] as { body: string }).body, "the reply");
+  assert.deepEqual(loadPendingReplies("shutdown-ok", SELF), []);
+});
+
+test("poll: an answer that can't be posted at shutdown is kept, and posted on the next start", async () => {
+  const first = await run([offer(item())], {
+    accountId: "shutdown-kept",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(first.publishes.length, 1);
+  const kept = loadPendingReplies("shutdown-kept", SELF);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0]!.text, "the reply");
+  assert.deepEqual(kept[0]!.eventIds, ["$e1"]);
+
+  // The restarted gateway posts it before its first poll, and forgets it.
+  const second = await run([], { accountId: "shutdown-kept" });
+  assert.equal(second.publishes.length, 1);
+  assert.equal(second.turns.length, 0);
+  assert.deepEqual(loadPendingReplies("shutdown-kept", SELF), []);
+});
+
+test("poll: a redelivered item whose answer was kept is answered from the kept reply, no turn", async () => {
+  await run([offer(item())], {
+    accountId: "kept-redelivered",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(loadPendingReplies("kept-redelivered", SELF).length, 1);
+  // The start-up post fails again; the item comes back and is answered from the store.
+  const h = await run([offer(item())], {
+    accountId: "kept-redelivered",
+    publish: (n) => (n === 1 ? transient : ok({ event_id: "$reply" })),
+  });
+  assert.equal(h.turns.length, 0);
+  assert.equal(h.publishes.length, 2);
+  assert.deepEqual(loadPendingReplies("kept-redelivered", SELF), []);
+});
+
+test("poll: a kept reply is per agent: another agent on the account never posts it", async () => {
+  await run([offer(item())], {
+    accountId: "kept-other",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(loadPendingReplies("kept-other", "@someone-else:example.test").length, 0);
 });

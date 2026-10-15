@@ -5,6 +5,7 @@ import type { ToolCallResult } from "../../mcp-client.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
   type DispatchOutcome,
+  AMBIGUOUS_HOLD_MS,
   MAX_REPLY_ATTEMPTS,
   parsePollWorkResponse,
   PENDING_SWEEP_INTERVAL_MS,
@@ -622,13 +623,26 @@ test("an item with no reply_with is skipped (not dispatched, not ack'd)", async 
   assert.equal(dispatchCalls, 0);
 });
 
-test("ambiguous outcome: re-offered item is left alone once, then ack'd the second time", async () => {
+test("ambiguous outcome: held under the old cursor, offered again on a schedule, acked after the last", async () => {
+  // A restart-recovered turn comes back as a duplicate with no output; its answer arrives through
+  // the outbound send. The item is held, not acked on the second empty turn, and no turn runs while
+  // it waits.
   const controller = new AbortController();
-  const item = itemFixture({ messages: [{ event_id: "$e1", sender: "@a:s", body: "b", ts: 1 }] });
-  const offer = () => okResult({ work: [item], cursor: "c:1", truncated: false, acknowledged: 0 });
+  let clock = 0;
+  const offer = () =>
+    okResult({ work: [itemFixture()], cursor: "c:1", truncated: false, acknowledged: 0 });
+  const at: number[] = [
+    0,
+    10_000,
+    AMBIGUOUS_HOLD_MS[0]! + 1,
+    AMBIGUOUS_HOLD_MS[0]! + AMBIGUOUS_HOLD_MS[1]! + 2,
+  ];
+  let poll = 0;
   const { client, calls } = fakeClient([
-    offer(),
-    offer(),
+    ...at.map(() => () => {
+      clock = at[poll++]!;
+      return Promise.resolve(offer());
+    }),
     () => {
       controller.abort();
       return Promise.resolve(
@@ -645,10 +659,16 @@ test("ambiguous outcome: re-offered item is left alone once, then ack'd the seco
       dispatches += 1;
       return { kind: "ambiguous" };
     },
+    now: () => clock,
+    holdPollMs: 0,
+    initialCursor: "c:0",
   });
-  assert.equal(dispatches, 2);
-  assert.equal((calls[1] as { ack?: string[] }).ack, undefined);
-  assert.deepEqual((calls[2] as { ack?: string[] }).ack, ["$e1"]);
+  // Offered at 0 (turn), 10s (held: no turn), 30s (turn), 120s (turn, then acked).
+  assert.equal(dispatches, 3);
+  const cursors = calls.map((c) => (c as { cursor?: string }).cursor);
+  assert.deepEqual(cursors, ["c:0", "c:0", "c:0", "c:0", "c:1"]);
+  const acks = calls.map((c) => (c as { ack?: string[] }).ack);
+  assert.deepEqual(acks, [undefined, undefined, undefined, undefined, ["$e1"]]);
 });
 
 test("parsePollWorkResponse: keeps the room facts a newer server sends; blank names are left out", () => {
@@ -771,14 +791,6 @@ test("cursor: retries used up are acked and the cursor advances", async () => {
     "c:0",
     "c:0",
     `c:${MAX_REPLY_ATTEMPTS}`,
-  ]);
-});
-
-test("cursor: an ambiguous turn is re-offered once under the old cursor, then acked and passed", async () => {
-  assert.deepEqual(await cursorsAfter([{ kind: "ambiguous" }, { kind: "ambiguous" }]), [
-    "c:0",
-    "c:0",
-    "c:2",
   ]);
 });
 
