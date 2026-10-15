@@ -3,10 +3,17 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
+import { clearInterruptedIn, loadInFlight, releaseInterruptedIn } from "../../state/in-flight.js";
+import { loadPendingReplies } from "../../state/pending-replies.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
-import { classifyPublish, type PollTransportDeps, runPollTransport } from "./index.js";
+import {
+  classifyPublish,
+  type PollTransportDeps,
+  RECOVERY_HOLD_MS,
+  runPollTransport,
+} from "./index.js";
 
 // The poll transport saves its cursor; keep it out of a real gateway's state.
 useMemoryState();
@@ -39,9 +46,12 @@ function item(overrides: Record<string, unknown> = {}) {
 async function run(
   polls: unknown[],
   opts: {
-    publish?: ToolCallResult;
+    publish?: ToolCallResult | ((n: number) => ToolCallResult);
     turn?: Partial<TurnResult>;
     deps?: PollTransportDeps;
+    accountId?: string;
+    /** As if the gateway began shutting down while the turn ran. */
+    abortDuringTurn?: boolean;
   } = {},
 ) {
   const controller = new AbortController();
@@ -54,7 +64,8 @@ async function run(
     pollWork: async (args: { ack?: string[] }) => {
       pollArgs.push(args);
       events.push("poll");
-      const next = polls.shift();
+      const shifted = polls.shift();
+      const next = typeof shifted === "function" ? (shifted as () => unknown)() : shifted;
       if (next === undefined) {
         controller.abort();
         return ok({ work: [], cursor: "c:end" });
@@ -63,7 +74,8 @@ async function run(
     },
     replyWith: async (spec: unknown, body: string, _opts: unknown, attachments: unknown = []) => {
       publishes.push({ spec, body, attachments });
-      return opts.publish ?? ok({ event_id: "$reply" });
+      const p = opts.publish;
+      return (typeof p === "function" ? p(publishes.length) : p) ?? ok({ event_id: "$reply" });
     },
     listPendingInvites: async () => {
       events.push("list_invites");
@@ -77,7 +89,7 @@ async function run(
     acceptVouch: async () => ok({}),
   };
   const ctx: TransportContext = {
-    accountId: "writer",
+    accountId: opts.accountId ?? "writer",
     client: client as unknown as FilamentMcpClient,
     identity: { mxid: SELF, principal: PRINCIPAL, ccRoomId: CC },
     settings: { pollWaitSeconds: 30 } as unknown as McpSettings,
@@ -86,6 +98,7 @@ async function run(
     runTurn: async (workItem, media) => {
       turns.push(workItem);
       turnMedia.push(media);
+      if (opts.abortDuringTurn) controller.abort();
       return {
         finalText: "the reply",
         mediaUrls: [],
@@ -304,4 +317,161 @@ test("poll: a media-only reply whose media all fails to send is dropped, not pos
   });
   assert.deepEqual(h.publishes, []);
   assert.deepEqual(h.pollArgs[1]?.ack, ["$e1"]);
+});
+
+const transient: ToolCallResult = {
+  ok: false,
+  httpStatus: 0,
+  kind: "transient",
+  error: { code: -1, message: "timed out" },
+};
+
+test("poll: an answer ready as the gateway shuts down is still posted, on its own short clock", async () => {
+  const h = await run([offer(item())], { accountId: "shutdown-ok", abortDuringTurn: true });
+  assert.equal(h.publishes.length, 1);
+  assert.equal((h.publishes[0] as { body: string }).body, "the reply");
+  assert.deepEqual(loadPendingReplies("shutdown-ok", SELF), []);
+});
+
+test("poll: an answer that can't be posted at shutdown is kept, and posted on the next start", async () => {
+  const first = await run([offer(item())], {
+    accountId: "shutdown-kept",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(first.publishes.length, 1);
+  const kept = loadPendingReplies("shutdown-kept", SELF);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0]!.text, "the reply");
+  assert.deepEqual(kept[0]!.eventIds, ["$e1"]);
+
+  // The restarted gateway posts it before its first poll, and forgets it.
+  const second = await run([], { accountId: "shutdown-kept" });
+  assert.equal(second.publishes.length, 1);
+  assert.equal(second.turns.length, 0);
+  assert.deepEqual(loadPendingReplies("shutdown-kept", SELF), []);
+});
+
+test("poll: a redelivered item whose answer was kept is answered from the kept reply, no turn", async () => {
+  await run([offer(item())], {
+    accountId: "kept-redelivered",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(loadPendingReplies("kept-redelivered", SELF).length, 1);
+  // The start-up post fails again; the item comes back and is answered from the store.
+  const h = await run([offer(item())], {
+    accountId: "kept-redelivered",
+    publish: (n) => (n === 1 ? transient : ok({ event_id: "$reply" })),
+  });
+  assert.equal(h.turns.length, 0);
+  assert.equal(h.publishes.length, 2);
+  assert.deepEqual(loadPendingReplies("kept-redelivered", SELF), []);
+});
+
+test("poll: a kept reply is per agent: another agent on the account never posts it", async () => {
+  await run([offer(item())], {
+    accountId: "kept-other",
+    abortDuringTurn: true,
+    publish: transient,
+  });
+  assert.equal(loadPendingReplies("kept-other", "@someone-else:example.test").length, 0);
+});
+
+const nothing: Partial<TurnResult> = { finalText: "", sawFinal: false };
+
+test("poll: a turn that produced nothing leaves its marker; one that answered leaves none", async () => {
+  await run([offer(item())], { accountId: "marker-answered" });
+  assert.deepEqual(loadInFlight("marker-answered", SELF), []);
+  await run([offer(item())], { accountId: "marker-nothing", turn: nothing });
+  assert.deepEqual(
+    loadInFlight("marker-nothing", SELF).map((t) => t.eventId),
+    ["$e1"],
+  );
+});
+
+test("poll: after a restart, a cut-short turn is held for OpenClaw's recovery; its answer ends the hold", async () => {
+  // The last gateway's turn produced nothing as it went down: its marker survives.
+  await run([offer(item())], { accountId: "recovering", turn: nothing });
+  // The new gateway is offered the message again. Nothing runs while OpenClaw recovers the turn;
+  // the recovered answer (the outbound send) names the message, which ends the hold.
+  const h = await run(
+    [
+      offer(item()),
+      offer(item()),
+      () => {
+        clearInterruptedIn("recovering", ROOM);
+        return { work: [], cursor: "c:2" };
+      },
+    ],
+    { accountId: "recovering", deps: { holdPollMs: 0 } },
+  );
+  assert.equal(h.turns.length, 0);
+  assert.equal(h.publishes.length, 0);
+  // Held, not acked.
+  assert.equal(
+    h.pollArgs.some((a) => a.ack?.length),
+    false,
+  );
+  assert.deepEqual(loadInFlight("recovering", SELF), []);
+});
+
+test("poll: with no recovered answer in time, the held message is dispatched after all", async () => {
+  await run([offer(item())], { accountId: "unrecovered", turn: nothing });
+  let clock = Date.now();
+  const h = await run(
+    [
+      offer(item()),
+      () => {
+        clock += RECOVERY_HOLD_MS + 1;
+        return offer(item());
+      },
+    ],
+    { accountId: "unrecovered", deps: { holdPollMs: 0, now: () => clock } },
+  );
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.publishes.length, 1);
+  assert.deepEqual(loadInFlight("unrecovered", SELF), []);
+});
+
+test("poll: a held restart blocks other messages too, so nothing races the recovery claim", async () => {
+  await run([offer(item())], { accountId: "blocks-others", turn: nothing });
+  const h = await run(
+    [
+      offer(item({ messages: [msg({ event_id: "$other" })] })),
+      () => {
+        clearInterruptedIn("blocks-others", ROOM);
+        return offer(item({ messages: [msg({ event_id: "$other" })] }));
+      },
+    ],
+    { accountId: "blocks-others", deps: { holdPollMs: 0 } },
+  );
+  // Held on the first offer; dispatched once the recovered answer landed.
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
+});
+
+test("poll: once OpenClaw's recovery has posted to the room, held work goes ahead after the grace", async () => {
+  await run([offer(item())], { accountId: "released", turn: nothing });
+  let clock = Date.now();
+  const other = item({ messages: [msg({ event_id: "$other" })] });
+  const h = await run(
+    [
+      offer(other),
+      () => {
+        // The recovery's first post (its announce) names the interrupted message and releases it.
+        releaseInterruptedIn("released", ROOM, clock + 5_000);
+        return offer(other);
+      },
+      () => {
+        clock += 5_001;
+        return offer(other);
+      },
+    ],
+    { accountId: "released", deps: { holdPollMs: 0, now: () => clock } },
+  );
+  // Held twice (before the post, and inside the grace), then dispatched.
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
+  assert.deepEqual(loadInFlight("released", SELF), []);
 });

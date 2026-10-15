@@ -89,6 +89,8 @@ function parsePollWorkResponse(data) {
   };
 }
 const PENDING_SWEEP_INTERVAL_MS = 10 * 6e4;
+const AMBIGUOUS_HOLD_MS = [3e4, 9e4];
+const HOLD_POLL_MS = 5e3;
 const MAX_REPLY_ATTEMPTS = 3;
 const BUSY_DEFAULT_WAIT_MS = 1e3;
 const DEFAULT_WAIT_SECONDS = 30;
@@ -106,7 +108,8 @@ async function runPollLoop(opts) {
   let cursor = opts.initialCursor;
   let pendingAck = [];
   let failureStreak = 0;
-  const ambiguousSeen = /* @__PURE__ */ new Set();
+  const ambiguousSeen = /* @__PURE__ */ new Map();
+  const holdPollMs = opts.holdPollMs ?? HOLD_POLL_MS;
   const replyAttempts = /* @__PURE__ */ new Map();
   let lastSweep = 0;
   const sweep = async () => {
@@ -176,9 +179,23 @@ async function runPollLoop(opts) {
         log(`filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`);
         continue;
       }
-      const outcome = await dispatchItem(item);
       const key = itemKey(item);
-      const ack = () => pendingAck.push(...item.messages.map((m) => m.event_id));
+      const held = ambiguousSeen.get(key);
+      if (held && now() < held.nextAt) {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
+      const outcome = await dispatchItem(item);
+      const ack = () => {
+        pendingAck.push(...item.messages.map((m) => m.event_id));
+        opts.onAcked?.(item);
+      };
+      if (outcome.kind === "held") {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
       if (outcome.kind !== "retry") replyAttempts.delete(key);
       if (outcome.kind === "fatal") {
         log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);
@@ -208,23 +225,31 @@ async function runPollLoop(opts) {
         }
       }
       if (outcome.kind === "ambiguous") {
-        if (ambiguousSeen.has(key)) {
+        const offers = (held?.offers ?? 0) + 1;
+        if (abortSignal.aborted) return {};
+        if (offers > AMBIGUOUS_HOLD_MS.length) {
           ambiguousSeen.delete(key);
           log(
-            `filament-poll: ${item.channel_id} produced no output twice; acknowledging without a reply`
+            `filament-poll: ${item.channel_id} produced no output ${offers} times; acknowledging without a reply`
           );
           ack();
         } else {
-          ambiguousSeen.add(key);
+          const hold = AMBIGUOUS_HOLD_MS[offers - 1];
+          ambiguousSeen.set(key, { offers, nextAt: now() + hold });
+          log(
+            `filament-poll: ${item.channel_id} produced no output; offering it again in ${hold}ms`
+          );
           unfinished = true;
         }
       }
+      if (outcome.kind !== "ambiguous") ambiguousSeen.delete(key);
     }
     cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }
 export {
+  AMBIGUOUS_HOLD_MS,
   MAX_REPLY_ATTEMPTS,
   PENDING_SWEEP_INTERVAL_MS,
   parsePollWorkResponse,

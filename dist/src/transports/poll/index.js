@@ -1,5 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { acceptPending } from "../../accept-pending.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
+import {
+  loadPendingReplies,
+  removePendingReply,
+  savePendingReply
+} from "../../state/pending-replies.js";
+import { clearInFlight, loadInFlight, markInFlight, setLiveRun } from "../../state/in-flight.js";
 import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
@@ -51,10 +58,60 @@ function classifyPublish(res) {
   }
   return { kind: "retry", diagnostic: `publish failed (${res.kind ?? "?"}: ${message})` };
 }
+const SHUTDOWN_PUBLISH_TIMEOUT_MS = 5e3;
+const RECOVERY_HOLD_MS = 2 * 6e4;
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
   const uploadMedia = deps.uploadOutboundMedia ?? uploadOutboundMedia;
+  const now = deps.now ?? Date.now;
+  const { accountId } = ctx;
+  const { mxid } = ctx.identity;
+  const startedAt = now();
+  const run = randomUUID();
+  setLiveRun(accountId, run);
+  const publish = async (replyWith, text, mediaUrls, mediaLocalRoots, signal, channelId) => {
+    const attachments = await uploadMedia(client, mediaUrls, { mediaLocalRoots, log, signal });
+    if (!text.trim() && attachments.length === 0) {
+      return {
+        kind: "dropped",
+        diagnostic: "the reply was media only and none of it could be sent"
+      };
+    }
+    let publishRes;
+    try {
+      publishRes = await client.replyWith(replyWith, text, { signal }, attachments);
+    } catch (error) {
+      return { kind: "retry", diagnostic: `publish threw: ${String(error)}` };
+    }
+    if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
+      log("filament: item already answered by a tool call; skipping publish");
+      return { kind: "published" };
+    }
+    const outcome = classifyPublish(publishRes);
+    if (outcome.kind === "published") {
+      log(`filament: reply published to ${channelId} via ${replyWith.tool}`);
+    }
+    return outcome;
+  };
+  const publishPending = async (pending, signal) => {
+    const outcome = await publish(
+      pending.replyWith,
+      pending.text,
+      pending.mediaUrls,
+      pending.mediaLocalRoots,
+      signal,
+      String(pending.replyWith.args.channel ?? "its room")
+    );
+    if (outcome.kind !== "retry")
+      removePendingReply(accountId, mxid, pending.eventIds.at(-1) ?? "");
+    return outcome;
+  };
+  for (const pending of loadPendingReplies(accountId, mxid, now())) {
+    if (abortSignal.aborted) break;
+    const outcome = await publishPending(pending, abortSignal);
+    log(`filament: a reply kept from before the restart: ${outcome.kind}`);
+  }
   const dispatchItem = async (item) => {
     const replyWith = item.reply_with;
     if (!replyWith) {
@@ -63,6 +120,26 @@ async function runPollTransport(ctx, deps = {}) {
     if (ctx.handleCommand && isBackchannelCommandItem(item, ctx.identity.principal, ctx.identity.ccRoomId)) {
       await ctx.handleCommand(item);
       return { kind: "silent" };
+    }
+    const t0 = now();
+    const left = loadInFlight(accountId, mxid, t0).filter((t) => t.run !== run);
+    const interrupted = left.filter((t) => !(t.releaseAt !== void 0 && t0 >= t.releaseAt));
+    if (left.length && !interrupted.length) clearInFlight(accountId, mxid, { notRun: run });
+    if (interrupted.length) {
+      if (now() - startedAt < RECOVERY_HOLD_MS) {
+        return {
+          kind: "held",
+          diagnostic: `OpenClaw is recovering ${interrupted.length} turn(s) a restart cut short`
+        };
+      }
+      log("filament: no recovered answer arrived after the restart; dispatching as usual");
+      clearInFlight(accountId, mxid, { notRun: run });
+    }
+    const lastId = item.messages.at(-1)?.event_id;
+    const kept = lastId ? loadPendingReplies(accountId, mxid, now()).find((r) => r.eventIds.at(-1) === lastId) : void 0;
+    if (kept) {
+      log(`filament: posting the reply kept for ${item.channel_id} from before the restart`);
+      return await publishPending(kept, abortSignal);
     }
     const skip = skipReason(item, ctx.identity.mxid);
     if (skip) {
@@ -75,44 +152,53 @@ async function runPollTransport(ctx, deps = {}) {
         `filament-poll: turn for ${item.messages.length} message(s) in ${item.channel_id}` + (item.messages.some((m) => m.media?.length) ? " (with attachments)" : "")
       );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
+      if (lastId) {
+        markInFlight(accountId, mxid, {
+          eventId: lastId,
+          room: item.channel_id,
+          startedAt: now(),
+          run
+        });
+      }
       result = await ctx.runTurn(item, media);
     } catch (error) {
+      if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
+    const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
+    if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
     if (result.sawError) {
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
     }
     if (result.sawFinal) {
-      if (abortSignal.aborted) return { kind: "retry", diagnostic: "aborted before publish" };
-      const attachments = await uploadMedia(client, result.mediaUrls, {
-        mediaLocalRoots: result.mediaLocalRoots,
-        log,
-        signal: abortSignal
-      });
-      if (!result.finalText.trim() && attachments.length === 0) {
-        return {
-          kind: "dropped",
-          diagnostic: "the reply was media only and none of it could be sent"
-        };
-      }
-      let publishRes;
-      try {
-        publishRes = await client.replyWith(
+      if (!abortSignal.aborted) {
+        return await publish(
           replyWith,
           result.finalText,
-          { signal: abortSignal },
-          attachments
+          result.mediaUrls,
+          result.mediaLocalRoots,
+          abortSignal,
+          item.channel_id
         );
-      } catch (error) {
-        return { kind: "retry", diagnostic: `publish threw: ${String(error)}` };
       }
-      if (publishRes.ok && isAlreadyAnsweredError(publishRes.data)) {
-        log("filament: item already answered by a tool call; skipping publish");
-        return { kind: "published" };
-      }
-      const outcome = classifyPublish(publishRes);
-      if (outcome.kind === "published") {
-        log(`filament: reply published to ${item.channel_id} via ${replyWith.tool}`);
+      const pending = {
+        eventIds: item.messages.map((m) => m.event_id),
+        replyWith,
+        text: result.finalText,
+        mediaUrls: [...result.mediaUrls],
+        mediaLocalRoots: [...result.mediaLocalRoots],
+        savedAt: now()
+      };
+      savePendingReply(accountId, mxid, pending);
+      const outcome = await publishPending(
+        pending,
+        AbortSignal.timeout(SHUTDOWN_PUBLISH_TIMEOUT_MS)
+      );
+      if (outcome.kind === "retry") {
+        return {
+          kind: "retry",
+          diagnostic: "aborted before publish; the reply is kept for the next start"
+        };
       }
       return outcome;
     }
@@ -132,10 +218,19 @@ async function runPollTransport(ctx, deps = {}) {
     waitSeconds: ctx.settings.pollWaitSeconds,
     sweepPending: () => acceptPending(client, log, abortSignal),
     initialCursor: loadPollCursor(ctx.accountId, ctx.identity.mxid),
-    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor)
+    now,
+    ...deps.holdPollMs !== void 0 ? { holdPollMs: deps.holdPollMs } : {},
+    onCursorSent: (cursor) => savePollCursor(ctx.accountId, ctx.identity.mxid, cursor),
+    // Acked is finished: a marker left by a turn that produced nothing has nothing to wait for.
+    onAcked: (item) => {
+      const last = item.messages.at(-1)?.event_id;
+      if (last) clearInFlight(accountId, mxid, { eventId: last });
+    }
   });
 }
 export {
+  RECOVERY_HOLD_MS,
+  SHUTDOWN_PUBLISH_TIMEOUT_MS,
   classifyPublish,
   runPollTransport,
   skipReason

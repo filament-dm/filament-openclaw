@@ -24,7 +24,9 @@ import {
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
-import type { InboundMedia } from "./media.js";
+import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
+import { sendToFilament, waitForClient } from "./outbound.js";
+import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -71,6 +73,9 @@ import { PLUGIN_VERSION } from "./version.js";
 import { turnPeerKind, type WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
+
+/** After OpenClaw's recovery first posts to a room, how long before held work there goes ahead. */
+export const RECOVERY_RELEASE_GRACE_MS = 5_000;
 
 const TRANSPORTS: Record<Transport, RunTransport> = {
   fcm: runFcmTransport,
@@ -150,6 +155,44 @@ export function registerFilamentChannel(
 
   // Before any connection exists: a session can resolve its toolset before connect finishes.
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+
+  // OpenClaw sending to Filament outside a dispatched turn, e.g. a restart-recovered answer.
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const deliverOutbound = async (ctx: any, mediaUrl?: string) => {
+    const accountId: string = ctx?.accountId ?? DEFAULT_ACCOUNT_ID;
+    const client = await waitForClient(() => getFilamentClient(accountId));
+    let attachments: OutboundAttachment[] = [];
+    if (mediaUrl && "uploadMedia" in client) {
+      attachments = await uploadOutboundMedia(
+        client as unknown as Parameters<typeof uploadOutboundMedia>[0],
+        [mediaUrl],
+        { mediaLocalRoots: ctx?.mediaLocalRoots ?? [], log: (m) => log(`[${accountId}] ${m}`) },
+      );
+    }
+    const text = typeof ctx?.text === "string" ? ctx.text : "";
+    if (!text.trim() && attachments.length === 0) {
+      throw new Error("filament: nothing to send (no text, and the media could not be uploaded)");
+    }
+    const to = String(ctx?.to ?? "");
+    // OpenClaw's recovery names no message: answer the interrupted one, which finishes its item.
+    const interrupted = interruptedIn(accountId, to).at(-1)?.eventId;
+    const sent = await sendToFilament(client, {
+      to,
+      text,
+      replyToId: ctx?.replyToId ?? interrupted,
+      threadId: ctx?.threadId,
+      attachments,
+    });
+    log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
+    if (interrupted) releaseInterruptedIn(accountId, to, Date.now() + RECOVERY_RELEASE_GRACE_MS);
+
+    return {
+      channel: FILAMENT_CHANNEL_ID,
+      messageId: sent.messageId,
+      roomId: sent.roomId,
+      chatId: sent.roomId,
+    };
+  };
 
   const plugin: ChannelPlugin = {
     id: FILAMENT_CHANNEL_ID,
@@ -471,6 +514,13 @@ export function registerFilamentChannel(
         setFilamentClient(null, ctx?.accountId ?? DEFAULT_ACCOUNT_ID);
         onConnectionChange(null);
       },
+    },
+    outbound: {
+      deliveryMode: "direct",
+      // oxlint-disable-next-line typescript/no-explicit-any
+      sendText: async (ctx: any) => deliverOutbound(ctx),
+      // oxlint-disable-next-line typescript/no-explicit-any
+      sendMedia: async (ctx: any) => deliverOutbound(ctx, ctx?.mediaUrl),
     },
   };
 
