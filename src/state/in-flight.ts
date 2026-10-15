@@ -11,6 +11,8 @@ import { openTable } from "./store.js";
 export interface InFlightTurn {
   /** The item's last message: what its answer names. */
   eventId: string;
+  /** The room it came from. */
+  room: string;
   startedAt: number;
   /** The transport run that started it: one from another run survived a restart. */
   run: string;
@@ -53,12 +55,48 @@ export function clearInFlight(
   else rows.delete(accountId);
 }
 
-/** Clears the marker an answer names, whichever agent's it is (the outbound send knows no mxid). */
-export function clearInFlightAnswered(accountId: string, eventId: string): void {
+// The transport run now live per account: markers from any other run survived a restart.
+const liveRuns = new Map<string, string>();
+
+export function setLiveRun(accountId: string, run: string | null): void {
+  if (run) liveRuns.set(accountId, run);
+  else liveRuns.delete(accountId);
+}
+
+/** Markers a restart left in a room (the outbound send and the recovery hook know no mxid). */
+export function interruptedIn(accountId: string, room: string, now = Date.now()): InFlightTurn[] {
   const row = rows.get(accountId);
+  const live = liveRuns.get(accountId);
+  if (!row) return [];
+  return row.turns.filter(
+    (t) => t.room === room && t.run !== live && now - t.startedAt < IN_FLIGHT_MAX_AGE_MS,
+  );
+}
+
+/** OpenClaw's recovery for a room is over: its interrupted turns wait no longer. */
+export function clearInterruptedIn(accountId: string, room: string): void {
+  const row = rows.get(accountId);
+  const live = liveRuns.get(accountId);
   if (!row) return;
-  const kept = row.turns.filter((t) => t.eventId !== eventId);
+  const kept = row.turns.filter((t) => t.room !== room || t.run === live);
   if (kept.length === row.turns.length) return;
   if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
   else rows.delete(accountId);
+}
+
+/**
+ * A Filament-channel agent run ended while a restart's turns were waiting: during the hold this
+ * transport dispatches nothing, so it is OpenClaw's recovery, and its answer has gone out (the
+ * outbound send). Its hook context names no room reliably, so every account's waits end.
+ */
+export function clearAllInterrupted(): void {
+  for (const accountId of liveRuns.keys()) {
+    const row = rows.get(accountId);
+    if (!row) continue;
+    const live = liveRuns.get(accountId);
+    const kept = row.turns.filter((t) => t.run === live);
+    if (kept.length === row.turns.length) continue;
+    if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
+    else rows.delete(accountId);
+  }
 }

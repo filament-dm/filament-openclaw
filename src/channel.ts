@@ -26,7 +26,7 @@ import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
-import { clearInFlightAnswered } from "./state/in-flight.js";
+import { clearAllInterrupted, interruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -85,6 +85,11 @@ export interface FilamentChannelApi extends FilamentToolsApi {
   pluginConfig?: unknown;
   logger?: { info?: (message: string) => void; warn?: (message: string) => void };
   registerChannel: (registration: { plugin: ChannelPlugin }) => void;
+  /** Plugin hooks; absent from older gateways. */
+  on?: (
+    hookName: string,
+    handler: (event: unknown, ctx: { channel?: string; messageProvider?: string }) => void,
+  ) => void;
   runtime?: {
     config?: {
       current?: () => unknown;
@@ -150,6 +155,20 @@ export function registerFilamentChannel(
     });
   };
 
+  // A Filament run that ends while a restart's turns are held is OpenClaw's recovery: end the hold.
+  try {
+    api.on?.("agent_end", (_event, hookCtx) => {
+      if (
+        hookCtx?.channel === FILAMENT_CHANNEL_ID ||
+        hookCtx?.messageProvider === FILAMENT_CHANNEL_ID
+      ) {
+        clearAllInterrupted();
+      }
+    });
+  } catch (error) {
+    log(`filament: could not watch for restart recovery: ${String(error)}`);
+  }
+
   // Before any connection exists: a session can resolve its toolset before connect finishes.
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
 
@@ -170,16 +189,18 @@ export function registerFilamentChannel(
     if (!text.trim() && attachments.length === 0) {
       throw new Error("filament: nothing to send (no text, and the media could not be uploaded)");
     }
+    const to = String(ctx?.to ?? "");
+    // OpenClaw's recovery names no message: answer the interrupted one, which finishes its item.
+    const interrupted = interruptedIn(accountId, to).at(-1)?.eventId;
     const sent = await sendToFilament(client, {
-      to: String(ctx?.to ?? ""),
+      to,
       text,
-      replyToId: ctx?.replyToId,
+      replyToId: ctx?.replyToId ?? interrupted,
       threadId: ctx?.threadId,
       attachments,
     });
     log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
-    // A recovered answer: the turn it answers is no longer waiting.
-    if (typeof ctx?.replyToId === "string") clearInFlightAnswered(accountId, ctx.replyToId);
+
     return {
       channel: FILAMENT_CHANNEL_ID,
       messageId: sent.messageId,

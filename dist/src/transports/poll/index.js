@@ -6,7 +6,7 @@ import {
   removePendingReply,
   savePendingReply
 } from "../../state/pending-replies.js";
-import { clearInFlight, loadInFlight, markInFlight } from "../../state/in-flight.js";
+import { clearInFlight, loadInFlight, markInFlight, setLiveRun } from "../../state/in-flight.js";
 import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
@@ -69,6 +69,7 @@ async function runPollTransport(ctx, deps = {}) {
   const { mxid } = ctx.identity;
   const startedAt = now();
   const run = randomUUID();
+  setLiveRun(accountId, run);
   const publish = async (replyWith, text, mediaUrls, mediaLocalRoots, signal, channelId) => {
     const attachments = await uploadMedia(client, mediaUrls, { mediaLocalRoots, log, signal });
     if (!text.trim() && attachments.length === 0) {
@@ -148,7 +149,14 @@ async function runPollTransport(ctx, deps = {}) {
         `filament-poll: turn for ${item.messages.length} message(s) in ${item.channel_id}` + (item.messages.some((m) => m.media?.length) ? " (with attachments)" : "")
       );
       const media = await fetchMedia(client, item.messages, { log, signal: abortSignal });
-      if (lastId) markInFlight(accountId, mxid, { eventId: lastId, startedAt: now(), run });
+      if (lastId) {
+        markInFlight(accountId, mxid, {
+          eventId: lastId,
+          room: item.channel_id,
+          startedAt: now(),
+          run
+        });
+      }
       result = await ctx.runTurn(item, media);
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });

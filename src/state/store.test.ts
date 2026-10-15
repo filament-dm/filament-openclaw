@@ -32,3 +32,32 @@ test("poll cursors: kept per account, and only for the agent that sent them", as
   assert.equal(loadPollCursor("main", "@b:server"), undefined);
   assert.equal(loadPollCursor("other", "@a:server"), undefined);
 });
+
+test("in-flight: a restart's markers are found by room until recovery clears them; the live run's are not", async () => {
+  const { markInFlight, interruptedIn, clearAllInterrupted, setLiveRun, loadInFlight } =
+    await import("./in-flight.js");
+  markInFlight("acct", "@a:s", {
+    eventId: "$old",
+    room: "!r:s",
+    startedAt: Date.now(),
+    run: "before",
+  });
+  setLiveRun("acct", "now");
+  markInFlight("acct", "@a:s", {
+    eventId: "$new",
+    room: "!r:s",
+    startedAt: Date.now(),
+    run: "now",
+  });
+  assert.deepEqual(
+    interruptedIn("acct", "!r:s").map((t) => t.eventId),
+    ["$old"],
+  );
+  assert.deepEqual(interruptedIn("acct", "!other:s"), []);
+  clearAllInterrupted();
+  assert.deepEqual(interruptedIn("acct", "!r:s"), []);
+  assert.deepEqual(
+    loadInFlight("acct", "@a:s").map((t) => t.eventId),
+    ["$new"],
+  );
+});

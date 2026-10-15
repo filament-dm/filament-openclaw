@@ -20,18 +20,46 @@ function clearInFlight(accountId, mxid, match) {
   if (kept.length) rows.set(accountId, { mxid, turns: kept });
   else rows.delete(accountId);
 }
-function clearInFlightAnswered(accountId, eventId) {
+const liveRuns = /* @__PURE__ */ new Map();
+function setLiveRun(accountId, run) {
+  if (run) liveRuns.set(accountId, run);
+  else liveRuns.delete(accountId);
+}
+function interruptedIn(accountId, room, now = Date.now()) {
   const row = rows.get(accountId);
+  const live = liveRuns.get(accountId);
+  if (!row) return [];
+  return row.turns.filter(
+    (t) => t.room === room && t.run !== live && now - t.startedAt < IN_FLIGHT_MAX_AGE_MS
+  );
+}
+function clearInterruptedIn(accountId, room) {
+  const row = rows.get(accountId);
+  const live = liveRuns.get(accountId);
   if (!row) return;
-  const kept = row.turns.filter((t) => t.eventId !== eventId);
+  const kept = row.turns.filter((t) => t.room !== room || t.run === live);
   if (kept.length === row.turns.length) return;
   if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
   else rows.delete(accountId);
 }
+function clearAllInterrupted() {
+  for (const accountId of liveRuns.keys()) {
+    const row = rows.get(accountId);
+    if (!row) continue;
+    const live = liveRuns.get(accountId);
+    const kept = row.turns.filter((t) => t.run === live);
+    if (kept.length === row.turns.length) continue;
+    if (kept.length) rows.set(accountId, { mxid: row.mxid, turns: kept });
+    else rows.delete(accountId);
+  }
+}
 export {
   IN_FLIGHT_MAX_AGE_MS,
+  clearAllInterrupted,
   clearInFlight,
-  clearInFlightAnswered,
+  clearInterruptedIn,
+  interruptedIn,
   loadInFlight,
-  markInFlight
+  markInFlight,
+  setLiveRun
 };

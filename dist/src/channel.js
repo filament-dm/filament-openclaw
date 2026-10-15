@@ -18,7 +18,7 @@ import { writeGatewayConfig } from "./config-write.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
-import { clearInFlightAnswered } from "./state/in-flight.js";
+import { clearAllInterrupted, interruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -101,6 +101,15 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       signal
     });
   };
+  try {
+    api.on?.("agent_end", (_event, hookCtx) => {
+      if (hookCtx?.channel === FILAMENT_CHANNEL_ID || hookCtx?.messageProvider === FILAMENT_CHANNEL_ID) {
+        clearAllInterrupted();
+      }
+    });
+  } catch (error) {
+    log(`filament: could not watch for restart recovery: ${String(error)}`);
+  }
   registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
   const deliverOutbound = async (ctx, mediaUrl) => {
     const accountId = ctx?.accountId ?? DEFAULT_ACCOUNT_ID;
@@ -117,15 +126,16 @@ function registerFilamentChannel(api, onConnectionChange = () => {
     if (!text.trim() && attachments.length === 0) {
       throw new Error("filament: nothing to send (no text, and the media could not be uploaded)");
     }
+    const to = String(ctx?.to ?? "");
+    const interrupted = interruptedIn(accountId, to).at(-1)?.eventId;
     const sent = await sendToFilament(client, {
-      to: String(ctx?.to ?? ""),
+      to,
       text,
-      replyToId: ctx?.replyToId,
+      replyToId: ctx?.replyToId ?? interrupted,
       threadId: ctx?.threadId,
       attachments
     });
     log(`[${accountId}] filament: sent an out-of-turn message to ${sent.roomId}`);
-    if (typeof ctx?.replyToId === "string") clearInFlightAnswered(accountId, ctx.replyToId);
     return {
       channel: FILAMENT_CHANNEL_ID,
       messageId: sent.messageId,

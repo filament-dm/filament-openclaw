@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
-import { clearInFlightAnswered, loadInFlight } from "../../state/in-flight.js";
+import { clearInterruptedIn, loadInFlight } from "../../state/in-flight.js";
 import { loadPendingReplies } from "../../state/pending-replies.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
@@ -400,7 +400,7 @@ test("poll: after a restart, a cut-short turn is held for OpenClaw's recovery; i
       offer(item()),
       offer(item()),
       () => {
-        clearInFlightAnswered("recovering", "$e1");
+        clearInterruptedIn("recovering", ROOM);
         return { work: [], cursor: "c:2" };
       },
     ],
@@ -440,7 +440,7 @@ test("poll: a held restart blocks other messages too, so nothing races the recov
     [
       offer(item({ messages: [msg({ event_id: "$other" })] })),
       () => {
-        clearInFlightAnswered("blocks-others", "$e1");
+        clearInterruptedIn("blocks-others", ROOM);
         return offer(item({ messages: [msg({ event_id: "$other" })] }));
       },
     ],
