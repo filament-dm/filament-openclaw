@@ -7,7 +7,7 @@ import {
   inboundMessageFields,
   type DispatchWorkItemParams,
 } from "./turn.js";
-import { turnPeerKind } from "./work-item.js";
+import { turnPeerKind, turnWasMentioned } from "./work-item.js";
 
 /** Stands in for the gateway: OpenClaw's default dmScope ("main") and groupScope ("per-group"). */
 function fakeRuntime(finals: unknown[] = [{ text: "hello back" }]) {
@@ -258,4 +258,45 @@ test("dispatchWorkItemTurn: an OpenClaw notice is left out; the agent's own answ
   assert.equal(result.sawFinal, true);
   assert.equal(result.finalText, "the real answer");
   assert.equal(result.errorReplyText, undefined);
+});
+
+test("turnWasMentioned: the server's judgement first, then an @-mention or a DM", () => {
+  const msg = (extra: Record<string, unknown> = {}) => ({
+    event_id: "$e",
+    sender: "@u:x",
+    body: "hi",
+    ts: 1,
+    ...extra,
+  });
+  const group = (messages: ReturnType<typeof msg>[], extra: Record<string, unknown> = {}) => ({
+    is_backchannel: false,
+    messages,
+    ...extra,
+  });
+  // A passing @-mention the server judged as not wanting an answer may go unanswered.
+  assert.equal(turnWasMentioned(group([msg({ is_mention: true, reply_expected: false })])), false);
+  assert.equal(
+    turnWasMentioned(group([msg({ reply_expected: false }), msg({ reply_expected: true })])),
+    true,
+  );
+  // Not judged: an @-mention or a DM from someone else needs an answer; a plain group message not.
+  assert.equal(turnWasMentioned(group([msg({ is_mention: true })])), true);
+  assert.equal(turnWasMentioned(group([msg()], { is_direct: true })), true);
+  assert.equal(turnWasMentioned(group([msg()])), false);
+  // The backchannel is direct: OpenClaw requires an answer there whatever this says.
+  assert.equal(turnWasMentioned({ is_backchannel: true, messages: [msg()] }), undefined);
+});
+
+test("dispatchWorkItemTurn: a group turn carries WasMentioned; a direct one never does", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x", wasMentioned: false }, runtime),
+  );
+  await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x", wasMentioned: true }, runtime),
+  );
+  await dispatchWorkItemTurn(params({ wasMentioned: true }, runtime));
+  assert.equal(contexts[0]!.WasMentioned, false);
+  assert.equal(contexts[1]!.WasMentioned, true);
+  assert.equal("WasMentioned" in contexts[2]!, false);
 });

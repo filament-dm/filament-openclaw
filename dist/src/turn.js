@@ -93,6 +93,7 @@ async function dispatchWorkItemTurn(params) {
     ...params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {},
     ...params.channelName && isGroup ? { GroupChannel: params.channelName } : {},
     ...params.loopName && isGroup ? { GroupSpace: params.loopName } : {},
+    ...isGroup && params.wasMentioned !== void 0 ? { WasMentioned: params.wasMentioned } : {},
     SenderId: lastMessage?.sender ?? "unknown",
     ...senderName ? { SenderName: senderName } : {},
     ...lastMessage ? { Timestamp: lastMessage.ts } : {},

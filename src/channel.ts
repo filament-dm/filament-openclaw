@@ -70,7 +70,7 @@ import {
   updateFailureMessage,
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
-import { turnPeerKind, type WorkItem } from "./work-item.js";
+import { turnPeerKind, turnWasMentioned, type WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
 
@@ -324,6 +324,7 @@ export function registerFilamentChannel(
               channelLabel: "Filament",
               accountId,
               peerKind: turnPeerKind(item),
+              wasMentioned: turnWasMentioned(item),
               sideSession: opts?.sideSession,
               channelId: item.channel_id,
               threadId: item.thread_id,

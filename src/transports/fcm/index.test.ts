@@ -362,3 +362,11 @@ test("fcm: a turn that fails posts nothing in the room and tells the principal i
   assert.match(String(note.args.markdown_body), /The AI service returned an empty reply/);
   h.stop();
 });
+
+test("fcm: a push's mention reaches the turn's message, so the turn knows it needs an answer", async () => {
+  const h = harness();
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.turns.length === 1);
+  assert.equal(h.turns[0]!.messages[0]!.is_mention, true);
+  h.stop();
+});

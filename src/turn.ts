@@ -33,6 +33,8 @@ export interface DispatchWorkItemParams {
    * per-channel session. Only the principal's backchannel is direct (`turnPeerKind`).
    */
   peerKind: "direct" | "group";
+  /** A group turn that must end in an answer (`turnWasMentioned`); others may end in silence. */
+  wasMentioned?: boolean;
   /**
    * A side session of the channel's own, for a turn the gateway starts rather than a person:
    * its prompt stays out of the conversation the owner sees, in OpenClaw's chat too.
@@ -206,6 +208,7 @@ export async function dispatchWorkItemTurn(
     ...(params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {}),
     ...(params.channelName && isGroup ? { GroupChannel: params.channelName } : {}),
     ...(params.loopName && isGroup ? { GroupSpace: params.loopName } : {}),
+    ...(isGroup && params.wasMentioned !== undefined ? { WasMentioned: params.wasMentioned } : {}),
     SenderId: lastMessage?.sender ?? "unknown",
     ...(senderName ? { SenderName: senderName } : {}),
     ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),

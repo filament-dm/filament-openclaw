@@ -110,6 +110,7 @@ export async function runFcmTransport(
           sender: push.senderId ?? "unknown",
           body: messageBody(push),
           ts: Date.now(),
+          is_mention: push.isMentionOfRecipient,
         },
       ],
     };
