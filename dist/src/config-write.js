@@ -115,6 +115,7 @@ async function awaitConfigApplied(params) {
 export {
   awaitConfigApplied,
   configPatch,
+  isUnsetPath,
   openclawCliArgv,
   runOpenclawCli,
   writeGatewayConfig

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { acceptPending } from "../../accept-pending.js";
+import { notifyPrincipalOfFailure } from "../../failure-note.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
   loadPendingReplies,
@@ -168,6 +169,9 @@ async function runPollTransport(ctx, deps = {}) {
     const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
     if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
     if (result.sawError) {
+      if (!abortSignal.aborted) {
+        await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
+      }
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
     }
     if (result.sawFinal) {

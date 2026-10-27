@@ -10,6 +10,15 @@ import {
   resolveOutboundMediaUrls
 } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
+function hostReplyKind(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload;
+  if (p.isError === true) return "error";
+  if (p.isStatusNotice === true || p.isFallbackNotice === true || p.isCompactionNotice === true) {
+    return "notice";
+  }
+  return null;
+}
 function inboundMediaFields(media) {
   if (!media?.length) return {};
   const facts = toInboundMediaFacts(media);
@@ -84,6 +93,7 @@ async function dispatchWorkItemTurn(params) {
     ...params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {},
     ...params.channelName && isGroup ? { GroupChannel: params.channelName } : {},
     ...params.loopName && isGroup ? { GroupSpace: params.loopName } : {},
+    ...isGroup && params.wasMentioned !== void 0 ? { WasMentioned: params.wasMentioned } : {},
     SenderId: lastMessage?.sender ?? "unknown",
     ...senderName ? { SenderName: senderName } : {},
     ...lastMessage ? { Timestamp: lastMessage.ts } : {},
@@ -117,6 +127,7 @@ async function dispatchWorkItemTurn(params) {
   let sawSkip = false;
   let sawError = false;
   let errorDetail;
+  let errorReplyText;
   await runPreparedInboundReply({
     channel: params.channel,
     accountId,
@@ -135,6 +146,18 @@ async function dispatchWorkItemTurn(params) {
         // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
         deliver: async (payload, info) => {
           if (info?.kind !== "final") return;
+          const host = hostReplyKind(payload);
+          if (host) {
+            const text2 = payload.text;
+            const said = typeof text2 === "string" ? text2.trim() : "";
+            if (host === "error") {
+              sawError = true;
+              errorReplyText = said || void 0;
+              errorDetail = `OpenClaw error reply: ${said || "(no text)"}`;
+            }
+            params.log(`OpenClaw ${host} reply kept out of the answer: ${said || "(no text)"}`);
+            return;
+          }
           const normalized = payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
           const text = normalized.text;
           if (typeof text === "string" && text.trim()) finals.push(text);
@@ -160,11 +183,13 @@ async function dispatchWorkItemTurn(params) {
     sawFinal: finals.length > 0 || mediaUrls.length > 0,
     sawSkip,
     sawError,
-    errorDetail
+    errorDetail,
+    ...errorReplyText ? { errorReplyText } : {}
   };
 }
 export {
   dispatchWorkItemTurn,
+  hostReplyKind,
   inboundMessageFields,
   senderLabel
 };

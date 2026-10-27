@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dispatchWorkItemTurn, inboundMessageFields, type DispatchWorkItemParams } from "./turn.js";
-import { turnPeerKind } from "./work-item.js";
+import {
+  dispatchWorkItemTurn,
+  hostReplyKind,
+  inboundMessageFields,
+  type DispatchWorkItemParams,
+} from "./turn.js";
+import { turnPeerKind, turnWasMentioned } from "./work-item.js";
 
 /** Stands in for the gateway: OpenClaw's default dmScope ("main") and groupScope ("per-group"). */
-function fakeRuntime() {
+function fakeRuntime(finals: unknown[] = [{ text: "hello back" }]) {
   const contexts: Array<Record<string, unknown>> = [];
   const runtime = {
     routing: {
@@ -33,7 +38,7 @@ function fakeRuntime() {
       }: {
         dispatcherOptions: { deliver: (p: unknown, i: { kind: string }) => Promise<void> };
       }) => {
-        await dispatcherOptions.deliver({ text: "hello back" }, { kind: "final" });
+        for (const payload of finals) await dispatcherOptions.deliver(payload, { kind: "final" });
       },
     },
   };
@@ -213,4 +218,85 @@ test("dispatchWorkItemTurn: the session is titled by its label; a group also get
   assert.equal(contexts[0]!.GroupSubject, undefined);
   assert.equal(contexts[1]!.ConversationLabel, "Filament · Design review");
   assert.equal(contexts[1]!.GroupSubject, "Design review");
+});
+
+test("hostReplyKind: OpenClaw's failures and notices, read off the payload as delivered", () => {
+  assert.equal(hostReplyKind({ text: "x", isError: true }), "error");
+  assert.equal(hostReplyKind({ text: "x", isFallbackNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x", isStatusNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x", isCompactionNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x" }), null);
+  assert.equal(hostReplyKind({ text: "x", isError: false }), null);
+  assert.equal(hostReplyKind(undefined), null);
+});
+
+test("dispatchWorkItemTurn: an error OpenClaw delivers as the final reply is an error, not an answer", async () => {
+  // What OpenClaw sends when it refuses a model's silence and has no fallback model.
+  const { runtime } = fakeRuntime([
+    { text: "⚠️ The AI service returned an empty reply. Please try again.", isError: true },
+  ]);
+  const result = await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x" }, runtime),
+  );
+  assert.equal(result.sawError, true);
+  assert.equal(result.sawFinal, false);
+  assert.equal(result.finalText, "");
+  assert.equal(
+    result.errorReplyText,
+    "⚠️ The AI service returned an empty reply. Please try again.",
+  );
+  assert.match(result.errorDetail ?? "", /OpenClaw error reply: ⚠️ The AI service/);
+});
+
+test("dispatchWorkItemTurn: an OpenClaw notice is left out; the agent's own answer still counts", async () => {
+  const { runtime } = fakeRuntime([
+    { text: "Fallback used other/model.", isFallbackNotice: true },
+    { text: "the real answer" },
+  ]);
+  const result = await dispatchWorkItemTurn(params({}, runtime));
+  assert.equal(result.sawError, false);
+  assert.equal(result.sawFinal, true);
+  assert.equal(result.finalText, "the real answer");
+  assert.equal(result.errorReplyText, undefined);
+});
+
+test("turnWasMentioned: the server's judgement first, then an @-mention or a DM", () => {
+  const msg = (extra: Record<string, unknown> = {}) => ({
+    event_id: "$e",
+    sender: "@u:x",
+    body: "hi",
+    ts: 1,
+    ...extra,
+  });
+  const group = (messages: ReturnType<typeof msg>[], extra: Record<string, unknown> = {}) => ({
+    is_backchannel: false,
+    messages,
+    ...extra,
+  });
+  // A passing @-mention the server judged as not wanting an answer may go unanswered.
+  assert.equal(turnWasMentioned(group([msg({ is_mention: true, reply_expected: false })])), false);
+  assert.equal(
+    turnWasMentioned(group([msg({ reply_expected: false }), msg({ reply_expected: true })])),
+    true,
+  );
+  // Not judged: an @-mention or a DM from someone else needs an answer; a plain group message not.
+  assert.equal(turnWasMentioned(group([msg({ is_mention: true })])), true);
+  assert.equal(turnWasMentioned(group([msg()], { is_direct: true })), true);
+  assert.equal(turnWasMentioned(group([msg()])), false);
+  // The backchannel is direct: OpenClaw requires an answer there whatever this says.
+  assert.equal(turnWasMentioned({ is_backchannel: true, messages: [msg()] }), undefined);
+});
+
+test("dispatchWorkItemTurn: a group turn carries WasMentioned; a direct one never does", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x", wasMentioned: false }, runtime),
+  );
+  await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x", wasMentioned: true }, runtime),
+  );
+  await dispatchWorkItemTurn(params({ wasMentioned: true }, runtime));
+  assert.equal(contexts[0]!.WasMentioned, false);
+  assert.equal(contexts[1]!.WasMentioned, true);
+  assert.equal("WasMentioned" in contexts[2]!, false);
 });

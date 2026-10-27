@@ -18,6 +18,10 @@ export interface WorkMessage {
   ts: number;
   /** poll_work only: FCM pushes carry no attachment urls. */
   media?: WorkMedia[];
+  /** An @-mention of the agent. */
+  is_mention?: boolean;
+  /** poll_work only, once the server has judged it: the message reads as wanting an answer. */
+  reply_expected?: boolean;
 }
 
 export interface WorkItem {
@@ -45,6 +49,22 @@ export interface WorkItem {
  */
 export function turnPeerKind(item: Pick<WorkItem, "is_backchannel">): "direct" | "group" {
   return item.is_backchannel ? "direct" : "group";
+}
+
+/**
+ * Whether a group turn must end in an answer, as OpenClaw's `WasMentioned`. With group silence
+ * allowed (`surfaces.filament.silentReply.group`), only a turn marked this way refuses NO_REPLY.
+ * The server's judgement wins: a passing @-mention it judged as not wanting an answer may go
+ * unanswered. Without one, an @-mention or a DM from someone else counts. The backchannel never
+ * asks: it is direct, and OpenClaw always requires a reply there.
+ */
+export function turnWasMentioned(
+  item: Pick<WorkItem, "is_backchannel" | "is_direct" | "messages">,
+): boolean | undefined {
+  if (item.is_backchannel) return undefined;
+  const judged = item.messages.filter((m) => typeof m.reply_expected === "boolean");
+  if (judged.length > 0) return judged.some((m) => m.reply_expected === true);
+  return item.is_direct === true || item.messages.some((m) => m.is_mention === true);
 }
 
 export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";

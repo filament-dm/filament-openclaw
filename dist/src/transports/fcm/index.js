@@ -1,4 +1,5 @@
 import { acceptPending } from "../../accept-pending.js";
+import { notifyPrincipalOfFailure } from "../../failure-note.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
@@ -66,7 +67,8 @@ async function runFcmTransport(ctx, deps = {}) {
           event_id: eventId,
           sender: push.senderId ?? "unknown",
           body: messageBody(push),
-          ts: Date.now()
+          ts: Date.now(),
+          is_mention: push.isMentionOfRecipient
         }
       ]
     };
@@ -119,6 +121,9 @@ async function runFcmTransport(ctx, deps = {}) {
     }
     if (result.sawError) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
+      if (!abortSignal.aborted) {
+        await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
+      }
       return;
     }
     if (!result.sawFinal || !result.finalText.trim()) {

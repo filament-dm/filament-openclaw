@@ -339,3 +339,34 @@ test("fcm: turns beyond the waiting limit are dropped", async () => {
   assert.equal(h.turns.length, 20);
   h.stop();
 });
+
+test("fcm: a turn that fails posts nothing in the room and tells the principal instead", async () => {
+  const error = "⚠️ The AI service returned an empty reply. Please try again.";
+  const h = harness({
+    turn: {
+      sawError: true,
+      sawFinal: false,
+      finalText: "",
+      errorReplyText: error,
+      errorDetail: `OpenClaw error reply: ${error}`,
+    },
+  });
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.calls.some((c) => c.name === "message_principal"));
+  assert.ok(!h.calls.some((c) => c.name === "reply_in_thread"));
+  const note = h.calls.find((c) => c.name === "message_principal")!;
+  assert.match(
+    String(note.args.markdown_body),
+    /^I couldn't answer a message in one of my channels/,
+  );
+  assert.match(String(note.args.markdown_body), /The AI service returned an empty reply/);
+  h.stop();
+});
+
+test("fcm: a push's mention reaches the turn's message, so the turn knows it needs an answer", async () => {
+  const h = harness();
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.turns.length === 1);
+  assert.equal(h.turns[0]!.messages[0]!.is_mention, true);
+  h.stop();
+});

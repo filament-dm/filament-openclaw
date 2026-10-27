@@ -23,6 +23,7 @@ import {
 } from "./accounts.js";
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
+import { ensureGroupSilenceAllowedOnce } from "./silent-reply-policy.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
@@ -70,7 +71,7 @@ import {
   updateFailureMessage,
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
-import { turnPeerKind, type WorkItem } from "./work-item.js";
+import { turnPeerKind, turnWasMentioned, type WorkItem } from "./work-item.js";
 
 export { FILAMENT_CHANNEL_ID };
 
@@ -221,6 +222,7 @@ export function registerFilamentChannel(
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
+        void ensureGroupSilenceAllowedOnce(log);
         const holdOpen = async (): Promise<void> => {
           if (abortSignal.aborted) return;
           await new Promise<void>((resolve) => {
@@ -324,6 +326,7 @@ export function registerFilamentChannel(
               channelLabel: "Filament",
               accountId,
               peerKind: turnPeerKind(item),
+              wasMentioned: turnWasMentioned(item),
               sideSession: opts?.sideSession,
               channelId: item.channel_id,
               threadId: item.thread_id,
