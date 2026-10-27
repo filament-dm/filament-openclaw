@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { dispatchWorkItemTurn, inboundMessageFields, type DispatchWorkItemParams } from "./turn.js";
+import {
+  dispatchWorkItemTurn,
+  hostReplyKind,
+  inboundMessageFields,
+  type DispatchWorkItemParams,
+} from "./turn.js";
 import { turnPeerKind } from "./work-item.js";
 
 /** Stands in for the gateway: OpenClaw's default dmScope ("main") and groupScope ("per-group"). */
-function fakeRuntime() {
+function fakeRuntime(finals: unknown[] = [{ text: "hello back" }]) {
   const contexts: Array<Record<string, unknown>> = [];
   const runtime = {
     routing: {
@@ -33,7 +38,7 @@ function fakeRuntime() {
       }: {
         dispatcherOptions: { deliver: (p: unknown, i: { kind: string }) => Promise<void> };
       }) => {
-        await dispatcherOptions.deliver({ text: "hello back" }, { kind: "final" });
+        for (const payload of finals) await dispatcherOptions.deliver(payload, { kind: "final" });
       },
     },
   };
@@ -213,4 +218,44 @@ test("dispatchWorkItemTurn: the session is titled by its label; a group also get
   assert.equal(contexts[0]!.GroupSubject, undefined);
   assert.equal(contexts[1]!.ConversationLabel, "Filament · Design review");
   assert.equal(contexts[1]!.GroupSubject, "Design review");
+});
+
+test("hostReplyKind: OpenClaw's failures and notices, read off the payload as delivered", () => {
+  assert.equal(hostReplyKind({ text: "x", isError: true }), "error");
+  assert.equal(hostReplyKind({ text: "x", isFallbackNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x", isStatusNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x", isCompactionNotice: true }), "notice");
+  assert.equal(hostReplyKind({ text: "x" }), null);
+  assert.equal(hostReplyKind({ text: "x", isError: false }), null);
+  assert.equal(hostReplyKind(undefined), null);
+});
+
+test("dispatchWorkItemTurn: an error OpenClaw delivers as the final reply is an error, not an answer", async () => {
+  // What OpenClaw sends when it refuses a model's silence and has no fallback model.
+  const { runtime } = fakeRuntime([
+    { text: "⚠️ The AI service returned an empty reply. Please try again.", isError: true },
+  ]);
+  const result = await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x" }, runtime),
+  );
+  assert.equal(result.sawError, true);
+  assert.equal(result.sawFinal, false);
+  assert.equal(result.finalText, "");
+  assert.equal(
+    result.errorReplyText,
+    "⚠️ The AI service returned an empty reply. Please try again.",
+  );
+  assert.match(result.errorDetail ?? "", /OpenClaw error reply: ⚠️ The AI service/);
+});
+
+test("dispatchWorkItemTurn: an OpenClaw notice is left out; the agent's own answer still counts", async () => {
+  const { runtime } = fakeRuntime([
+    { text: "Fallback used other/model.", isFallbackNotice: true },
+    { text: "the real answer" },
+  ]);
+  const result = await dispatchWorkItemTurn(params({}, runtime));
+  assert.equal(result.sawError, false);
+  assert.equal(result.sawFinal, true);
+  assert.equal(result.finalText, "the real answer");
+  assert.equal(result.errorReplyText, undefined);
 });

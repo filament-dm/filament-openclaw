@@ -69,6 +69,23 @@ export interface DispatchTurnResult {
   sawSkip: boolean;
   sawError: boolean;
   errorDetail?: string;
+  /** OpenClaw's own failure text, when it delivered one in place of the agent's reply. */
+  errorReplyText?: string;
+}
+
+/**
+ * OpenClaw delivers some of its own messages as reply payloads: a failure (`isError`, e.g. "the AI
+ * service returned an empty reply") or a status notice. They are the host talking, not the agent,
+ * and normalizing a payload drops these flags, so they are read off the payload as delivered.
+ */
+export function hostReplyKind(payload: unknown): "error" | "notice" | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  if (p.isError === true) return "error";
+  if (p.isStatusNotice === true || p.isFallbackNotice === true || p.isCompactionNotice === true) {
+    return "notice";
+  }
+  return null;
 }
 
 /**
@@ -226,6 +243,7 @@ export async function dispatchWorkItemTurn(
   let sawSkip = false;
   let sawError = false;
   let errorDetail: string | undefined;
+  let errorReplyText: string | undefined;
 
   await runPreparedInboundReply({
     channel: params.channel,
@@ -246,6 +264,18 @@ export async function dispatchWorkItemTurn(
           // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
           deliver: async (payload: unknown, info: { kind: string }) => {
             if (info?.kind !== "final") return;
+            const host = hostReplyKind(payload);
+            if (host) {
+              const text = (payload as { text?: unknown }).text;
+              const said = typeof text === "string" ? text.trim() : "";
+              if (host === "error") {
+                sawError = true;
+                errorReplyText = said || undefined;
+                errorDetail = `OpenClaw error reply: ${said || "(no text)"}`;
+              }
+              params.log(`OpenClaw ${host} reply kept out of the answer: ${said || "(no text)"}`);
+              return;
+            }
             const normalized =
               payload && typeof payload === "object"
                 ? normalizeOutboundReplyPayload(payload as Record<string, unknown>)
@@ -276,5 +306,6 @@ export async function dispatchWorkItemTurn(
     sawSkip,
     sawError,
     errorDetail,
+    ...(errorReplyText ? { errorReplyText } : {}),
   };
 }
