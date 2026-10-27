@@ -1,7 +1,7 @@
 /**
  * A turn that failed is never answered where it came from: an "AI service" error posted in a group
  * reads as the agent speaking. The principal hears about it instead, in the backchannel. Both
- * transports use this; neither imports the other.
+ * transports use this.
  */
 import type { FilamentMcpClient } from "./mcp-client.js";
 import type { DispatchTurnResult } from "./turn.js";
