@@ -5,6 +5,7 @@ import type { ToolCallResult } from "../../mcp-client.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
   type DispatchOutcome,
+  AMBIGUOUS_HOLD_MS,
   MAX_REPLY_ATTEMPTS,
   parsePollWorkResponse,
   PENDING_SWEEP_INTERVAL_MS,
@@ -442,6 +443,9 @@ test("parsePollWorkResponse: reads the new flags, and a media-only message still
   assert.equal(parsed.work[0]!.messages[0]!.is_implicitly_mentioned, true);
   assert.equal(parsed.work[0]!.messages[0]!.reply_expected, false);
   assert.equal(parsed.work[0]!.messages[0]!.body, ATTACHMENT_ONLY_BODY);
+  // No room facts from this server.
+  assert.equal(parsed.work[0]!.sender_names, undefined);
+  assert.equal(parsed.work[0]!.channel_name, undefined);
 });
 
 // A `poll_work` response in the shape synapse develop sends: rows are `AgentMessage`
@@ -685,13 +689,26 @@ test("an item with no reply_with is skipped (not dispatched, not ack'd)", async 
   assert.equal(dispatchCalls, 0);
 });
 
-test("ambiguous outcome: re-offered item is left alone once, then ack'd the second time", async () => {
+test("ambiguous outcome: held under the old cursor, offered again on a schedule, acked after the last", async () => {
+  // A restart-recovered turn comes back as a duplicate with no output; its answer arrives through
+  // the outbound send. The item is held, not acked on the second empty turn, and no turn runs while
+  // it waits.
   const controller = new AbortController();
-  const item = itemFixture({ messages: [{ event_id: "$e1", sender: "@a:s", body: "b", ts: 1 }] });
-  const offer = () => okResult({ work: [item], cursor: "c:1", truncated: false, acknowledged: 0 });
+  let clock = 0;
+  const offer = () =>
+    okResult({ work: [itemFixture()], cursor: "c:1", truncated: false, acknowledged: 0 });
+  const at: number[] = [
+    0,
+    10_000,
+    AMBIGUOUS_HOLD_MS[0]! + 1,
+    AMBIGUOUS_HOLD_MS[0]! + AMBIGUOUS_HOLD_MS[1]! + 2,
+  ];
+  let poll = 0;
   const { client, calls } = fakeClient([
-    offer(),
-    offer(),
+    ...at.map(() => () => {
+      clock = at[poll++]!;
+      return Promise.resolve(offer());
+    }),
     () => {
       controller.abort();
       return Promise.resolve(
@@ -708,8 +725,144 @@ test("ambiguous outcome: re-offered item is left alone once, then ack'd the seco
       dispatches += 1;
       return { kind: "ambiguous" };
     },
+    now: () => clock,
+    holdPollMs: 0,
+    initialCursor: "c:0",
   });
-  assert.equal(dispatches, 2);
-  assert.equal((calls[1] as { ack?: string[] }).ack, undefined);
-  assert.deepEqual((calls[2] as { ack?: string[] }).ack, ["$e1"]);
+  // Offered at 0 (turn), 10s (held: no turn), 30s (turn), 120s (turn, then acked).
+  assert.equal(dispatches, 3);
+  const cursors = calls.map((c) => (c as { cursor?: string }).cursor);
+  assert.deepEqual(cursors, ["c:0", "c:0", "c:0", "c:0", "c:1"]);
+  const acks = calls.map((c) => (c as { ack?: string[] }).ack);
+  assert.deepEqual(acks, [undefined, undefined, undefined, undefined, ["$e1"]]);
+});
+
+test("parsePollWorkResponse: keeps the room facts a newer server sends; blank names are left out", () => {
+  const parsed = parsePollWorkResponse({
+    work: [
+      {
+        kind: "message",
+        channel_id: "!room:server",
+        thread_id: null,
+        is_backchannel: false,
+        is_direct: false,
+        channel_name: "Design review",
+        loop_name: "Acme",
+        sender_names: { "@ada:server": "Ada", "@bob:server": null, "@cy:server": " " },
+        messages: [{ event_id: "$e1", sender: "@ada:server", body: "hi", timestamp: 1 }],
+        reply_with: null,
+      },
+    ],
+    cursor: "c:1",
+  });
+  assert.ok(parsed);
+  const item = parsed.work[0]!;
+  assert.equal(item.channel_name, "Design review");
+  assert.equal(item.loop_name, "Acme");
+  assert.deepEqual(item.sender_names, { "@ada:server": "Ada" });
+});
+
+test("restart: the first poll resumes from initialCursor, and each sent cursor is reported", async () => {
+  // A poll the server was still holding when the gateway stopped can save a position past work
+  // the gateway never got; resuming from what the gateway itself sent re-offers that work.
+  const controller = new AbortController();
+  const { client, calls } = fakeClient([
+    okResult({ work: [], cursor: "c:8", truncated: false, acknowledged: 0 }),
+    () => {
+      controller.abort();
+      return Promise.resolve(
+        okResult({ work: [], cursor: "c:9", truncated: false, acknowledged: 0 }),
+      );
+    },
+  ]);
+  const sent: string[] = [];
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => ({ kind: "published" }),
+    initialCursor: "c:7",
+    onCursorSent: (cursor) => sent.push(cursor),
+  });
+  assert.deepEqual(calls[0], { cursor: "c:7", ack: undefined, wait_seconds: 30, max_items: 1 });
+  assert.deepEqual(calls[1], { cursor: "c:8", ack: undefined, wait_seconds: 30, max_items: 1 });
+  assert.deepEqual(sent, ["c:7", "c:8"]);
+});
+
+test("no saved cursor: the first poll sends none and nothing is reported for it", async () => {
+  const controller = new AbortController();
+  const { client, calls } = fakeClient([
+    () => {
+      controller.abort();
+      return Promise.resolve(
+        okResult({ work: [], cursor: "c:1", truncated: false, acknowledged: 0 }),
+      );
+    },
+  ]);
+  const sent: string[] = [];
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => ({ kind: "published" }),
+    onCursorSent: (cursor) => sent.push(cursor),
+  });
+  assert.equal((calls[0] as { cursor?: string }).cursor, undefined);
+  assert.deepEqual(sent, []);
+});
+
+// develop's poll_work: a delivered item is finished by a reply, an ack, or the next poll passing
+// its delivery's cursor or a later one. Only the cursor from before its batch brings it back.
+async function cursorsAfter(outcomes: DispatchOutcome[]): Promise<Array<string | undefined>> {
+  const controller = new AbortController();
+  const offer = (n: number) =>
+    okResult({ work: [itemFixture()], cursor: `c:${n}`, truncated: false, acknowledged: 0 });
+  const { client, calls } = fakeClient([
+    ...outcomes.map((_, i) => offer(i + 1)),
+    () => {
+      controller.abort();
+      return Promise.resolve(okResult({ work: [], cursor: "c:end", truncated: false }));
+    },
+  ]);
+  let i = 0;
+  await runPollLoop({
+    client,
+    abortSignal: controller.signal,
+    log: () => {},
+    dispatchItem: async () => outcomes[i++]!,
+    backoffMs: () => 0,
+    initialCursor: "c:0",
+  });
+  return calls.map((c) => (c as { cursor?: string }).cursor);
+}
+
+test("cursor: a published item advances it", async () => {
+  assert.deepEqual(await cursorsAfter([{ kind: "published" }]), ["c:0", "c:1"]);
+});
+
+test("cursor: a reply to retry keeps the cursor from before its batch, so the item comes back", async () => {
+  assert.deepEqual(
+    await cursorsAfter([
+      { kind: "retry", diagnostic: "transient: HTTP 502" },
+      { kind: "published" },
+    ]),
+    ["c:0", "c:0", "c:2"],
+  );
+});
+
+test("cursor: retries used up are acked and the cursor advances", async () => {
+  const retry: DispatchOutcome = { kind: "retry", diagnostic: "transient: HTTP 502" };
+  assert.deepEqual(await cursorsAfter(Array.from({ length: MAX_REPLY_ATTEMPTS }, () => retry)), [
+    "c:0",
+    "c:0",
+    "c:0",
+    `c:${MAX_REPLY_ATTEMPTS}`,
+  ]);
+});
+
+test("cursor: silent and dropped items are acked and the cursor advances", async () => {
+  assert.deepEqual(
+    await cursorsAfter([{ kind: "silent" }, { kind: "dropped", diagnostic: "refused" }]),
+    ["c:0", "c:1", "c:2"],
+  );
 });

@@ -68,7 +68,6 @@ async function until(check: () => boolean, ms = 1000): Promise<void> {
 
 function harness(
   overrides: {
-    control?: boolean;
     turn?: Partial<TurnResult>;
     instructions?: string;
     startFails?: boolean;
@@ -88,7 +87,6 @@ function harness(
   const receiverStops: number[] = [];
   const controller = new AbortController();
   const turns: WorkItem[] = [];
-  const controlItems: WorkItem[] = [];
   const commandItems: WorkItem[] = [];
   let deliver: ((env: FcmMessageEnvelope) => void) | null = null;
   const ctx: TransportContext = {
@@ -96,7 +94,6 @@ function harness(
     client,
     identity: { mxid: SELF, principal: PRINCIPAL, ccRoomId: CC },
     settings: { firebase: { projectId: "p" } } as unknown as McpSettings,
-    control: overrides.control ?? false,
     abortSignal: controller.signal,
     log: () => {},
     runTurn: async (item) => {
@@ -113,9 +110,6 @@ function harness(
         repliedTo: new Set(),
         ...overrides.turn,
       };
-    },
-    handleControl: async (item) => {
-      controlItems.push(item);
     },
     ...(overrides.commands
       ? {
@@ -146,7 +140,6 @@ function harness(
     calls,
     pongs,
     turns,
-    controlItems,
     commandItems,
     push,
     done,
@@ -155,15 +148,16 @@ function harness(
   };
 }
 
-test("fcm: registers the receiver's token, then greets on first contact", async () => {
+test("fcm: registers the receiver's token; the first hello is left to the channel", async () => {
   const h = harness({ instructions: "First contact: say hello" });
-  await until(() => h.calls.some((c) => c.name === "message_principal"));
+  await until(() => h.calls.some((c) => c.name === "register_push_token"));
   assert.deepEqual(h.calls[0], {
     name: "register_push_token",
     args: { token: "fcm-token", platform: "android" },
   });
   h.stop();
   assert.deepEqual(await h.done, {});
+  assert.ok(!h.calls.some((c) => c.name === "message_principal"));
 });
 
 test("fcm: a mention in a channel runs one turn and threads the reply off it", async () => {
@@ -259,19 +253,6 @@ test("fcm: a liveness ping is answered without a turn", async () => {
   h.stop();
 });
 
-test("fcm: a control account hands backchannel pushes to the gateway, never to a turn", async () => {
-  const h = harness({ control: true });
-  await h.push(
-    chat({ event_id: "$c1", sender_id: PRINCIPAL, content: { text: "/filament agents" } }, CC),
-  );
-  await until(() => h.controlItems.length === 1);
-  await h.push(chat({ event_id: "$c2", content: { text: "hi" }, is_mention_of_recipient: true }));
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(h.controlItems.length, 1);
-  assert.equal(h.turns.length, 0);
-  h.stop();
-});
-
 test("fcm: a /filament command from the principal goes to handleCommand, never to a turn", async () => {
   const h = harness({ commands: true });
   await h.push(
@@ -356,5 +337,36 @@ test("fcm: turns beyond the waiting limit are dropped", async () => {
   await until(() => h.turns.length === 20);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(h.turns.length, 20);
+  h.stop();
+});
+
+test("fcm: a turn that fails posts nothing in the room and tells the principal instead", async () => {
+  const error = "⚠️ The AI service returned an empty reply. Please try again.";
+  const h = harness({
+    turn: {
+      sawError: true,
+      sawFinal: false,
+      finalText: "",
+      errorReplyText: error,
+      errorDetail: `OpenClaw error reply: ${error}`,
+    },
+  });
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.calls.some((c) => c.name === "message_principal"));
+  assert.ok(!h.calls.some((c) => c.name === "reply_in_thread"));
+  const note = h.calls.find((c) => c.name === "message_principal")!;
+  assert.match(
+    String(note.args.markdown_body),
+    /^I couldn't answer a message in one of my channels/,
+  );
+  assert.match(String(note.args.markdown_body), /The AI service returned an empty reply/);
+  h.stop();
+});
+
+test("fcm: a push's mention reaches the turn's message, so the turn knows it needs an answer", async () => {
+  const h = harness();
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.turns.length === 1);
+  assert.equal(h.turns[0]!.messages[0]!.is_mention, true);
   h.stop();
 });

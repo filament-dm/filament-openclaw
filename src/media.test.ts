@@ -11,12 +11,15 @@ import type { WorkMessage } from "./work-item.js";
 
 function fakeClient(opts: { failDownload?: string; failUpload?: boolean } = {}) {
   const downloads: string[] = [];
+  const messageIds: Array<string | undefined> = [];
   const uploads: Array<{ contentType: string; filename?: string }> = [];
   return {
     downloads,
+    messageIds,
     uploads,
-    downloadMedia: async (mxcUrl: string) => {
+    downloadMedia: async (mxcUrl: string, _maxBytes: number, o?: { messageId?: string }) => {
       downloads.push(mxcUrl);
+      messageIds.push(o?.messageId);
       if (mxcUrl === opts.failDownload) throw new Error("HTTP 404");
       return { bytes: Buffer.from(mxcUrl), contentType: "image/png" };
     },
@@ -58,6 +61,8 @@ test("fetchInboundMedia: saves each attachment under its message", async () => {
     { path: "/media/cat.png", contentType: "image/png", messageId: "$a" },
     { path: "/media/doc.pdf", contentType: "image/png", messageId: "$c" },
   ]);
+  // Each fetch names the message its attachment came from, for the server's room check.
+  assert.deepEqual(client.messageIds, ["$a", "$c"]);
   assert.deepEqual(logs, []);
 });
 

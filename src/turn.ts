@@ -28,8 +28,18 @@ export interface DispatchWorkItemParams {
   channel: string;
   channelLabel: string;
   accountId: string;
-  /** `"direct"` collapses to the agent's main session; `"group"` gets a per-channel session. */
+  /**
+   * `"direct"` follows `session.dmScope` (by default the agent's main session); `"group"` gets a
+   * per-channel session. Only the principal's backchannel is direct (`turnPeerKind`).
+   */
   peerKind: "direct" | "group";
+  /** A group turn that must end in an answer (`turnWasMentioned`); others may end in silence. */
+  wasMentioned?: boolean;
+  /**
+   * A side session of the channel's own, for a turn the gateway starts rather than a person:
+   * its prompt stays out of the conversation the owner sees, in OpenClaw's chat too.
+   */
+  sideSession?: string;
   channelId: string;
   threadId: string | null;
   messages: WorkMessage[];
@@ -38,7 +48,14 @@ export interface DispatchWorkItemParams {
   /** Attachments already saved for the turn (poll_work only). */
   media?: InboundMedia[];
   recipientAddress: string;
+  /** The session's title in OpenClaw ("Filament · …"); see room-labels.ts. */
   conversationLabel: string;
+  /** A group session's subject: the room's name, or its people. */
+  groupSubject?: string;
+  /** Display names by user id, and the room's and its loop's names, when the item carries them. */
+  senderNames?: Readonly<Record<string, string>>;
+  channelName?: string;
+  loopName?: string;
   commandAuthorized: boolean;
   log: (message: string) => void;
 }
@@ -54,6 +71,23 @@ export interface DispatchTurnResult {
   sawSkip: boolean;
   sawError: boolean;
   errorDetail?: string;
+  /** OpenClaw's own failure text, when it delivered one in place of the agent's reply. */
+  errorReplyText?: string;
+}
+
+/**
+ * OpenClaw delivers some of its own messages as reply payloads: a failure (`isError`, e.g. "the AI
+ * service returned an empty reply") or a status notice. They are the host talking, not the agent,
+ * and normalizing a payload drops these flags, so they are read off the payload as delivered.
+ */
+export function hostReplyKind(payload: unknown): "error" | "notice" | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  if (p.isError === true) return "error";
+  if (p.isStatusNotice === true || p.isFallbackNotice === true || p.isCompactionNotice === true) {
+    return "notice";
+  }
+  return null;
 }
 
 /**
@@ -66,8 +100,46 @@ function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, u
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
 
-function renderMessages(messages: WorkMessage[]): string {
-  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+/** A sender as the model reads them: "Name (@id)" when the name is known, so the id stays to mention. */
+export function senderLabel(sender: string, names?: Readonly<Record<string, string>>): string {
+  const name = names?.[sender];
+  return name ? `${name} (${sender})` : sender;
+}
+
+/** OpenClaw's history entry: rendered to the model as `#<message_id> <sender>: <body>`. */
+export interface InboundHistoryEntry {
+  sender: string;
+  body: string;
+  timestamp: number;
+  messageId: string;
+}
+
+/**
+ * The item as OpenClaw's inbound context wants it: the last message is the turn's own (its
+ * text the visible body; its event id and sender the `Conversation info` block's `message_id`
+ * and `sender`), and the ones before it are `InboundHistory`, each with its own id and sender.
+ * Ids and senders reach the model as OpenClaw-built context blocks, which its chat views strip,
+ * so the conversation shows plain text and the agent can still react, quote and reply by id.
+ */
+export function inboundMessageFields(
+  messages: readonly WorkMessage[],
+  senderNames?: Readonly<Record<string, string>>,
+): {
+  body: string;
+  current: WorkMessage | undefined;
+  history: InboundHistoryEntry[];
+} {
+  const current = messages[messages.length - 1];
+  return {
+    body: current?.body ?? "",
+    current,
+    history: messages.slice(0, -1).map((m) => ({
+      sender: senderLabel(m.sender, senderNames),
+      body: m.body,
+      timestamp: m.ts,
+      messageId: m.event_id,
+    })),
+  };
 }
 
 /** Never publishes: the transport publishes at most once after this resolves. */
@@ -88,10 +160,11 @@ export async function dispatchWorkItemTurn(
   // Thread isolation: two threads in the same channel must not share a
   // session. `normalizeThreadId` is the identity function so a Matrix thread
   // (event) id keeps its case — the helper's default normalizer lowercases.
-  const sessionKey = params.threadId
+  const childKey = params.sideSession ?? params.threadId;
+  const sessionKey = childKey
     ? resolveThreadSessionKeys({
         baseSessionKey: route.sessionKey,
-        threadId: params.threadId,
+        threadId: childKey,
         normalizeThreadId: (id: string) => id,
       }).sessionKey
     : route.sessionKey;
@@ -108,8 +181,13 @@ export async function dispatchWorkItemTurn(
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope,
   });
 
-  const rawBody = renderMessages(params.messages);
-  const lastMessage = params.messages[params.messages.length - 1];
+  const {
+    body: rawBody,
+    current: lastMessage,
+    history,
+  } = inboundMessageFields(params.messages, params.senderNames);
+  const senderName = lastMessage ? params.senderNames?.[lastMessage.sender] : undefined;
+  const isGroup = params.peerKind === "group";
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -127,7 +205,14 @@ export async function dispatchWorkItemTurn(
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
+    ...(params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {}),
+    ...(params.channelName && isGroup ? { GroupChannel: params.channelName } : {}),
+    ...(params.loopName && isGroup ? { GroupSpace: params.loopName } : {}),
+    ...(isGroup && params.wasMentioned !== undefined ? { WasMentioned: params.wasMentioned } : {}),
     SenderId: lastMessage?.sender ?? "unknown",
+    ...(senderName ? { SenderName: senderName } : {}),
+    ...(lastMessage ? { Timestamp: lastMessage.ts } : {}),
+    ...(history.length > 0 ? { InboundHistory: history } : {}),
     Provider: params.channel,
     Surface: params.channel,
     MessageSid: lastMessage?.event_id ?? params.channelId,
@@ -135,6 +220,15 @@ export async function dispatchWorkItemTurn(
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // The gateway, not the principal, wrote a side session's prompt.
+    ...(params.sideSession
+      ? {
+          InputProvenance: {
+            kind: "internal_system",
+            sourceTool: `filament:${params.sideSession}`,
+          },
+        }
+      : {}),
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...(params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {}),
     ...inboundMediaFields(params.media),
@@ -152,6 +246,7 @@ export async function dispatchWorkItemTurn(
   let sawSkip = false;
   let sawError = false;
   let errorDetail: string | undefined;
+  let errorReplyText: string | undefined;
 
   await runPreparedInboundReply({
     channel: params.channel,
@@ -172,6 +267,18 @@ export async function dispatchWorkItemTurn(
           // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
           deliver: async (payload: unknown, info: { kind: string }) => {
             if (info?.kind !== "final") return;
+            const host = hostReplyKind(payload);
+            if (host) {
+              const text = (payload as { text?: unknown }).text;
+              const said = typeof text === "string" ? text.trim() : "";
+              if (host === "error") {
+                sawError = true;
+                errorReplyText = said || undefined;
+                errorDetail = `OpenClaw error reply: ${said || "(no text)"}`;
+              }
+              params.log(`OpenClaw ${host} reply kept out of the answer: ${said || "(no text)"}`);
+              return;
+            }
             const normalized =
               payload && typeof payload === "object"
                 ? normalizeOutboundReplyPayload(payload as Record<string, unknown>)
@@ -202,5 +309,6 @@ export async function dispatchWorkItemTurn(
     sawSkip,
     sawError,
     errorDetail,
+    ...(errorReplyText ? { errorReplyText } : {}),
   };
 }

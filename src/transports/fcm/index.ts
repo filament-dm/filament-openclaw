@@ -4,9 +4,9 @@
  * everything after it too.
  */
 import { acceptPending } from "../../accept-pending.js";
+import { notifyPrincipalOfFailure } from "../../failure-note.js";
 import type { ToolCallResult } from "../../mcp-client.js";
-import { isFirstContact } from "../../onboarding-core.js";
-import { isGatewayCommandItem } from "../../gateway.js";
+import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import {
@@ -110,15 +110,15 @@ export async function runFcmTransport(
           sender: push.senderId ?? "unknown",
           body: messageBody(push),
           ts: Date.now(),
+          is_mention: push.isMentionOfRecipient,
         },
       ],
     };
 
-    if (ctx.control) {
-      // handleGatewayItem does the authority check.
-      return isBackchannel ? () => ctx.handleControl(item) : null;
-    }
-    if (ctx.handleCommand && isGatewayCommandItem(item, identity.principal, identity.ccRoomId)) {
+    if (
+      ctx.handleCommand &&
+      isBackchannelCommandItem(item, identity.principal, identity.ccRoomId)
+    ) {
       const handleCommand = ctx.handleCommand;
       return () => handleCommand(item);
     }
@@ -178,6 +178,10 @@ export async function runFcmTransport(
     }
     if (result.sawError) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
+      // Never into the room: the principal hears about it in the backchannel instead.
+      if (!abortSignal.aborted) {
+        await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
+      }
       return;
     }
     // Attachments in the reply (`result.mediaUrls`) are poll_work-only for now: only the text is
@@ -231,7 +235,6 @@ export async function runFcmTransport(
       return;
     }
     if (isInvite(push.branchType) || isVouch(push.branchType)) {
-      if (ctx.control) return;
       // An invite carries the room/space in room_id; a vouch's loop is on the branch.
       const targetId = isVouch(push.branchType) ? (push.loopId ?? push.roomId) : push.roomId;
       if (!targetId) return;
@@ -261,7 +264,7 @@ export async function runFcmTransport(
     if (turn) enqueueTurn(turn);
   };
 
-  if (!ctx.control) await acceptPending(client, log, abortSignal);
+  await acceptPending(client, log, abortSignal);
 
   const createReceiver =
     deps.createReceiver ?? ((opts: FcmReceiverOptions): PushSource => new FcmReceiver(opts));
@@ -318,14 +321,7 @@ export async function runFcmTransport(
   }
   log(`filament-fcm: push token registered with Filament (project ${settings.firebase.projectId})`);
 
-  if (!ctx.control && isFirstContact(client.instructions)) {
-    const hello = await client.callTool(
-      "message_principal",
-      { markdown_body: "Hi — I'm connected to Filament and ready." },
-      { signal: abortSignal },
-    );
-    log(hello.ok ? "filament-fcm: sent first-contact hello" : "filament-fcm: greeting failed");
-  }
+  // The first hello is the channel's, for both transports (hello.ts).
 
   await new Promise<void>((resolve) => {
     if (abortSignal.aborted) return resolve();
