@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 import { acceptPending } from "../../accept-pending.js";
+import { notifyPrincipalOfFailure } from "../../failure-note.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
@@ -241,6 +242,10 @@ export async function runPollTransport(
     if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
 
     if (result.sawError) {
+      // Never into the room: the principal hears about it in the backchannel instead.
+      if (!abortSignal.aborted) {
+        await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
+      }
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
     }
     if (result.sawFinal) {

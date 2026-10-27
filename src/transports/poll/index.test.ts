@@ -60,7 +60,12 @@ async function run(
   const turns: WorkItem[] = [];
   const turnMedia: unknown[] = [];
   const events: string[] = [];
+  const notes: Array<{ tool: string; args: Record<string, unknown> }> = [];
   const client = {
+    callTool: async (tool: string, args: Record<string, unknown> = {}) => {
+      notes.push({ tool, args });
+      return ok({ event_id: "$note" });
+    },
     pollWork: async (args: { ack?: string[] }) => {
       pollArgs.push(args);
       events.push("poll");
@@ -113,7 +118,7 @@ async function run(
     },
   };
   const result = await runPollTransport(ctx, opts.deps);
-  return { result, pollArgs, publishes, turns, turnMedia, events };
+  return { result, pollArgs, publishes, turns, turnMedia, events, notes };
 }
 
 const offer = (work: unknown) => ({ work: [work], cursor: "c:1" });
@@ -156,6 +161,32 @@ test("poll: a turn that fails is ack'd without a publish, as over FCM", async ()
   assert.equal(h.result.fatal, undefined);
   assert.equal(h.publishes.length, 0);
   assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
+  assert.equal(h.notes.length, 1);
+  assert.equal(h.notes[0]!.tool, "message_principal");
+});
+
+test("poll: OpenClaw's error reply in a group posts nothing there; the principal hears instead", async () => {
+  const error = "⚠️ The AI service returned an empty reply. Please try again.";
+  const h = await run([offer(item({ channel_name: "Design review" }))], {
+    turn: {
+      sawError: true,
+      sawFinal: false,
+      finalText: "",
+      errorReplyText: error,
+      errorDetail: `OpenClaw error reply: ${error}`,
+    },
+  });
+  assert.equal(h.result.fatal, undefined);
+  assert.equal(h.publishes.length, 0);
+  assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
+  assert.deepEqual(h.notes, [
+    {
+      tool: "message_principal",
+      args: {
+        markdown_body: `I couldn't answer a message in Design review, so I posted nothing there. OpenClaw said: ${error}`,
+      },
+    },
+  ]);
 });
 
 test("poll: a publish that rejects the bearer stops the account", async () => {

@@ -4,6 +4,7 @@
  * everything after it too.
  */
 import { acceptPending } from "../../accept-pending.js";
+import { notifyPrincipalOfFailure } from "../../failure-note.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY, type WorkItem } from "../../work-item.js";
@@ -176,6 +177,10 @@ export async function runFcmTransport(
     }
     if (result.sawError) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);
+      // Never into the room: the principal hears about it in the backchannel instead.
+      if (!abortSignal.aborted) {
+        await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
+      }
       return;
     }
     // Attachments in the reply (`result.mediaUrls`) are poll_work-only for now: only the text is
