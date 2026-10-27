@@ -15,6 +15,7 @@ import {
 } from "./accounts.js";
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
+import { ensureGroupSilenceAllowedOnce } from "./silent-reply-policy.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
@@ -163,6 +164,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message) => log(`[${accountId}] ${message}`);
+        void ensureGroupSilenceAllowedOnce(log);
         const holdOpen = async () => {
           if (abortSignal.aborted) return;
           await new Promise((resolve) => {

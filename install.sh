@@ -337,6 +337,18 @@ if [ -n "$PATCH" ]; then
     || err "could not write the Filament account config (openclaw config patch failed)."
 fi
 
+# --- 2c. Let group turns end in silence -------------------------------------------
+# Since 2026.10 OpenClaw's default for group conversations is "disallow", which makes every
+# Filament group turn reply-required: an agent that chooses to stay quiet fails the turn instead.
+# Set "allow" unless the owner chose; the plugin does the same at start for older installs.
+# Best effort: a gateway that rejects the key still works, with OpenClaw's default.
+SILENCE_PATH="surfaces.filament.silentReply.group"
+if ! openclaw config get "$SILENCE_PATH" --json >/dev/null 2>&1; then
+  printf '%s' '{"surfaces":{"filament":{"silentReply":{"group":"allow"}}}}' \
+    | openclaw config patch --stdin >/dev/null 2>&1 \
+    || warn "could not set $SILENCE_PATH; group turns follow OpenClaw's default."
+fi
+
 # A running gateway applies an enable by replacing the plugin, and refuses it with
 # "config reload superseded by a newer runtime config source" while the reload from
 # the install (or the config write above) is still draining. That passes: retry, and

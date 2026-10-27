@@ -69,7 +69,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** `config get` exits 1 for a path the file does not set, with its reason in a JSON envelope. */
-function isUnsetPath(stdout: string): boolean {
+export function isUnsetPath(stdout: string): boolean {
   try {
     const parsed = JSON.parse(stdout) as { ok?: unknown; error?: { message?: unknown } };
     return parsed.ok === false && /valid but unset/.test(String(parsed.error?.message ?? ""));
