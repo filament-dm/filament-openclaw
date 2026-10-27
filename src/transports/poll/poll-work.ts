@@ -28,10 +28,8 @@ export type { DispatchOutcome };
  * `timestamp` → `ts`, a non-empty `media` → the attachment placeholder body.
  */
 export interface PollWorkMessage extends WorkMessage {
-  is_mention?: boolean;
   sender_is_agent?: boolean;
   is_implicitly_mentioned?: boolean;
-  reply_expected?: boolean;
 }
 
 export interface ReplyWithSpec {
@@ -75,6 +73,29 @@ function withMedia(raw: unknown): { media?: WorkMedia[] } {
     });
   }
   return media.length ? { media } : {};
+}
+
+/** The room facts a newer server puts on an item; display names that are null or blank are left out. */
+function withRoomFacts(
+  r: Record<string, unknown>,
+): Pick<WorkItem, "channel_name" | "loop_name" | "sender_names"> {
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const channelName = text(r.channel_name);
+  const loopName = text(r.loop_name);
+  const raw = r.sender_names;
+  const names =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.entries(raw as Record<string, unknown>).flatMap(([id, name]) =>
+            text(name) ? [[id, text(name)!]] : [],
+          ),
+        )
+      : undefined;
+  return {
+    ...(channelName ? { channel_name: channelName } : {}),
+    ...(loopName ? { loop_name: loopName } : {}),
+    ...(names ? { sender_names: names } : {}),
+  };
 }
 
 export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | null {
@@ -126,6 +147,7 @@ export function parsePollWorkResponse(data: unknown): ParsedPollWorkResponse | n
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
       is_backchannel: r.is_backchannel === true,
       is_direct: r.is_direct === true,
+      ...withRoomFacts(r),
       messages,
       reply_with: replyWith,
     });
@@ -165,6 +187,14 @@ export interface PollLoopOptions {
   sweepPending?: () => Promise<void>;
   backoffMs?: (attempt: number) => number;
   now?: () => number;
+  /** The cursor the last run sent (`onCursorSent`), to resume from after a restart. */
+  initialCursor?: string;
+  /** Called with each cursor as a poll sends it: everything before it is acknowledged. */
+  onCursorSent?: (cursor: string) => void;
+  /** Between polls while an item waits out its hold (tests set 0). */
+  holdPollMs?: number;
+  /** Called for each item acked: it is finished, answered or not. */
+  onAcked?: (item: PollWorkItem) => void;
 }
 
 export interface PollLoopResult {
@@ -172,6 +202,15 @@ export interface PollLoopResult {
 }
 
 export const PENDING_SWEEP_INTERVAL_MS = 10 * 60_000;
+/**
+ * A turn with no output is offered again after these waits, and acked only after the last. It is
+ * often not the model being silent: when a restart cut a turn short, OpenClaw recovers that turn
+ * itself and skips the redelivered message as a duplicate, and its recovered answer then arrives
+ * through the channel's outbound send, naming the message (which finishes the item). Holding the
+ * item meanwhile, rather than acking it on the second empty turn, keeps it from being dropped.
+ */
+export const AMBIGUOUS_HOLD_MS: readonly number[] = [30_000, 90_000];
+const HOLD_POLL_MS = 5_000;
 export const MAX_REPLY_ATTEMPTS = 3;
 const BUSY_DEFAULT_WAIT_MS = 1_000;
 
@@ -191,12 +230,14 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
 
-  let cursor: string | undefined;
+  let cursor: string | undefined = opts.initialCursor;
   let pendingAck: string[] = [];
   let failureStreak = 0;
-  // The server re-offers an unanswered, unacked item on the next poll, so without these a turn that
-  // keeps producing nothing, or a reply that keeps failing, would re-run the model on every poll.
-  const ambiguousSeen = new Set<string>();
+  // An item the gateway didn't finish comes back when the next poll sends the cursor from before
+  // its batch (a later cursor finishes it), so without these a turn that keeps producing nothing,
+  // or a reply that keeps failing, would re-run the model on every poll.
+  const ambiguousSeen = new Map<string, { offers: number; nextAt: number }>();
+  const holdPollMs = opts.holdPollMs ?? HOLD_POLL_MS;
   const replyAttempts = new Map<string, number>();
 
   let lastSweep = 0;
@@ -210,6 +251,8 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
 
+    if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -263,7 +306,10 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    // Advanced only once every item in the batch is handled: passing the new cursor would finish
+    // an unanswered item, so a batch with one still to retry polls again with the cursor it was
+    // delivered under. A cursorless poll has none to go back to, so its batch can't be re-offered.
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
 
     for (const item of parsed.work) {
@@ -273,9 +319,24 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
         log(`filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`);
         continue;
       }
-      const outcome = await dispatchItem(item);
       const key = itemKey(item);
-      const ack = () => pendingAck.push(...item.messages.map((m) => m.event_id));
+      const held = ambiguousSeen.get(key);
+      if (held && now() < held.nextAt) {
+        // Still waiting for its answer: no turn now, and a short poll interval, not a hot loop.
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
+      const outcome = await dispatchItem(item);
+      const ack = () => {
+        pendingAck.push(...item.messages.map((m) => m.event_id));
+        opts.onAcked?.(item);
+      };
+      if (outcome.kind === "held") {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
       if (outcome.kind !== "retry") replyAttempts.delete(key);
       if (outcome.kind === "fatal") {
         log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);
@@ -296,6 +357,7 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`,
@@ -304,19 +366,29 @@ export async function runPollLoop(opts: PollLoopOptions): Promise<PollLoopResult
         }
       }
       if (outcome.kind === "ambiguous") {
-        // Re-offered once more, then acked: no silent success, and no model run on every poll.
-        if (ambiguousSeen.has(key)) {
+        // Held and offered again on a schedule, then acked: no model run on every poll, and no
+        // drop while a recovered answer may still be on its way (AMBIGUOUS_HOLD_MS).
+        const offers = (held?.offers ?? 0) + 1;
+        if (abortSignal.aborted) return {};
+        if (offers > AMBIGUOUS_HOLD_MS.length) {
           ambiguousSeen.delete(key);
           log(
-            `filament-poll: ${item.channel_id} produced no output twice; acknowledging without a reply`,
+            `filament-poll: ${item.channel_id} produced no output ${offers} times; acknowledging without a reply`,
           );
           ack();
         } else {
-          ambiguousSeen.add(key);
+          const hold = AMBIGUOUS_HOLD_MS[offers - 1]!;
+          ambiguousSeen.set(key, { offers, nextAt: now() + hold });
+          log(
+            `filament-poll: ${item.channel_id} produced no output; offering it again in ${hold}ms`,
+          );
+          unfinished = true;
         }
       }
+      if (outcome.kind !== "ambiguous") ambiguousSeen.delete(key);
       // "published": replying already acknowledged it.
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }

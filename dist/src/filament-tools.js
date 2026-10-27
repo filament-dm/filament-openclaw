@@ -6,7 +6,8 @@ const KNOWN_TOOL_NAMES = TOOL_SNAPSHOT.map((t) => t.name);
 const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
   ["poll_work", "the poll transport owns this call exclusively"],
   ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
-  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"]
+  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
+  ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"]
 ]);
 const RING0_TOOL_NAMES = /* @__PURE__ */ new Set([
   "set_profile",
@@ -26,7 +27,7 @@ function replyTarget(toolName, params) {
   if (toolName === "post_message") {
     return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
   }
-  if (toolName === "reply_in_thread" || toolName === "quote") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "reply_in_thread" || toolName === "post_quote") return REPLIED_UNKNOWN_ROOM;
   if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
   return null;
 }
@@ -71,6 +72,20 @@ const FALLBACK_PARAMETERS = { type: "object", properties: {}, additionalProperti
 function toLabel(name) {
   return name.split("_").map((w) => w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
 }
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+function normalizeEventIdArgs(params) {
+  let changed = false;
+  const out = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
+      out[key] = value.slice(1);
+      changed = true;
+    } else {
+      out[key] = value;
+    }
+  }
+  return changed ? out : params;
+}
 function makeExecute(toolName, tier, accountId, getClient, log) {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params, signal) => {
@@ -84,9 +99,15 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
     }
+    if (client.toolNames && !client.toolNames.has(toolName)) {
+      log(`filament-tools: ${qualifiedName} not offered by this server`);
+      throw new Error(
+        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`
+      );
+    }
     let result;
     try {
-      result = await client.callTool(toolName, params, { signal });
+      result = await client.callTool(toolName, normalizeEventIdArgs(params), { signal });
     } catch (error) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: call failed \u2014 ${String(error)}`);
@@ -175,6 +196,7 @@ export {
   endFilamentTurn,
   getFilamentClient,
   logToolDrift,
+  normalizeEventIdArgs,
   registerFilamentToolsFromSnapshot,
   setFilamentClient
 };

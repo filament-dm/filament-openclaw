@@ -3,8 +3,21 @@
   "name": "Filament",
   "description": "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll — or, by name, as Firebase Cloud Messaging (FCM) pushes — and replies through Filament's MCP-over-HTTP agents API.",
   "version": "0.1.3",
+  "cliCommands": [
+    {
+      "name": "filament",
+      "description": "Connect OpenClaw agents to Filament",
+      "hasSubcommands": true
+    }
+  ],
+  "skills": [
+    "skills"
+  ],
   "activation": {
-    "onStartup": true
+    "onStartup": true,
+    "onCommands": [
+      "filament"
+    ]
   },
   "contracts": {
     "tools": [
@@ -32,15 +45,17 @@
       "filament_join_channel",
       "filament_leave_channel",
       "filament_create_channel",
-      "filament_rechat",
-      "filament_quote",
       "filament_get_self",
       "filament_set_profile",
       "filament_set_channel_notification_level",
       "filament_get_backchannel",
       "filament_declare_settings",
       "filament_set_setting",
-      "filament_get_settings"
+      "filament_get_settings",
+      "filament_get_media_download_url",
+      "filament_create_media_upload",
+      "filament_post_quote",
+      "filament_post_rechat"
     ]
   },
   "configSchema": {
@@ -120,9 +135,6 @@
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "connectToken"
-          ],
           "properties": {
             "connectToken": {
               "description": "This agent's Filament connect token (fmcp_…), a ${ENV_VAR} shorthand, or a SecretRef.",
@@ -136,23 +148,74 @@
                 }
               ]
             },
+            "pendingSignIn": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "deviceCode",
+                "clientId",
+                "tokenEndpoint",
+                "resource",
+                "expiresAt"
+              ],
+              "description": "A device sign-in `openclaw filament login` started and the gateway finishes: the account polls Filament until the owner approves, then saves the token as connectToken and drops this. The device code is a credential until redeemed.",
+              "properties": {
+                "deviceCode": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "clientId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tokenEndpoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "resource": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "interval": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "Seconds between polls."
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "description": "When the device code expires (ISO 8601)."
+                }
+              }
+            },
             "mcpUrl": {
               "type": "string",
               "description": "Overrides the top-level mcpUrl for this account."
             },
             "pending": {
               "type": "boolean",
-              "description": "Connected without naming an OpenClaw agent (install.sh with no OPENCLAW_AGENT): runs no agent turns and asks its principal in Filament which of this gateway's agents to become, then binds it."
+              "description": "Retired: written by an older install.sh with no OPENCLAW_AGENT. The account stays idle; remove it and connect the agent with `openclaw filament login`."
             },
             "control": {
               "type": "boolean",
-              "description": "A gateway control account (install.sh OPENCLAW_GATEWAY=1): runs no agent turns, reports this gateway's agents to Filament and takes connect commands from its principal."
+              "description": "Retired: a gateway control account (an older install.sh's OPENCLAW_GATEWAY=1). The account stays idle; remove it and connect each agent with `openclaw filament login`."
             },
             "transport": {
               "$ref": "#/$defs/transport",
               "description": "Overrides the top-level transport for this account."
             }
-          }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "connectToken"
+              ]
+            },
+            {
+              "required": [
+                "pendingSignIn"
+              ]
+            }
+          ]
         }
       },
       "mcpUrl": {

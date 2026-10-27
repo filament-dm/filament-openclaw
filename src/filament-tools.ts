@@ -42,6 +42,7 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["poll_work", "the poll transport owns this call exclusively"],
   ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
   ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
+  ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"],
 ]);
 
 // Tools that change the agent itself: callable only from a backchannel (principal) turn.
@@ -76,7 +77,7 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
     return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
   }
   // Both name only a message: the room they answered in is unknown.
-  if (toolName === "reply_in_thread" || toolName === "quote") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "reply_in_thread" || toolName === "post_quote") return REPLIED_UNKNOWN_ROOM;
   if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
   return null;
 }
@@ -132,6 +133,8 @@ export interface FilamentToolClient {
     args?: Record<string, unknown>,
     opts?: CallOptions,
   ): Promise<ToolCallResult>;
+  /** The live server's tools (`FilamentMcpClient.toolNames`); null or absent until listed. */
+  readonly toolNames?: ReadonlySet<string> | null;
 }
 
 export type GetFilamentClient = (accountId: string) => FilamentToolClient | null;
@@ -191,6 +194,27 @@ function toLabel(name: string): string {
     .join(" ");
 }
 
+/** Arguments that name a message by its event id. */
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+
+/**
+ * OpenClaw lists earlier messages to the model as `#<message_id> <sender>: <body>`, so a model
+ * may hand back `#$event` for an id. Matrix event ids start with `$`; the `#` is never part of one.
+ */
+export function normalizeEventIdArgs(params: Record<string, unknown>): Record<string, unknown> {
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
+      out[key] = value.slice(1);
+      changed = true;
+    } else {
+      out[key] = value;
+    }
+  }
+  return changed ? out : params;
+}
+
 function makeExecute(
   toolName: string,
   tier: ToolTier,
@@ -210,9 +234,17 @@ function makeExecute(
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: Filament is not connected yet`);
     }
+    // The snapshot can be newer than the server (e.g. the signed-URL media tools): say so rather
+    // than send a call the server will reject as unknown. Unlisted yet: call through.
+    if (client.toolNames && !client.toolNames.has(toolName)) {
+      log(`filament-tools: ${qualifiedName} not offered by this server`);
+      throw new Error(
+        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`,
+      );
+    }
     let result: ToolCallResult;
     try {
-      result = await client.callTool(toolName, params, { signal });
+      result = await client.callTool(toolName, normalizeEventIdArgs(params), { signal });
     } catch (error) {
       log(`filament-tools: ${qualifiedName} failed`);
       throw new Error(`${qualifiedName}: call failed — ${String(error)}`);

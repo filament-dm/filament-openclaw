@@ -19,7 +19,8 @@ async function fetchInboundMedia(client, messages, opts, deps = {}) {
     }
     try {
       const { bytes, contentType } = await client.downloadMedia(media.mxc_url, MEDIA_MAX_BYTES, {
-        signal: opts.signal
+        signal: opts.signal,
+        messageId: m.event_id
       });
       const file = await save(bytes, contentType ?? media.mimetype, media.filename);
       saved.push({

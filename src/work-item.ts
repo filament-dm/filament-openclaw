@@ -18,6 +18,10 @@ export interface WorkMessage {
   ts: number;
   /** poll_work only: FCM pushes carry no attachment urls. */
   media?: WorkMedia[];
+  /** An @-mention of the agent. */
+  is_mention?: boolean;
+  /** poll_work only, once the server has judged it: the message reads as wanting an answer. */
+  reply_expected?: boolean;
 }
 
 export interface WorkItem {
@@ -26,7 +30,41 @@ export interface WorkItem {
   is_backchannel: boolean;
   /** A room created as a DM, other than the backchannel. */
   is_direct?: boolean;
+  /**
+   * What a push said about the room, from servers that put it on poll_work items
+   * (filament-dm/synapse#1156): its name, its loop's name, and each sender's display name by
+   * user id. `sender_names` present means the server sent them; older servers send none.
+   */
+  channel_name?: string;
+  loop_name?: string;
+  sender_names?: Record<string, string>;
   messages: WorkMessage[];
+}
+
+/**
+ * How OpenClaw files the turn. Only the principal's backchannel is a direct chat, which OpenClaw's
+ * default `session.dmScope` puts in the agent's main session, as it does the owner's DMs on any
+ * channel. Every other room, a DM from someone else included, is a group with a session of its
+ * own: other people's words never reach the owner's main conversation.
+ */
+export function turnPeerKind(item: Pick<WorkItem, "is_backchannel">): "direct" | "group" {
+  return item.is_backchannel ? "direct" : "group";
+}
+
+/**
+ * Whether a group turn must end in an answer, as OpenClaw's `WasMentioned`. With group silence
+ * allowed (`surfaces.filament.silentReply.group`), only a turn marked this way refuses NO_REPLY.
+ * The server's judgement wins: a passing @-mention it judged as not wanting an answer may go
+ * unanswered. Without one, an @-mention or a DM from someone else counts. The backchannel never
+ * asks: it is direct, and OpenClaw always requires a reply there.
+ */
+export function turnWasMentioned(
+  item: Pick<WorkItem, "is_backchannel" | "is_direct" | "messages">,
+): boolean | undefined {
+  if (item.is_backchannel) return undefined;
+  const judged = item.messages.filter((m) => typeof m.reply_expected === "boolean");
+  if (judged.length > 0) return judged.some((m) => m.reply_expected === true);
+  return item.is_direct === true || item.messages.some((m) => m.is_mention === true);
 }
 
 export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";
@@ -37,4 +75,5 @@ export type DispatchOutcome =
   | { kind: "ambiguous" } // no finals, no explicit skip signal, no error: leave it be (no ack, no pause).
   | { kind: "dropped"; diagnostic: string } // the turn failed, or the server refused the reply: ack it.
   | { kind: "retry"; diagnostic: string } // the reply may not have landed (network, 5xx): no ack, back off.
-  | { kind: "fatal"; diagnostic: string }; // the bearer was rejected: no ack; the account stops.
+  | { kind: "fatal"; diagnostic: string } // the bearer was rejected: no ack; the account stops.
+  | { kind: "held"; diagnostic: string }; // not dispatched yet, on purpose: no ack, poll again shortly.

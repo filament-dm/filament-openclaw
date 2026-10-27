@@ -10,13 +10,36 @@ import {
   resolveOutboundMediaUrls
 } from "openclaw/plugin-sdk/reply-payload";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
+function hostReplyKind(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload;
+  if (p.isError === true) return "error";
+  if (p.isStatusNotice === true || p.isFallbackNotice === true || p.isCompactionNotice === true) {
+    return "notice";
+  }
+  return null;
+}
 function inboundMediaFields(media) {
   if (!media?.length) return {};
   const facts = toInboundMediaFacts(media);
   return { media: facts, ...buildChannelInboundMediaPayload(facts) };
 }
-function renderMessages(messages) {
-  return messages.map((m) => `[${m.sender} ${m.event_id}] ${m.body}`).join("\n");
+function senderLabel(sender, names) {
+  const name = names?.[sender];
+  return name ? `${name} (${sender})` : sender;
+}
+function inboundMessageFields(messages, senderNames) {
+  const current = messages[messages.length - 1];
+  return {
+    body: current?.body ?? "",
+    current,
+    history: messages.slice(0, -1).map((m) => ({
+      sender: senderLabel(m.sender, senderNames),
+      body: m.body,
+      timestamp: m.ts,
+      messageId: m.event_id
+    }))
+  };
 }
 async function dispatchWorkItemTurn(params) {
   const runtime = params.channelRuntime;
@@ -27,9 +50,10 @@ async function dispatchWorkItemTurn(params) {
     accountId: params.accountId,
     peer
   });
-  const sessionKey = params.threadId ? resolveThreadSessionKeys({
+  const childKey = params.sideSession ?? params.threadId;
+  const sessionKey = childKey ? resolveThreadSessionKeys({
     baseSessionKey: route.sessionKey,
-    threadId: params.threadId,
+    threadId: childKey,
     normalizeThreadId: (id) => id
   }).sessionKey : route.sessionKey;
   const effectiveRoute = { ...route, sessionKey };
@@ -43,8 +67,13 @@ async function dispatchWorkItemTurn(params) {
     resolveEnvelopeFormatOptions: runtime.reply.resolveEnvelopeFormatOptions,
     formatAgentEnvelope: runtime.reply.formatAgentEnvelope
   });
-  const rawBody = renderMessages(params.messages);
-  const lastMessage = params.messages[params.messages.length - 1];
+  const {
+    body: rawBody,
+    current: lastMessage,
+    history
+  } = inboundMessageFields(params.messages, params.senderNames);
+  const senderName = lastMessage ? params.senderNames?.[lastMessage.sender] : void 0;
+  const isGroup = params.peerKind === "group";
   const { storePath, body } = buildEnvelope({
     channel: params.channelLabel,
     from: params.conversationLabel,
@@ -61,7 +90,14 @@ async function dispatchWorkItemTurn(params) {
     AccountId: accountId,
     ChatType: params.peerKind === "direct" ? "direct" : "group",
     ConversationLabel: params.conversationLabel,
+    ...params.groupSubject && isGroup ? { GroupSubject: params.groupSubject } : {},
+    ...params.channelName && isGroup ? { GroupChannel: params.channelName } : {},
+    ...params.loopName && isGroup ? { GroupSpace: params.loopName } : {},
+    ...isGroup && params.wasMentioned !== void 0 ? { WasMentioned: params.wasMentioned } : {},
     SenderId: lastMessage?.sender ?? "unknown",
+    ...senderName ? { SenderName: senderName } : {},
+    ...lastMessage ? { Timestamp: lastMessage.ts } : {},
+    ...history.length > 0 ? { InboundHistory: history } : {},
     Provider: params.channel,
     Surface: params.channel,
     MessageSid: lastMessage?.event_id ?? params.channelId,
@@ -69,6 +105,13 @@ async function dispatchWorkItemTurn(params) {
     OriginatingChannel: params.channel,
     OriginatingTo: params.channelId,
     CommandAuthorized: params.commandAuthorized,
+    // The gateway, not the principal, wrote a side session's prompt.
+    ...params.sideSession ? {
+      InputProvenance: {
+        kind: "internal_system",
+        sourceTool: `filament:${params.sideSession}`
+      }
+    } : {},
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {},
     ...inboundMediaFields(params.media)
@@ -84,6 +127,7 @@ async function dispatchWorkItemTurn(params) {
   let sawSkip = false;
   let sawError = false;
   let errorDetail;
+  let errorReplyText;
   await runPreparedInboundReply({
     channel: params.channel,
     accountId,
@@ -102,6 +146,18 @@ async function dispatchWorkItemTurn(params) {
         // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
         deliver: async (payload, info) => {
           if (info?.kind !== "final") return;
+          const host = hostReplyKind(payload);
+          if (host) {
+            const text2 = payload.text;
+            const said = typeof text2 === "string" ? text2.trim() : "";
+            if (host === "error") {
+              sawError = true;
+              errorReplyText = said || void 0;
+              errorDetail = `OpenClaw error reply: ${said || "(no text)"}`;
+            }
+            params.log(`OpenClaw ${host} reply kept out of the answer: ${said || "(no text)"}`);
+            return;
+          }
           const normalized = payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {};
           const text = normalized.text;
           if (typeof text === "string" && text.trim()) finals.push(text);
@@ -127,9 +183,13 @@ async function dispatchWorkItemTurn(params) {
     sawFinal: finals.length > 0 || mediaUrls.length > 0,
     sawSkip,
     sawError,
-    errorDetail
+    errorDetail,
+    ...errorReplyText ? { errorReplyText } : {}
   };
 }
 export {
-  dispatchWorkItemTurn
+  dispatchWorkItemTurn,
+  hostReplyKind,
+  inboundMessageFields,
+  senderLabel
 };

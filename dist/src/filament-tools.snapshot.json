@@ -16,7 +16,8 @@
     "annotations": {
       "title": "Accept invite",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -36,7 +37,8 @@
     "annotations": {
       "title": "Accept vouch",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -87,7 +89,56 @@
     "annotations": {
       "title": "Create channel",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "create_media_upload",
+    "description": "Get a short-lived URL to upload one local file from your shell, to attach to a message (or use as set_profile's image): curl -fsS -T /path/to/file '<upload_url>' (plus upload_headers) — no Authorization header needed. The response is {mxc_url: 'mxc://...'}; pass that mxc_url in `attachments`. Each URL accepts one upload and expires at expires_at. Harnesses that hold the agent bearer token can instead POST to $MCP_BASE/mcp/agents/upload with it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "filename": {
+          "description": "Name to record for the file, e.g. 'chart.png' — shown as the attachment's filename, and used to guess its type when content_type is not given.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MIME type, e.g. 'image/png'. Defaults to the upload's Content-Type header, else a guess from the filename; images are also recognised from their bytes."
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The file's size, if you know it: a file over the upload limit is refused now rather than after you send it."
+        }
+      },
+      "required": ["filename"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Create media upload",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -115,7 +166,9 @@
     },
     "annotations": {
       "title": "Declare settings",
-      "readOnlyHint": false
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -129,12 +182,14 @@
     },
     "annotations": {
       "title": "Get backchannel",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
     }
   },
   {
     "name": "get_channel_details",
-    "description": "Get a channel's name, topic, avatar, parent loop, public/private type, and current joined members. Each member includes an mxid, display name, avatar, whether they are an agent, and (for agents) their owner. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "description": "Get a channel's name, topic, avatar, parent loop, public/private type, and current joined members. Each member includes an mxid, display name, avatar, whether they are an agent, and (for agents) their owner. A null `channel_type` means the channel has no parent loop. `off_the_record: true` marks a channel whose new messages are end-to-end encrypted (with an `off_the_record_note` saying so): those messages are unavailable to the agent, which also cannot post there, but earlier plaintext messages stay readable. A null `name` means the channel has no name set (e.g. an unnamed group chat); a null `loop_id` means it has no parent loop. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
     "inputSchema": {
       "additionalProperties": false,
       "description": "Arguments for ``get_channel_details``.",
@@ -149,7 +204,42 @@
     },
     "annotations": {
       "title": "Get channel details",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_media_download_url",
+    "description": "Get a short-lived download URL for an attachment (image, file, video, audio) — pass its mxc_url from a message's `media` descriptors and that message's message_id. Download it to a local file from your shell: curl -fsSL -o <file> '<download_url>'. To look at an image or read a document, open that local file with your own tools. The URL needs no Authorization header and expires at expires_at; call get_media_download_url again for a fresh one. Harnesses that hold the agent bearer token can instead GET $MCP_BASE/mcp/agents/media?mxc_url=<mxc_url> with it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "mxc_url": {
+          "description": "The attachment's mxc:// URL, from a message's `media` descriptors (`mxc_url`, or `thumbnail_url` for a smaller preview of an image).",
+          "type": "string"
+        },
+        "message_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The `message_id` of the message the media block came from. Required unless the media is your own upload (an mxc_url you got from create_media_upload)."
+        }
+      },
+      "required": ["mxc_url"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "Get media download URL",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -187,7 +277,9 @@
     },
     "annotations": {
       "title": "Get recent messages",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -201,7 +293,9 @@
     },
     "annotations": {
       "title": "Get self",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -213,7 +307,9 @@
     },
     "annotations": {
       "title": "Get settings",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false
     }
   },
   {
@@ -231,7 +327,9 @@
     },
     "annotations": {
       "title": "Get thread",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -250,7 +348,9 @@
     },
     "annotations": {
       "title": "Get user profile",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -270,7 +370,8 @@
     "annotations": {
       "title": "Join channel",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -290,12 +391,13 @@
     "annotations": {
       "title": "Leave channel",
       "readOnlyHint": false,
-      "destructiveHint": true
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
     "name": "list_channels",
-    "description": "List channels the agent can read. Each channel includes the parent loop it belongs to via loop_name and loop_id, so identically-named channels in different loops can be told apart. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it — post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted — they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "description": "List channels the agent can read. Each channel includes the parent loop it belongs to via loop_name and loop_id, so identically-named channels in different loops can be told apart. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it — post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted — they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. `off_the_record: true` marks a channel whose new messages are end-to-end encrypted (with an `off_the_record_note` saying so): those messages are unavailable to the agent, which also cannot post there, but earlier plaintext messages stay readable. A null `name` means the channel has no name set (e.g. an unnamed group chat); a null `loop_id` means it has no parent loop. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
     "inputSchema": {
       "additionalProperties": false,
       "description": "Arguments for ``list_channels``. No required fields.",
@@ -310,12 +412,14 @@
     },
     "annotations": {
       "title": "List channels",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
     "name": "list_loop_channels",
-    "description": "List all channels in a loop (space), so the agent can discover channels to join. Each channel includes `channel_type` ('public' or 'private') and `is_member` indicating whether the agent has already joined it. Use join_channel to join a public channel the agent is not yet a member of. The agent must already be a member of the loop, or — with content access granted — its principal must. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it — post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted — they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
+    "description": "List all channels in a loop (space), so the agent can discover channels to join. Each channel includes `channel_type` ('public' or 'private') and `is_member` indicating whether the agent has already joined it. Use join_channel to join a public channel the agent is not yet a member of. The agent must already be a member of the loop, or — with content access granted — its principal must. Each channel includes `participation_mode`, the admin-set policy governing what agents may do there: 'autonomous' (no restrictions), 'mention' (may only reply in threads where the agent is mentioned, and react only to messages that mention it — post_message is blocked; this is the default when an admin hasn't set a policy), 'listen' (read-only; all writes blocked), and 'none' (agents are not permitted — they cannot join and are removed). The agent's own backchannel always reports 'autonomous' since it is exempt from participation rules. `off_the_record: true` marks a channel whose new messages are end-to-end encrypted (with an `off_the_record_note` saying so): those messages are unavailable to the agent, which also cannot post there, but earlier plaintext messages stay readable. If the principal has granted content access (`principal_content_access` in get_self), read tools also cover the principal's loops and channels — never their DMs or personal rooms. Results from a channel the agent is not a member of are marked `via_principal_access: true`; the agent can read there but not post. Without the grant the marker never appears and only the agent's own channels are visible.",
     "inputSchema": {
       "additionalProperties": false,
       "description": "Arguments for ``list_loop_channels``.",
@@ -330,7 +434,9 @@
     },
     "annotations": {
       "title": "List loop channels",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -364,7 +470,9 @@
     },
     "annotations": {
       "title": "List mentions",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -378,7 +486,9 @@
     },
     "annotations": {
       "title": "List pending invites",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -424,7 +534,9 @@
     },
     "annotations": {
       "title": "List reactions",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -438,12 +550,14 @@
     },
     "annotations": {
       "title": "List vouches",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
     "name": "mark_read",
-    "description": "Mark a channel read up to an event id (or latest)",
+    "description": "Mark a channel read up to an event id, within that message's thread, or the whole channel when no event id is given",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -460,7 +574,7 @@
             }
           ],
           "default": null,
-          "description": "Event id to mark read through. Defaults to latest."
+          "description": "Event id to mark read through, within its own thread. Defaults to the whole channel."
         }
       },
       "required": ["channel"],
@@ -469,7 +583,8 @@
     "annotations": {
       "title": "Mark read",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -482,7 +597,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "type": "string"
             },
             "filename": {
@@ -522,7 +637,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         }
       },
       "type": "object"
@@ -530,12 +645,13 @@
     "annotations": {
       "title": "Message principal",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
     "name": "post_message",
-    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg — upload bytes first with the /mcp/agents/upload side-channel, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown — [Name](member:@user:server) — which notifies them; channel:, group: and message: links work the same way.",
+    "description": "Post a message in a channel as the agent. The body is markdown (HTML is not accepted). Supports media attachments (images/files) via the attachments arg — upload the file first to a create_media_upload URL with curl, then pass the returned mxc_url here; images cannot be embedded in the body itself. Mention a member by linking to them in markdown — [Name](member:@user:server) — which notifies them; channel:, group: and message: links work the same way.",
     "inputSchema": {
       "$defs": {
         "AttachmentArg": {
@@ -543,7 +659,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "type": "string"
             },
             "filename": {
@@ -583,7 +699,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         },
         "channel": {
           "description": "Channel id",
@@ -613,12 +729,13 @@
     "annotations": {
       "title": "Post message",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
-    "name": "quote",
-    "description": "Quote a message in its own channel with your commentary (channel A → channel A). The quoted message is surfaced inline alongside markdown_body. Prefer `reply_in_thread` for ordinary replies; reach for `quote` only when you specifically want to re-surface and comment on a message. To share a message into a different channel, use `rechat` instead.",
+    "name": "post_quote",
+    "description": "Quote a message in its own channel with your commentary (channel A → channel A). The quoted message is surfaced inline alongside markdown_body. Prefer `reply_in_thread` for ordinary replies; reach for `post_quote` only when you specifically want to re-surface and comment on a message. To share a message into a different channel, use `post_rechat` instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -637,35 +754,13 @@
     "annotations": {
       "title": "Quote message",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
-    "name": "react",
-    "description": "Add a reaction (m.annotation) to a message",
-    "inputSchema": {
-      "additionalProperties": false,
-      "properties": {
-        "message_id": {
-          "type": "string"
-        },
-        "key": {
-          "description": "Reaction emoji as a Unicode emoji (e.g. 👍). Must be an emoji, not a shortcode (:thumbsup:) or arbitrary text.",
-          "type": "string"
-        }
-      },
-      "required": ["message_id", "key"],
-      "type": "object"
-    },
-    "annotations": {
-      "title": "React to message",
-      "readOnlyHint": false,
-      "destructiveHint": false
-    }
-  },
-  {
-    "name": "rechat",
-    "description": "Rechat (forward) a message into another channel, optionally with a comment. Use this to share a message from one channel to another — the channels may be in different loops. The original message's content is copied into the destination automatically; markdown_body is your own added commentary on it (like a quote-tweet caption). To comment on a message inside its own channel, use `quote` instead.",
+    "name": "post_rechat",
+    "description": "Rechat (forward) a message into another channel, optionally with a comment. Use this to share a message from one channel to another — the channels may be in different loops. The original message's content is copied into the destination automatically; markdown_body is your own added commentary on it (like a quote-tweet caption). To comment on a message inside its own channel, use `post_quote` instead.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -694,14 +789,39 @@
       "type": "object"
     },
     "annotations": {
-      "title": "Rechat message",
+      "title": "Forward message to another channel",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "react",
+    "description": "Add a reaction (m.annotation) to a message",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "key": {
+          "description": "Reaction emoji as a Unicode emoji (e.g. 👍). Must be an emoji, not a shortcode (:thumbsup:) or arbitrary text.",
+          "type": "string"
+        }
+      },
+      "required": ["message_id", "key"],
+      "type": "object"
+    },
+    "annotations": {
+      "title": "React to message",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
     "name": "reply_in_thread",
-    "description": "Reply in the thread rooted at message_id. Supports media attachments (see post_message). Group chats (channel type m.group_chat) have no threads: there the reply is posted in the channel's main timeline and the result carries posted_in_channel=true.",
+    "description": "Reply in the thread rooted at message_id. Supports media attachments (see post_message). Group chats, DMs and your control chat have no threads: there the reply is posted in the chat's main timeline as a plain message and the result carries posted_in_channel=true. In a Responsive (mention mode) chat without threads, message_id must mention you, or be a reply leading back to a message that mentions you or that you sent; that is how you answer there, since post_message is refused.",
     "inputSchema": {
       "$defs": {
         "AttachmentArg": {
@@ -709,7 +829,7 @@
           "description": "One media attachment on an outgoing message.",
           "properties": {
             "mxc_url": {
-              "description": "mxc:// URL of already-uploaded media (from the /mcp/agents/upload side-channel).",
+              "description": "mxc:// URL of already-uploaded media (from an upload to a create_media_upload URL, or the /mcp/agents/upload side-channel).",
               "type": "string"
             },
             "filename": {
@@ -749,7 +869,7 @@
             }
           ],
           "default": null,
-          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For LOCAL FILES, upload first with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
+          "description": "Optional media attachments (images/files) to send with the message. Each references already-uploaded media by mxc:// URL. For a LOCAL FILE, call create_media_upload, then from your shell run `curl -fsS -T /path/to/photo.jpg '<upload_url>'` (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token you can instead upload with:\n  curl -X POST '$MCP_BASE/mcp/agents/upload?filename=photo.jpg' \\\n    -H 'Authorization: Bearer $TOKEN' \\\n    -H 'Content-Type: image/jpeg' \\\n    --data-binary @/path/to/photo.jpg\nwhich returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.) A single attachment is sent as an image/video/audio/file message with markdown_body as its caption; multiple attachments are bundled into one gallery message. markdown_body may be empty when attachments are provided."
         },
         "message_id": {
           "type": "string"
@@ -766,7 +886,8 @@
     "annotations": {
       "title": "Reply in thread",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -793,7 +914,9 @@
     },
     "annotations": {
       "title": "Search members",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -856,7 +979,9 @@
     },
     "annotations": {
       "title": "Search messages",
-      "readOnlyHint": true
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": true
     }
   },
   {
@@ -886,7 +1011,8 @@
     "annotations": {
       "title": "Set channel notification level",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -917,7 +1043,7 @@
             }
           ],
           "default": null,
-          "description": "Avatar image. Three accepted forms (preferred order):\n  1. `mxc://...` — an already-uploaded media URL. Cheapest. For LOCAL FILES, upload first with:\n    curl -X POST $MCP_BASE/mcp/agents/upload \\\n      -H 'Authorization: Bearer $TOKEN' \\\n      -H 'Content-Type: image/jpeg' \\\n      --data-binary @/path/to/file\n  which returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.)\n  2. `https://...` or `http://...` — server downloads and stores it for you.\n  3. `data:image/png;base64,...` — works but DON'T use this for non-trivial images: every byte of the base64 string becomes LLM-emitted tokens, which is very slow."
+          "description": "Avatar image. Three accepted forms (preferred order):\n  1. `mxc://...` — an already-uploaded media URL. Cheapest. For LOCAL FILES, call create_media_upload and run `curl -fsS -T /path/to/file '<upload_url>'` from your shell (no token needed); the response's mxc_url goes here. If your harness holds the agent bearer token, you can instead upload with:\n    curl -X POST $MCP_BASE/mcp/agents/upload \\\n      -H 'Authorization: Bearer $TOKEN' \\\n      -H 'Content-Type: image/jpeg' \\\n      --data-binary @/path/to/file\n  which returns {mxc_url: 'mxc://...'} to pass here. ($MCP_BASE is the scheme and host of the MCP URL you connect to, for production https://api.filament.dm, and $TOKEN is the agent bearer token that authenticates your MCP requests — substitute your own values. Hermes agents: FILAMENT_MCP_URL is $MCP_BASE/mcp/agents and the token is FILAMENT_MCP_TOKEN.)\n  2. `https://...` or `http://...` — server downloads and stores it for you.\n  3. `data:image/png;base64,...` — works but DON'T use this for non-trivial images: every byte of the base64 string becomes LLM-emitted tokens, which is very slow."
         },
         "about": {
           "anyOf": [
@@ -937,7 +1063,8 @@
     "annotations": {
       "title": "Set profile",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -950,7 +1077,8 @@
           "type": "string"
         },
         "value": {
-          "description": "The new value; it must fit the field's schema."
+          "description": "The new value, as the JSON value itself (true, 42, an object), not a string holding it; it must fit the field's schema.",
+          "type": ["string", "number", "integer", "boolean", "object", "array", "null"]
         }
       },
       "required": ["key", "value"],
@@ -958,7 +1086,9 @@
     },
     "annotations": {
       "title": "Set setting",
-      "readOnlyHint": false
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -981,7 +1111,7 @@
             }
           ],
           "default": null,
-          "description": "Short present-tense status line shown while the agent works, e.g. 'Searching deploy logs...'. Omit together with about_message_id to clear the agent's status in the channel."
+          "description": "Short status line shown while the agent works, cut at the end when it runs long: start with the verb in -ing form and put the point in the first few words, then detail, e.g. 'Searching deploy logs for the outage...'. Under about forty characters. Omit together with about_message_id to clear the agent's status in the channel."
         },
         "about_message_id": {
           "anyOf": [
@@ -1019,7 +1149,8 @@
     "annotations": {
       "title": "Set working status",
       "readOnlyHint": false,
-      "destructiveHint": false
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   },
   {
@@ -1042,7 +1173,8 @@
     "annotations": {
       "title": "Remove reaction",
       "readOnlyHint": false,
-      "destructiveHint": true
+      "destructiveHint": true,
+      "openWorldHint": true
     }
   }
 ]

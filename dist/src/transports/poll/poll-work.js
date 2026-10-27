@@ -21,6 +21,22 @@ function withMedia(raw) {
   }
   return media.length ? { media } : {};
 }
+function withRoomFacts(r) {
+  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : void 0;
+  const channelName = text(r.channel_name);
+  const loopName = text(r.loop_name);
+  const raw = r.sender_names;
+  const names = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.fromEntries(
+    Object.entries(raw).flatMap(
+      ([id, name]) => text(name) ? [[id, text(name)]] : []
+    )
+  ) : void 0;
+  return {
+    ...channelName ? { channel_name: channelName } : {},
+    ...loopName ? { loop_name: loopName } : {},
+    ...names ? { sender_names: names } : {}
+  };
+}
 function parsePollWorkResponse(data) {
   if (!data || typeof data !== "object") return null;
   const d = data;
@@ -54,6 +70,7 @@ function parsePollWorkResponse(data) {
       thread_id: typeof r.thread_id === "string" ? r.thread_id : null,
       is_backchannel: r.is_backchannel === true,
       is_direct: r.is_direct === true,
+      ...withRoomFacts(r),
       messages,
       reply_with: replyWith
     });
@@ -72,6 +89,8 @@ function parsePollWorkResponse(data) {
   };
 }
 const PENDING_SWEEP_INTERVAL_MS = 10 * 6e4;
+const AMBIGUOUS_HOLD_MS = [3e4, 9e4];
+const HOLD_POLL_MS = 5e3;
 const MAX_REPLY_ATTEMPTS = 3;
 const BUSY_DEFAULT_WAIT_MS = 1e3;
 const DEFAULT_WAIT_SECONDS = 30;
@@ -86,10 +105,11 @@ async function runPollLoop(opts) {
   const maxItems = opts.maxItems ?? DEFAULT_MAX_ITEMS;
   const backoffMs = opts.backoffMs ?? nextBackoffMs;
   const now = opts.now ?? Date.now;
-  let cursor;
+  let cursor = opts.initialCursor;
   let pendingAck = [];
   let failureStreak = 0;
-  const ambiguousSeen = /* @__PURE__ */ new Set();
+  const ambiguousSeen = /* @__PURE__ */ new Map();
+  const holdPollMs = opts.holdPollMs ?? HOLD_POLL_MS;
   const replyAttempts = /* @__PURE__ */ new Map();
   let lastSweep = 0;
   const sweep = async () => {
@@ -100,6 +120,8 @@ async function runPollLoop(opts) {
   while (!abortSignal.aborted) {
     if (now() - lastSweep >= PENDING_SWEEP_INTERVAL_MS) await sweep();
     if (abortSignal.aborted) break;
+    if (cursor) opts.onCursorSent?.(cursor);
+    const sentCursor = cursor;
     let result;
     try {
       result = await client.pollWork(
@@ -149,7 +171,7 @@ async function runPollLoop(opts) {
       continue;
     }
     pendingAck = [];
-    cursor = parsed.cursor;
+    let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
     for (const item of parsed.work) {
       if (abortSignal.aborted) return {};
@@ -157,9 +179,23 @@ async function runPollLoop(opts) {
         log(`filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`);
         continue;
       }
-      const outcome = await dispatchItem(item);
       const key = itemKey(item);
-      const ack = () => pendingAck.push(...item.messages.map((m) => m.event_id));
+      const held = ambiguousSeen.get(key);
+      if (held && now() < held.nextAt) {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
+      const outcome = await dispatchItem(item);
+      const ack = () => {
+        pendingAck.push(...item.messages.map((m) => m.event_id));
+        opts.onAcked?.(item);
+      };
+      if (outcome.kind === "held") {
+        unfinished = true;
+        await sleepAbortable(holdPollMs, abortSignal);
+        continue;
+      }
       if (outcome.kind !== "retry") replyAttempts.delete(key);
       if (outcome.kind === "fatal") {
         log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);
@@ -180,6 +216,7 @@ async function runPollLoop(opts) {
           ack();
         } else {
           replyAttempts.set(key, attempts);
+          unfinished = true;
           const backoff = backoffMs(attempts);
           log(
             `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`
@@ -188,21 +225,31 @@ async function runPollLoop(opts) {
         }
       }
       if (outcome.kind === "ambiguous") {
-        if (ambiguousSeen.has(key)) {
+        const offers = (held?.offers ?? 0) + 1;
+        if (abortSignal.aborted) return {};
+        if (offers > AMBIGUOUS_HOLD_MS.length) {
           ambiguousSeen.delete(key);
           log(
-            `filament-poll: ${item.channel_id} produced no output twice; acknowledging without a reply`
+            `filament-poll: ${item.channel_id} produced no output ${offers} times; acknowledging without a reply`
           );
           ack();
         } else {
-          ambiguousSeen.add(key);
+          const hold = AMBIGUOUS_HOLD_MS[offers - 1];
+          ambiguousSeen.set(key, { offers, nextAt: now() + hold });
+          log(
+            `filament-poll: ${item.channel_id} produced no output; offering it again in ${hold}ms`
+          );
+          unfinished = true;
         }
       }
+      if (outcome.kind !== "ambiguous") ambiguousSeen.delete(key);
     }
+    cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
   return {};
 }
 export {
+  AMBIGUOUS_HOLD_MS,
   MAX_REPLY_ATTEMPTS,
   PENDING_SWEEP_INTERVAL_MS,
   parsePollWorkResponse,
