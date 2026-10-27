@@ -9,7 +9,11 @@ const EXCLUDED_TOOLS = /* @__PURE__ */ new Map([
   ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
   ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"]
 ]);
-const RING0_TOOL_NAMES = /* @__PURE__ */ new Set(["set_profile"]);
+const RING0_TOOL_NAMES = /* @__PURE__ */ new Set([
+  "set_profile",
+  "declare_settings",
+  "set_setting"
+]);
 function classifyToolTier(descriptor) {
   if (RING0_TOOL_NAMES.has(descriptor.name)) return "ring0";
   const readOnly = descriptor.annotations?.readOnlyHint;
@@ -23,7 +27,7 @@ function replyTarget(toolName, params) {
   if (toolName === "post_message") {
     return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
   }
-  if (toolName === "reply_in_thread" || toolName === "quote") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "reply_in_thread" || toolName === "post_quote") return REPLIED_UNKNOWN_ROOM;
   if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
   return null;
 }
@@ -161,7 +165,7 @@ function logToolDrift(liveTools, log) {
   }
   if (missing.length > 0) {
     log(
-      `filament-tools: snapshot has ${missing.length} tool(s) the server no longer serves: ${missing.join(", ")}`
+      `filament-tools: snapshot has ${missing.length} tool(s) the server does not list for this agent (behind a feature flag, or removed): ${missing.join(", ")}`
     );
   }
   if (extra.length === 0 && missing.length === 0) {

@@ -46,7 +46,11 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
 ]);
 
 // Tools that change the agent itself: callable only from a backchannel (principal) turn.
-const RING0_TOOL_NAMES: ReadonlySet<string> = new Set(["set_profile"]);
+const RING0_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "set_profile",
+  "declare_settings",
+  "set_setting",
+]);
 
 export type ToolTier = "read" | "ring0" | "write";
 
@@ -73,7 +77,7 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
     return typeof params.channel === "string" ? params.channel : REPLIED_UNKNOWN_ROOM;
   }
   // Both name only a message: the room they answered in is unknown.
-  if (toolName === "reply_in_thread" || toolName === "quote") return REPLIED_UNKNOWN_ROOM;
+  if (toolName === "reply_in_thread" || toolName === "post_quote") return REPLIED_UNKNOWN_ROOM;
   if (toolName === "message_principal") return REPLIED_BACKCHANNEL;
   return null;
 }
@@ -317,7 +321,7 @@ export function logToolDrift(liveTools: McpToolDescriptor[], log: (message: stri
   }
   if (missing.length > 0) {
     log(
-      `filament-tools: snapshot has ${missing.length} tool(s) the server no longer serves: ${missing.join(", ")}`,
+      `filament-tools: snapshot has ${missing.length} tool(s) the server does not list for this agent (behind a feature flag, or removed): ${missing.join(", ")}`,
     );
   }
   if (extra.length === 0 && missing.length === 0) {
