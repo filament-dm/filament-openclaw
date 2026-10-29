@@ -184,7 +184,7 @@ test("poll: OpenClaw's error reply in a group posts nothing there; the principal
     {
       tool: "message_principal",
       args: {
-        markdown_body: `I couldn't answer a message in Design review, so I posted nothing there. OpenClaw said: ${error}`,
+        markdown_body: `OpenClaw ended my turn on a message in Design review with an error, so I posted nothing there. OpenClaw said: ${error}`,
       },
     },
   ]);

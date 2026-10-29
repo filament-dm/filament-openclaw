@@ -11,11 +11,11 @@ test("failureNote: names the room when the item says it, and quotes what OpenCla
       { is_backchannel: false, channel_name: "Design review" },
       { errorReplyText: EMPTY },
     ),
-    `I couldn't answer a message in Design review, so I posted nothing there. OpenClaw said: ${EMPTY}`,
+    `OpenClaw ended my turn on a message in Design review with an error, so I posted nothing there. OpenClaw said: ${EMPTY}`,
   );
   assert.match(
     failureNote({ is_backchannel: false }, { errorDetail: "final: boom" }),
-    /^I couldn't answer a message in one of my channels, .* OpenClaw said: final: boom$/,
+    /^OpenClaw ended my turn on a message in one of my channels with an error, .* OpenClaw said: final: boom$/,
   );
   assert.match(failureNote({ is_backchannel: true }, {}), /your last message.*no detail$/);
 });

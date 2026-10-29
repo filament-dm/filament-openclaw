@@ -358,7 +358,7 @@ test("fcm: a turn that fails posts nothing in the room and tells the principal i
   const note = h.calls.find((c) => c.name === "message_principal")!;
   assert.match(
     String(note.args.markdown_body),
-    /^I couldn't answer a message in one of my channels/,
+    /^OpenClaw ended my turn on a message in one of my channels with an error/,
   );
   assert.match(String(note.args.markdown_body), /The AI service returned an empty reply/);
   h.stop();

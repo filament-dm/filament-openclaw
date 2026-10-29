@@ -23,7 +23,7 @@ export function failureNote(
     : item.channel_name
       ? `a message in ${item.channel_name}`
       : "a message in one of my channels";
-  return `I couldn't answer ${where}, so I posted nothing there. OpenClaw said: ${reason}`;
+  return `OpenClaw ended my turn on ${where} with an error, so I posted nothing there. OpenClaw said: ${reason}`;
 }
 
 /**
