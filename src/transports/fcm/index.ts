@@ -111,6 +111,7 @@ export async function runFcmTransport(
           body: messageBody(push),
           ts: Date.now(),
           is_mention: push.isMentionOfRecipient,
+          sender_is_agent: push.senderIsAgent === true,
         },
       ],
     };

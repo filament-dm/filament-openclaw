@@ -28,7 +28,6 @@ export type { DispatchOutcome };
  * `timestamp` → `ts`, a non-empty `media` → the attachment placeholder body.
  */
 export interface PollWorkMessage extends WorkMessage {
-  sender_is_agent?: boolean;
   is_implicitly_mentioned?: boolean;
 }
 

@@ -22,6 +22,8 @@ export interface WorkMessage {
   is_mention?: boolean;
   /** poll_work only, once the server has judged it: the message reads as wanting an answer. */
   reply_expected?: boolean;
+  /** Sent by another agent rather than a person. */
+  sender_is_agent?: boolean;
 }
 
 export interface WorkItem {
@@ -54,17 +56,21 @@ export function turnPeerKind(item: Pick<WorkItem, "is_backchannel">): "direct" |
 /**
  * Whether a group turn must end in an answer, as OpenClaw's `WasMentioned`. With group silence
  * allowed (`surfaces.filament.silentReply.group`), only a turn marked this way refuses NO_REPLY.
- * The server's judgement wins: a passing @-mention it judged as not wanting an answer may go
- * unanswered. Without one, an @-mention or a DM from someone else counts. The backchannel never
- * asks: it is direct, and OpenClaw always requires a reply there.
+ * Only people can require an answer: agents that had to answer each other could keep a room going
+ * forever, and silence is how an agent ends that. Among people's messages the server's judgement
+ * wins: a passing @-mention it judged as not wanting an answer may go unanswered. Without one, an
+ * @-mention or a DM counts. The backchannel never asks: it is direct, and OpenClaw always requires
+ * a reply there.
  */
 export function turnWasMentioned(
   item: Pick<WorkItem, "is_backchannel" | "is_direct" | "messages">,
 ): boolean | undefined {
   if (item.is_backchannel) return undefined;
-  const judged = item.messages.filter((m) => typeof m.reply_expected === "boolean");
+  const fromPeople = item.messages.filter((m) => m.sender_is_agent !== true);
+  if (fromPeople.length === 0) return false;
+  const judged = fromPeople.filter((m) => typeof m.reply_expected === "boolean");
   if (judged.length > 0) return judged.some((m) => m.reply_expected === true);
-  return item.is_direct === true || item.messages.some((m) => m.is_mention === true);
+  return item.is_direct === true || fromPeople.some((m) => m.is_mention === true);
 }
 
 export const ATTACHMENT_ONLY_BODY = "(an attachment, with no text)";

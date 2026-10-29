@@ -68,7 +68,8 @@ async function runFcmTransport(ctx, deps = {}) {
           sender: push.senderId ?? "unknown",
           body: messageBody(push),
           ts: Date.now(),
-          is_mention: push.isMentionOfRecipient
+          is_mention: push.isMentionOfRecipient,
+          sender_is_agent: push.senderIsAgent === true
         }
       ]
     };
