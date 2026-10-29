@@ -29,7 +29,6 @@ import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } fro
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
 import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
-import { forgetFcmState } from "./state/fcm.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -240,7 +239,6 @@ export function registerFilamentChannel(
           await holdOpen();
           return;
         }
-        forgetFcmState(accountId);
 
         // Started, not awaited: the update reloads the plugin, and the reload needs this account
         // to stop. The marker outlives the account; the one that comes back reads it and says

@@ -21,7 +21,6 @@ import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
 import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
-import { forgetFcmState } from "./state/fcm.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -179,7 +178,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           await holdOpen();
           return;
         }
-        forgetFcmState(accountId);
         let updateInFlight = false;
         const runUpdate = async () => {
           if (updateInFlight) return;
