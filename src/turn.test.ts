@@ -287,6 +287,44 @@ test("turnWasMentioned: the server's judgement first, then an @-mention or a DM"
   assert.equal(turnWasMentioned({ is_backchannel: true, messages: [msg()] }), undefined);
 });
 
+test("turnWasMentioned: only people can require an answer, never another agent", () => {
+  const msg = (extra: Record<string, unknown> = {}) => ({
+    event_id: "$e",
+    sender: "@u:x",
+    body: "hi",
+    ts: 1,
+    ...extra,
+  });
+  const group = (messages: ReturnType<typeof msg>[], extra: Record<string, unknown> = {}) => ({
+    is_backchannel: false,
+    messages,
+    ...extra,
+  });
+  const agent = { sender_is_agent: true };
+  // An agent's mention, judged as wanting an answer, still may go unanswered.
+  assert.equal(
+    turnWasMentioned(group([msg({ ...agent, is_mention: true, reply_expected: true })])),
+    false,
+  );
+  assert.equal(turnWasMentioned(group([msg({ ...agent, is_mention: true })])), false);
+  assert.equal(turnWasMentioned(group([msg(agent)], { is_direct: true })), false);
+  // A person in the same item still decides it.
+  assert.equal(
+    turnWasMentioned(
+      group([msg({ ...agent, reply_expected: true }), msg({ reply_expected: true })]),
+    ),
+    true,
+  );
+  assert.equal(
+    turnWasMentioned(
+      group([msg({ ...agent, reply_expected: true }), msg({ reply_expected: false })]),
+    ),
+    false,
+  );
+  // A server that doesn't say who is an agent: everyone counts as a person.
+  assert.equal(turnWasMentioned(group([msg({ reply_expected: true })])), true);
+});
+
 test("dispatchWorkItemTurn: a group turn carries WasMentioned; a direct one never does", async () => {
   const { runtime, contexts } = fakeRuntime();
   await dispatchWorkItemTurn(

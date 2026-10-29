@@ -67,6 +67,14 @@ interface FilamentTurnState {
   backchannel: boolean;
   // Lets the FCM transport skip posting the final text where a write tool already replied.
   repliedTo: Set<string>;
+  // A reaction answers in the room, but OpenClaw doesn't count it: a turn it fails can still be one
+  // the agent answered.
+  reacted: boolean;
+}
+
+export interface FilamentTurnOutcome {
+  repliedTo: ReadonlySet<string>;
+  reacted: boolean;
 }
 
 export const REPLIED_UNKNOWN_ROOM = "*";
@@ -86,13 +94,17 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
 const activeFilamentTurns = new Map<string, FilamentTurnState>();
 
 export function beginFilamentTurn(isBackchannel: boolean, accountId = DEFAULT_ACCOUNT_ID): void {
-  activeFilamentTurns.set(accountId, { backchannel: isBackchannel, repliedTo: new Set() });
+  activeFilamentTurns.set(accountId, {
+    backchannel: isBackchannel,
+    repliedTo: new Set(),
+    reacted: false,
+  });
 }
 
-export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): ReadonlySet<string> {
-  const repliedTo = activeFilamentTurns.get(accountId)?.repliedTo ?? new Set<string>();
+export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): FilamentTurnOutcome {
+  const turn = activeFilamentTurns.get(accountId);
   activeFilamentTurns.delete(accountId);
-  return repliedTo;
+  return { repliedTo: turn?.repliedTo ?? new Set<string>(), reacted: turn?.reacted ?? false };
 }
 
 export function _getActiveFilamentTurnForTest(
@@ -256,8 +268,10 @@ function makeExecute(
       );
     }
     log(`filament-tools: ${qualifiedName} ok`);
+    const turn = activeFilamentTurns.get(accountId);
     const target = replyTarget(toolName, params);
-    if (target) activeFilamentTurns.get(accountId)?.repliedTo.add(target);
+    if (target) turn?.repliedTo.add(target);
+    if (toolName === "react" && turn) turn.reacted = true;
     return {
       content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
       details: result.data,

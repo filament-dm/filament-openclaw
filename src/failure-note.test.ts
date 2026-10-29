@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { failureNote, notifyPrincipalOfFailure } from "./failure-note.js";
+import { answeredWithTools, failureNote, notifyPrincipalOfFailure } from "./failure-note.js";
 
 const EMPTY = "⚠️ The AI service returned an empty reply. Please try again.";
 
@@ -11,13 +11,38 @@ test("failureNote: names the room when the item says it, and quotes what OpenCla
       { is_backchannel: false, channel_name: "Design review" },
       { errorReplyText: EMPTY },
     ),
-    `I couldn't answer a message in Design review, so I posted nothing there. OpenClaw said: ${EMPTY}`,
+    `OpenClaw ended my turn on a message in Design review with an error, so I posted nothing there. OpenClaw said: ${EMPTY}`,
   );
   assert.match(
     failureNote({ is_backchannel: false }, { errorDetail: "final: boom" }),
-    /^I couldn't answer a message in one of my channels, .* OpenClaw said: final: boom$/,
+    /^OpenClaw ended my turn on a message in one of my channels with an error, .* OpenClaw said: final: boom$/,
   );
   assert.match(failureNote({ is_backchannel: true }, {}), /your last message.*no detail$/);
+});
+
+test("answeredWithTools: a reaction, or a tool reply in the item's room or the backchannel", () => {
+  const group = { is_backchannel: false, channel_id: "!g:x" };
+  const none = new Set<string>();
+  assert.equal(answeredWithTools(group, { repliedTo: none, reacted: false }), false);
+  assert.equal(answeredWithTools(group, { repliedTo: none, reacted: true }), true);
+  assert.equal(answeredWithTools(group, { repliedTo: new Set(["!g:x"]), reacted: false }), true);
+  assert.equal(answeredWithTools(group, { repliedTo: new Set(["*"]), reacted: false }), true);
+  assert.equal(
+    answeredWithTools(group, { repliedTo: new Set(["!other:x"]), reacted: false }),
+    false,
+  );
+  // Telling the principal about a group message is not answering the group.
+  assert.equal(
+    answeredWithTools(group, { repliedTo: new Set(["backchannel"]), reacted: false }),
+    false,
+  );
+  assert.equal(
+    answeredWithTools(
+      { is_backchannel: true, channel_id: "!cc:x" },
+      { repliedTo: new Set(["backchannel"]), reacted: false },
+    ),
+    true,
+  );
 });
 
 test("failureNote: keeps a long error short", () => {

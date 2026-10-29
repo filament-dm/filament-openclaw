@@ -37,6 +37,7 @@ import {
   registerFilamentToolsFromSnapshot,
   setFilamentClient,
   type FilamentToolsApi,
+  type FilamentTurnOutcome,
 } from "./filament-tools.js";
 import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
@@ -316,7 +317,7 @@ export function registerFilamentChannel(
               ))(item.channel_id, abortSignal, item)
             : { label: item.channel_id };
           beginFilamentTurn(item.is_backchannel === true, accountId);
-          let repliedTo: ReadonlySet<string> = new Set();
+          let toolOutcome: FilamentTurnOutcome = { repliedTo: new Set(), reacted: false };
           let result;
           try {
             result = await dispatchWorkItemTurn({
@@ -347,11 +348,11 @@ export function registerFilamentChannel(
               log: accountLog,
             });
           } finally {
-            repliedTo = endFilamentTurn(accountId);
+            toolOutcome = endFilamentTurn(accountId);
           }
           return {
             ...result,
-            repliedTo,
+            ...toolOutcome,
             mediaLocalRoots: getAgentScopedMediaLocalRoots(ctx.cfg, result.agentId),
           };
         };

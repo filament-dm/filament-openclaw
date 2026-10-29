@@ -33,12 +33,16 @@ function replyTarget(toolName, params) {
 }
 const activeFilamentTurns = /* @__PURE__ */ new Map();
 function beginFilamentTurn(isBackchannel, accountId = DEFAULT_ACCOUNT_ID) {
-  activeFilamentTurns.set(accountId, { backchannel: isBackchannel, repliedTo: /* @__PURE__ */ new Set() });
+  activeFilamentTurns.set(accountId, {
+    backchannel: isBackchannel,
+    repliedTo: /* @__PURE__ */ new Set(),
+    reacted: false
+  });
 }
 function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID) {
-  const repliedTo = activeFilamentTurns.get(accountId)?.repliedTo ?? /* @__PURE__ */ new Set();
+  const turn = activeFilamentTurns.get(accountId);
   activeFilamentTurns.delete(accountId);
-  return repliedTo;
+  return { repliedTo: turn?.repliedTo ?? /* @__PURE__ */ new Set(), reacted: turn?.reacted ?? false };
 }
 function _getActiveFilamentTurnForTest(accountId = DEFAULT_ACCOUNT_ID) {
   return activeFilamentTurns.get(accountId) ?? null;
@@ -119,8 +123,10 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
       );
     }
     log(`filament-tools: ${qualifiedName} ok`);
+    const turn = activeFilamentTurns.get(accountId);
     const target = replyTarget(toolName, params);
-    if (target) activeFilamentTurns.get(accountId)?.repliedTo.add(target);
+    if (target) turn?.repliedTo.add(target);
+    if (toolName === "react" && turn) turn.reacted = true;
     return {
       content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
       details: result.data

@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 
 import { acceptPending } from "../../accept-pending.js";
-import { notifyPrincipalOfFailure } from "../../failure-note.js";
+import { answeredWithTools, notifyPrincipalOfFailure } from "../../failure-note.js";
 import type { ToolCallResult } from "../../mcp-client.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
@@ -241,6 +241,12 @@ export async function runPollTransport(
     const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
     if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
 
+    if (result.sawError && answeredWithTools(item, result)) {
+      log(
+        `filament-poll: OpenClaw failed the turn in ${item.channel_id} after the agent answered with a tool; acknowledging: ${result.errorDetail ?? "?"}`,
+      );
+      return { kind: "silent" };
+    }
     if (result.sawError) {
       // Never into the room: the principal hears about it in the backchannel instead.
       if (!abortSignal.aborted) {
