@@ -155,7 +155,7 @@ test("poll: a reply the server refuses is ack'd and the loop goes on", async () 
   assert.equal(h.pollArgs.length, 3);
 });
 
-test("poll: a turn that fails is ack'd without a publish, as over FCM", async () => {
+test("poll: a turn that fails is ack'd without a publish", async () => {
   const h = await run([offer(item())], {
     turn: { sawError: true, sawFinal: false, errorDetail: "model: 500" },
   });

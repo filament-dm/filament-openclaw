@@ -1,7 +1,7 @@
 /**
- * The channel/transport contract. A transport owns how work reaches one account, whether it wakes
- * the agent and where the reply goes; the channel hands in everything shared. The two transports
- * never import each other.
+ * The channel/transport contract. The transport owns how work reaches one account, whether it wakes
+ * the agent and where the reply goes; the channel hands in everything shared, which keeps the
+ * transport testable without a gateway.
  */
 import type { FilamentMcpClient } from "../mcp-client.js";
 import type { InboundMedia } from "../media.js";
@@ -39,5 +39,3 @@ export interface TransportResult {
   /** Absent on a clean abort. */
   fatal?: string;
 }
-
-export type RunTransport = (ctx: TransportContext) => Promise<TransportResult>;

@@ -36,12 +36,12 @@ export const TOOL_SNAPSHOT: readonly SnapshotToolDescriptor[] =
 // which lists these names prefixed; a test keeps the two in sync.
 export const KNOWN_TOOL_NAMES: readonly string[] = TOOL_SNAPSHOT.map((t) => t.name);
 
-// Kept out of the snapshot and out of drift reports. An agent registering a push token would take
-// the FCM transport's pushes: the server keeps one push token per agent.
+// Kept out of the snapshot and out of drift reports: harness plumbing, not tools for the model. Work
+// reaches this plugin through poll_work, so a push token the model registered would go nowhere.
 const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["poll_work", "the poll transport owns this call exclusively"],
-  ["register_push_token", "transport plumbing; the FCM transport registers its own token"],
-  ["list_push_tokens", "transport plumbing; the FCM transport registers its own token"],
+  ["register_push_token", "transport plumbing; this plugin receives work through poll_work"],
+  ["list_push_tokens", "transport plumbing; this plugin receives work through poll_work"],
   ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"],
 ]);
 
@@ -65,7 +65,7 @@ export function classifyToolTier(descriptor: McpToolDescriptor): ToolTier {
 
 interface FilamentTurnState {
   backchannel: boolean;
-  // Lets the FCM transport skip posting the final text where a write tool already replied.
+  // Where a write tool already replied: the turn answered even when OpenClaw fails it.
   repliedTo: Set<string>;
   // A reaction answers in the room, but OpenClaw doesn't count it: a turn it fails can still be one
   // the agent answered.
@@ -90,7 +90,7 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
   return null;
 }
 
-// One slot per account is enough: each account's transport dispatches its turns sequentially.
+// One slot per account is enough: the transport dispatches each account's turns sequentially.
 const activeFilamentTurns = new Map<string, FilamentTurnState>();
 
 export function beginFilamentTurn(isBackchannel: boolean, accountId = DEFAULT_ACCOUNT_ID): void {

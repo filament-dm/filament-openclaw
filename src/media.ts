@@ -2,8 +2,7 @@
  * Attachments between Filament and an OpenClaw turn, moved by the gateway so their bytes never
  * pass through the model: a message's attachment is fetched from a `get_media_download_url` URL
  * where the server has that tool (else the bearer `/media` side-channel), and a reply's is sent
- * through the bearer `/upload` side-channel. Only the poll_work transport uses this for now: FCM
- * pushes carry no attachment urls.
+ * through the bearer `/upload` side-channel.
  */
 import { saveMediaBuffer } from "openclaw/plugin-sdk/media-store";
 import { loadOutboundMediaFromUrl } from "openclaw/plugin-sdk/outbound-media";

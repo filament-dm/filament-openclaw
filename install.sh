@@ -26,9 +26,6 @@
 #   OPENCLAW_AGENT          OpenClaw agent the token connects (default: the gateway's
 #                           only agent; required when it has several)
 #   FILAMENT_MCP_URL        a non-production Filament server
-#   FILAMENT_TRANSPORT      poll (default) or fcm
-#   FILAMENT_FIREBASE_PROJECT_ID, _API_KEY, _APP_ID, _SENDER_ID
-#                           Firebase project of a non-production server (fcm)
 #   PLUGIN_REF              branch, tag or commit to install (default: main)
 #   OPENCLAW_PLUGIN_SOURCE  full plugin install spec, overriding PLUGIN_REF
 #   FILAMENT_PLUGIN_UPDATE=1  update an installed plugin
@@ -62,13 +59,6 @@ if [ -n "$TARGET_AGENT" ]; then
   printf '%s' "$TARGET_AGENT" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$' || err \
     "OPENCLAW_AGENT='$OPENCLAW_AGENT' is not a valid agent id (lowercase letters, digits, - and _)."
 fi
-
-TRANSPORT="$(printf '%s' "${FILAMENT_TRANSPORT:-}" | tr '[:upper:]' '[:lower:]')"
-case "$TRANSPORT" in
-  ""|fcm|poll) ;;
-  *) err "FILAMENT_TRANSPORT='$FILAMENT_TRANSPORT' is not a transport (poll or fcm)." ;;
-esac
-export TRANSPORT
 
 # --- Preflight -----------------------------------------------------------------
 command -v openclaw >/dev/null 2>&1 || err \
@@ -269,23 +259,6 @@ if token:
     plugin_cfg["accounts"] = {account: {"connectToken": token}}
 if mcp_url:
     plugin_cfg["mcpUrl"] = mcp_url
-# Top level, so every account on this gateway, including the ones
-# `openclaw filament login` adds later, uses the same transport and project.
-transport = os.environ.get("TRANSPORT", "")
-if transport:
-    plugin_cfg["transport"] = transport
-firebase = {
-    key: os.environ[name].strip()
-    for key, name in (
-        ("projectId", "FILAMENT_FIREBASE_PROJECT_ID"),
-        ("apiKey", "FILAMENT_FIREBASE_API_KEY"),
-        ("appId", "FILAMENT_FIREBASE_APP_ID"),
-        ("messagingSenderId", "FILAMENT_FIREBASE_SENDER_ID"),
-    )
-    if os.environ.get(name, "").strip()
-}
-if firebase:
-    plugin_cfg["firebase"] = firebase
 
 if not token and not plugin_cfg:
     print("")
@@ -325,9 +298,9 @@ printf '%s\n' "$PATCH_AND_NOTES" | tail -n +2 | while IFS= read -r note; do
 done
 
 if [ "$TOKEN_MODE" = 1 ]; then
-  info "Saving the connect token${TARGET_AGENT:+ and binding agent '$TARGET_AGENT' to Filament account '$ACCOUNT_ID'}${TRANSPORT:+ (transport: $TRANSPORT)} ..."
+  info "Saving the connect token${TARGET_AGENT:+ and binding agent '$TARGET_AGENT' to Filament account '$ACCOUNT_ID'} ..."
 elif [ -n "$PATCH" ]; then
-  info "Saving the Filament settings${TRANSPORT:+ (transport: $TRANSPORT)} ..."
+  info "Saving the Filament settings ..."
 fi
 REPLACE_ARGS=()
 [ "$TOKEN_MODE" = 1 ] && [ -n "$TARGET_AGENT" ] && REPLACE_ARGS=(--replace-path bindings)

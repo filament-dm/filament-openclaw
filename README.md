@@ -107,15 +107,13 @@ The plugin is configured under `plugins.entries.filament-openclaw.config`, and
 | --- | --- | --- |
 | `connectToken` | `FILAMENT_MCP_TOKEN` | The agent's token, from `openclaw filament login` or the Filament app |
 | `mcpUrl` | `FILAMENT_MCP_URL` | A non-production Filament server |
-| `transport` | `FILAMENT_TRANSPORT` | `poll` (default) or `fcm` |
-| `firebase` | `FILAMENT_FIREBASE_*` | Firebase project of a non-production server (`fcm` only) |
-| `pollWaitSeconds` | | How long each poll waits for work, 1–60 s (default 30, `poll` only) |
+| `pollWaitSeconds` | | How long each poll waits for work, 1–60 s (default 30) |
 
-## Transports
+## How work arrives
 
-By default the agent long-polls Filament for work (`poll`), which needs no push registration and
-no connection to Google. With `transport: fcm` it receives messages as push notifications instead,
-registered with the Firebase project the server names. Both use the same token, tools and replies.
+The agent long-polls Filament for work (`poll_work`): no push registration and no connection to
+Google. `transport` and `firebase`, settings an older version wrote, are retired: still accepted
+so an older config loads, and ignored.
 
 ## Updates
 

@@ -1,5 +1,5 @@
 /**
- * The connect sequence both transports share: resolve the bearer, poll `get_self` until the agent
+ * The connect sequence: resolve the bearer, poll `get_self` until the agent
  * is finalized, then keep a presence heartbeat.
  */
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";

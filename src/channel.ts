@@ -1,6 +1,6 @@
 /**
- * The Filament channel. Per account: connect, run the transport the settings pick (`fcm` by
- * default, or `poll`) until it stops, then hold the account open until the gateway aborts it.
+ * The Filament channel. Per account: connect, run the poll_work transport until it stops, then hold
+ * the account open until the gateway aborts it.
  */
 // `media-local-roots` is the newer home of this helper, but the SDK this builds against predates it.
 import { readFileSync } from "node:fs";
@@ -28,6 +28,7 @@ import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } fro
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
 import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
+import { forgetFcmState } from "./state/fcm.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
@@ -39,7 +40,7 @@ import {
   type FilamentToolsApi,
   type FilamentTurnOutcome,
 } from "./filament-tools.js";
-import { connectTokenConfigPath, resolveAccountSettings, type Transport } from "./settings.js";
+import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
 import { createRoomLabels } from "./room-labels.js";
 import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
@@ -61,9 +62,8 @@ import {
 } from "./state/updates.js";
 import { helloSentAs, markHelloSent } from "./state/hello.js";
 import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
-import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
-import type { RunTransport, TurnResult } from "./transports/types.js";
+import type { TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
 import {
   runUpdateChecks,
@@ -78,11 +78,6 @@ export { FILAMENT_CHANNEL_ID };
 
 /** After OpenClaw's recovery first posts to a room, how long before held work there goes ahead. */
 export const RECOVERY_RELEASE_GRACE_MS = 5_000;
-
-const TRANSPORTS: Record<Transport, RunTransport> = {
-  fcm: runFcmTransport,
-  poll: runPollTransport,
-};
 
 // Structural: the concrete OpenClaw SDK types only resolve inside the gateway.
 export interface FilamentChannelApi extends FilamentToolsApi {
@@ -203,7 +198,7 @@ export function registerFilamentChannel(
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via FCM push (or poll_work) + MCP",
+      blurb: "Connects the agent to Filament via poll_work + MCP",
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
@@ -241,7 +236,7 @@ export function registerFilamentChannel(
           await holdOpen();
           return;
         }
-        accountLog(`filament: transport ${mcp.transport}`);
+        forgetFcmState(accountId);
 
         // Started, not awaited: the update reloads the plugin, and the reload needs this account
         // to stop. The marker outlives the account; the one that comes back reads it and says
@@ -479,7 +474,7 @@ export function registerFilamentChannel(
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);
           });
-          const { fatal } = await TRANSPORTS[mcp.transport]({
+          const { fatal } = await runPollTransport({
             accountId,
             client: connection.client,
             identity: connection.identity,

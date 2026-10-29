@@ -1,7 +1,7 @@
 {
   "id": "filament-openclaw",
   "name": "Filament",
-  "description": "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll — or, by name, as Firebase Cloud Messaging (FCM) pushes — and replies through Filament's MCP-over-HTTP agents API.",
+  "description": "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll and replies through Filament's MCP-over-HTTP agents API.",
   "version": "0.1.4",
   "cliCommands": [
     {
@@ -90,12 +90,12 @@
           "fcm",
           "poll"
         ],
-        "description": "How work reaches the account. poll (default): the poll_work long-poll, what production Filament serves. fcm: Firebase Cloud Messaging pushes, registered with the project the server names."
+        "description": "Retired: nothing reads it. Still accepted so an older config loads."
       },
       "firebase": {
         "type": "object",
         "additionalProperties": false,
-        "description": "The Firebase project an fcm account registers with; it must be the one the Filament server sends through. Each field defaults to FILAMENT_FIREBASE_* and then to production.",
+        "description": "Retired: nothing reads it. Still accepted so an older config loads.",
         "properties": {
           "projectId": {
             "type": "string",
@@ -201,7 +201,7 @@
             },
             "transport": {
               "$ref": "#/$defs/transport",
-              "description": "Overrides the top-level transport for this account."
+              "description": "Retired, like the top-level transport."
             }
           },
           "anyOf": [
@@ -241,9 +241,6 @@
       "label": "Connect token",
       "placeholder": "fmcp_…",
       "sensitive": true
-    },
-    "transport": {
-      "label": "Transport"
     }
   }
 }

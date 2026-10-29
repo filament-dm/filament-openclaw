@@ -33,27 +33,13 @@ test("resolveMcpSettings: a numeric string pollWaitSeconds is parsed and clamped
   assert.equal(resolveMcpSettings({ pollWaitSeconds: "500" }, {}).pollWaitSeconds, 60);
 });
 
-test("resolveMcpSettings: the transport defaults to poll; fcm only by name", () => {
-  assert.equal(resolveMcpSettings({}, {}).transport, "poll");
-  assert.equal(resolveMcpSettings({ transport: "fcm" }, {}).transport, "fcm");
-  assert.equal(resolveMcpSettings({ transport: "FCM" }, {}).transport, "fcm");
-  assert.equal(resolveMcpSettings({ transport: "carrier-pigeon" }, {}).transport, "poll");
-  assert.equal(resolveMcpSettings({}, { FILAMENT_TRANSPORT: "fcm" }).transport, "fcm");
-  assert.equal(
-    resolveMcpSettings({ transport: "fcm" }, { FILAMENT_TRANSPORT: "poll" }).transport,
-    "fcm",
+test("resolveMcpSettings: retired settings are ignored", () => {
+  const settings = resolveMcpSettings(
+    { transport: "fcm", firebase: { projectId: "p" }, connectToken: "fmcp_x" },
+    { FILAMENT_TRANSPORT: "fcm", FILAMENT_FIREBASE_PROJECT_ID: "q" },
   );
-});
-
-test("resolveMcpSettings: firebase is config, then FILAMENT_FIREBASE_*, then production", () => {
-  assert.equal(resolveMcpSettings({}, {}).firebase.projectId, "filament-8ce44");
-  const custom = resolveMcpSettings(
-    { firebase: { appId: "1:1:android:abc" } },
-    { FILAMENT_FIREBASE_PROJECT_ID: "test-project" },
-  ).firebase;
-  assert.equal(custom.projectId, "test-project");
-  assert.equal(custom.appId, "1:1:android:abc");
-  assert.equal(custom.messagingSenderId, "143821144946");
+  assert.deepEqual(Object.keys(settings).sort(), ["mcpUrl", "pollWaitSeconds", "tokenInput"]);
+  assert.equal(settings.tokenInput, "fmcp_x");
 });
 
 test("resolveMcpSettings: a bare server means its agents endpoint", () => {

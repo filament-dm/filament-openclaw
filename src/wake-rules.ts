@@ -1,5 +1,5 @@
 /**
- * The per-message wake rules both transports share, applied before asking whether a channel
+ * The per-message wake rules, applied before asking whether a channel
  * message was addressed to the agent. System notices match `@filament_god` on the agent's own
  * homeserver only, so an impersonator from another server is not treated as system. Another agent
  * wakes this one only with an explicit @-mention, or when the server's addressing judgement says
