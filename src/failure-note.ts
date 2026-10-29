@@ -1,7 +1,6 @@
 /**
  * A turn that failed is never answered where it came from: an "AI service" error posted in a group
- * reads as the agent speaking. The principal hears about it instead, in the backchannel. Both
- * transports use this.
+ * reads as the agent speaking. The principal hears about it instead, in the backchannel.
  */
 import { REPLIED_BACKCHANNEL, REPLIED_UNKNOWN_ROOM } from "./filament-tools.js";
 import type { FilamentMcpClient } from "./mcp-client.js";

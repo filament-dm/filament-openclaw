@@ -1,5 +1,5 @@
 /**
- * Work item to agent turn, shared by both transports. Composes the SDK's route, envelope, context
+ * Work item to agent turn. Composes the SDK's route, envelope, context
  * and buffered-dispatch primitives for direct and group items alike, rather than
  * `dispatchInboundDirectDmWithRuntime`: that facade's `deliver` drops `info.kind`, so a final
  * reply can't be told apart from an intermediate block.

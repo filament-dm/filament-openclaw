@@ -4,7 +4,7 @@ import { registerFilamentCli } from "./src/login-cli.js";
 var index_default = definePluginEntry({
   id: "filament-openclaw",
   name: "Filament",
-  description: "Connects an OpenClaw agent to Filament: receives work as FCM pushes or through a poll_work long-poll, and replies through Filament's MCP-over-HTTP agents API.",
+  description: "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll and replies through Filament's MCP-over-HTTP agents API.",
   register(api) {
     const mode = api.registrationMode;
     if (mode === "cli-metadata" || mode === "discovery" || mode === "full" || mode === void 0) {

@@ -1,5 +1,5 @@
 /**
- * The `poll_work` transport (opt-in; needs a server that supports `poll_work`). The server decides
+ * The `poll_work` transport, the only one. The server decides
  * what wakes the agent and where the reply goes (`reply_with`), and replying acknowledges the item.
  * An item made only of messages that would never wake the agent (src/wake-rules.ts) is acked
  * without a turn.

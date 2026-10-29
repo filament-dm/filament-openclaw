@@ -15,6 +15,7 @@ import {
 } from "./accounts.js";
 import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
+import { removeRetiredSettingsOnce } from "./retired-settings.js";
 import { ensureGroupSilenceAllowedOnce } from "./silent-reply-policy.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
@@ -48,7 +49,6 @@ import {
 } from "./state/updates.js";
 import { helloSentAs, markHelloSent } from "./state/hello.js";
 import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
-import { runFcmTransport } from "./transports/fcm/index.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
 import {
@@ -60,10 +60,6 @@ import {
 import { PLUGIN_VERSION } from "./version.js";
 import { turnPeerKind, turnWasMentioned } from "./work-item.js";
 const RECOVERY_RELEASE_GRACE_MS = 5e3;
-const TRANSPORTS = {
-  fcm: runFcmTransport,
-  poll: runPollTransport
-};
 function boundAgentOf(gatewayConfig, accountId) {
   const agents = listGatewayAgents(gatewayConfig);
   return agents.find((agent) => agent.boundAccount === accountId)?.id ?? agents.find((agent) => agent.id === accountId)?.id;
@@ -144,7 +140,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
       label: "Filament",
       selectionLabel: "Filament",
       docsPath: "/channels/filament",
-      blurb: "Connects the agent to Filament via FCM push (or poll_work) + MCP"
+      blurb: "Connects the agent to Filament via poll_work + MCP"
     },
     capabilities: { chatTypes: ["direct", "group"] },
     config: {
@@ -164,7 +160,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message) => log(`[${accountId}] ${message}`);
-        void ensureGroupSilenceAllowedOnce(log);
+        void ensureGroupSilenceAllowedOnce(log).then(
+          () => removeRetiredSettingsOnce(pluginConfig, log)
+        );
         const holdOpen = async () => {
           if (abortSignal.aborted) return;
           await new Promise((resolve) => {
@@ -180,7 +178,6 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           await holdOpen();
           return;
         }
-        accountLog(`filament: transport ${mcp.transport}`);
         let updateInFlight = false;
         const runUpdate = async () => {
           if (updateInFlight) return;
@@ -384,7 +381,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);
           });
-          const { fatal } = await TRANSPORTS[mcp.transport]({
+          const { fatal } = await runPollTransport({
             accountId,
             client: connection.client,
             identity: connection.identity,

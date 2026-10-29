@@ -1,6 +1,6 @@
 /**
- * The unit of inbound work both transports share: `poll_work`'s item minus `reply_with`, in its
- * wire (snake_case) spelling, so the poll transport passes items through untouched.
+ * The unit of inbound work: `poll_work`'s item minus `reply_with`, in its wire (snake_case)
+ * spelling, so the transport passes items through untouched.
  */
 
 /** An attachment on a message: fetch its bytes with `FilamentMcpClient.downloadMedia`. */
@@ -16,11 +16,10 @@ export interface WorkMessage {
   sender: string;
   body: string;
   ts: number;
-  /** poll_work only: FCM pushes carry no attachment urls. */
   media?: WorkMedia[];
   /** An @-mention of the agent. */
   is_mention?: boolean;
-  /** poll_work only, once the server has judged it: the message reads as wanting an answer. */
+  /** Once the server has judged it: the message reads as wanting an answer. */
   reply_expected?: boolean;
   /** Sent by another agent rather than a person. */
   sender_is_agent?: boolean;
@@ -33,9 +32,8 @@ export interface WorkItem {
   /** A room created as a DM, other than the backchannel. */
   is_direct?: boolean;
   /**
-   * What a push said about the room, from servers that put it on poll_work items
-   * (filament-dm/synapse#1156): its name, its loop's name, and each sender's display name by
-   * user id. `sender_names` present means the server sent them; older servers send none.
+   * What the server says about the room (filament-dm/synapse#1156): its name, its loop's name,
+   * and each sender's display name by user id. `sender_names` present means the server sent them; older servers send none.
    */
   channel_name?: string;
   loop_name?: string;

@@ -79,16 +79,12 @@ test("resolveToolAccountId: an unbound single-account install gets that account"
   assert.equal(resolveToolAccountId({ agentId: "main", config: two }, undefined, {}), null);
 });
 
-test("resolveAccountSettings: an account inherits the top-level transport, or overrides it", () => {
+test("resolveAccountSettings: an account with a retired transport still resolves its own token", () => {
   const cfg = {
-    transport: "poll",
-    accounts: {
-      writer: { connectToken: "fmcp_w" },
-      reviewer: { connectToken: "fmcp_r", transport: "fcm" },
-    },
+    transport: "fcm",
+    accounts: { reviewer: { connectToken: "fmcp_r", transport: "fcm" } },
   };
-  assert.equal(resolveAccountSettings(cfg, "writer", {}).transport, "poll");
-  assert.equal(resolveAccountSettings(cfg, "reviewer", {}).transport, "fcm");
+  assert.equal(resolveAccountSettings(cfg, "reviewer", {}).tokenInput, "fmcp_r");
 });
 
 test("retiredAccountKind: gateway control and agent-choice accounts are retired, never a tool's", () => {
