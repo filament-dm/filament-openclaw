@@ -288,7 +288,11 @@ test("execute: an upstream tool-call failure surfaces as a thrown error, logged 
 test("beginFilamentTurn/endFilamentTurn: tracks and clears the active turn", () => {
   assert.equal(_getActiveFilamentTurnForTest(), null);
   beginFilamentTurn(true);
-  assert.deepEqual(_getActiveFilamentTurnForTest(), { backchannel: true, repliedTo: new Set() });
+  assert.deepEqual(_getActiveFilamentTurnForTest(), {
+    backchannel: true,
+    repliedTo: new Set(),
+    reacted: false,
+  });
   endFilamentTurn();
   assert.equal(_getActiveFilamentTurnForTest(), null);
 });
@@ -428,7 +432,20 @@ test("a quote counts as the turn's reply", async () => {
     undefined,
     {},
   );
-  assert.ok(endFilamentTurn().has(REPLIED_UNKNOWN_ROOM));
+  assert.ok(endFilamentTurn().repliedTo.has(REPLIED_UNKNOWN_ROOM));
+});
+
+test("a reaction is recorded on the turn, but is not a reply", async () => {
+  const { api, tools } = fakeApi();
+  const { log } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const tool = tools.get(`${TOOL_NAME_PREFIX}react`)!;
+  setFilamentClient({ callTool: async () => okResult({ event_id: "$r" }) });
+  beginFilamentTurn(false);
+  await tool.execute("call-1", { message_id: "$m", key: "✅" }, undefined, undefined, {});
+  const outcome = endFilamentTurn();
+  assert.equal(outcome.reacted, true);
+  assert.equal(outcome.repliedTo.size, 0);
 });
 
 test("normalizeEventIdArgs: a `#$event` id from OpenClaw's history lines loses the `#`", () => {

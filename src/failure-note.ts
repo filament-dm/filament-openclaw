@@ -3,7 +3,9 @@
  * reads as the agent speaking. The principal hears about it instead, in the backchannel. Both
  * transports use this.
  */
+import { REPLIED_BACKCHANNEL, REPLIED_UNKNOWN_ROOM } from "./filament-tools.js";
 import type { FilamentMcpClient } from "./mcp-client.js";
+import type { TurnResult } from "./transports/types.js";
 import type { DispatchTurnResult } from "./turn.js";
 import type { WorkItem } from "./work-item.js";
 
@@ -22,6 +24,21 @@ export function failureNote(
       ? `a message in ${item.channel_name}`
       : "a message in one of my channels";
   return `I couldn't answer ${where}, so I posted nothing there. OpenClaw said: ${reason}`;
+}
+
+/**
+ * OpenClaw counts only the turn's final text as an answer, so a turn that must answer (a mention)
+ * fails when the agent reacted or posted through a Filament tool and then ended in `NO_REPLY`. The
+ * agent did answer: that failure is not one to report.
+ */
+export function answeredWithTools(
+  item: Pick<WorkItem, "is_backchannel" | "channel_id">,
+  result: Pick<TurnResult, "repliedTo" | "reacted">,
+): boolean {
+  if (result.reacted) return true;
+  const { repliedTo } = result;
+  if (repliedTo.has(REPLIED_UNKNOWN_ROOM) || repliedTo.has(item.channel_id)) return true;
+  return item.is_backchannel === true && repliedTo.has(REPLIED_BACKCHANNEL);
 }
 
 /** Best effort: resolves true only when the note landed; never throws. */

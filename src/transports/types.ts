@@ -13,6 +13,8 @@ import type { WorkItem } from "../work-item.js";
 export interface TurnResult extends DispatchTurnResult {
   /** Where write tools replied: a room id, `"*"` for a thread reply, or `"backchannel"`. */
   repliedTo: ReadonlySet<string>;
+  /** The agent reacted to a message during the turn. */
+  reacted: boolean;
   /** Local directories the turn's agent may send files from (`mediaUrls` that are paths). */
   mediaLocalRoots: readonly string[];
 }

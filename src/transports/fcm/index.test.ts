@@ -108,6 +108,7 @@ function harness(
         sawSkip: false,
         sawError: false,
         repliedTo: new Set(),
+        reacted: false,
         ...overrides.turn,
       };
     },
@@ -360,6 +361,24 @@ test("fcm: a turn that fails posts nothing in the room and tells the principal i
     /^I couldn't answer a message in one of my channels/,
   );
   assert.match(String(note.args.markdown_body), /The AI service returned an empty reply/);
+  h.stop();
+});
+
+test("fcm: a mention answered with a reaction is not a failure, though OpenClaw fails the turn", async () => {
+  const h = harness({
+    turn: {
+      sawError: true,
+      sawFinal: false,
+      finalText: "",
+      errorDetail: "OpenClaw error reply: ⚠️ The AI service returned an empty reply.",
+      reacted: true,
+    },
+  });
+  await h.push(chat({ event_id: "$m1", content: { text: "hi" }, is_mention_of_recipient: true }));
+  await until(() => h.turns.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.ok(!h.calls.some((c) => c.name === "message_principal"));
+  assert.ok(!h.calls.some((c) => c.name === "reply_in_thread"));
   h.stop();
 });
 

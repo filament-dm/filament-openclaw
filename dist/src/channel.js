@@ -241,7 +241,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             accountLog
           ))(item.channel_id, abortSignal, item) : { label: item.channel_id };
           beginFilamentTurn(item.is_backchannel === true, accountId);
-          let repliedTo = /* @__PURE__ */ new Set();
+          let toolOutcome = { repliedTo: /* @__PURE__ */ new Set(), reacted: false };
           let result;
           try {
             result = await dispatchWorkItemTurn({
@@ -272,11 +272,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               log: accountLog
             });
           } finally {
-            repliedTo = endFilamentTurn(accountId);
+            toolOutcome = endFilamentTurn(accountId);
           }
           return {
             ...result,
-            repliedTo,
+            ...toolOutcome,
             mediaLocalRoots: getAgentScopedMediaLocalRoots(ctx.cfg, result.agentId)
           };
         };

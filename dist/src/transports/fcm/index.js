@@ -1,5 +1,5 @@
 import { acceptPending } from "../../accept-pending.js";
-import { notifyPrincipalOfFailure } from "../../failure-note.js";
+import { answeredWithTools, notifyPrincipalOfFailure } from "../../failure-note.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { ATTACHMENT_ONLY_BODY } from "../../work-item.js";
 import {
@@ -118,6 +118,12 @@ async function runFcmTransport(ctx, deps = {}) {
       return;
     } finally {
       await setStatus(statusScope);
+    }
+    if (result.sawError && answeredWithTools(item, result)) {
+      log(
+        `filament-fcm: OpenClaw failed the turn for ${eventId} after the agent answered with a tool: ${result.errorDetail ?? "?"}`
+      );
+      return;
     }
     if (result.sawError) {
       log(`filament-fcm: turn for ${eventId} failed; dropping it: ${result.errorDetail ?? "?"}`);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { acceptPending } from "../../accept-pending.js";
-import { notifyPrincipalOfFailure } from "../../failure-note.js";
+import { answeredWithTools, notifyPrincipalOfFailure } from "../../failure-note.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
   loadPendingReplies,
@@ -168,6 +168,12 @@ async function runPollTransport(ctx, deps = {}) {
     }
     const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
     if (lastId && !producedNothing) clearInFlight(accountId, mxid, { eventId: lastId });
+    if (result.sawError && answeredWithTools(item, result)) {
+      log(
+        `filament-poll: OpenClaw failed the turn in ${item.channel_id} after the agent answered with a tool; acknowledging: ${result.errorDetail ?? "?"}`
+      );
+      return { kind: "silent" };
+    }
     if (result.sawError) {
       if (!abortSignal.aborted) {
         await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });

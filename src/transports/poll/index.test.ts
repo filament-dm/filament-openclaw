@@ -113,6 +113,7 @@ async function run(
         sawSkip: false,
         sawError: false,
         repliedTo: new Set(),
+        reacted: false,
         ...opts.turn,
       };
     },
@@ -187,6 +188,24 @@ test("poll: OpenClaw's error reply in a group posts nothing there; the principal
       },
     },
   ]);
+});
+
+test("poll: a mention answered with a reaction is not a failure, though OpenClaw fails the turn", async () => {
+  const error = "⚠️ The AI service returned an empty reply. Please try again.";
+  const h = await run([offer(item())], {
+    turn: {
+      sawError: true,
+      sawFinal: false,
+      finalText: "",
+      errorReplyText: error,
+      errorDetail: `OpenClaw error reply: ${error}`,
+      reacted: true,
+    },
+  });
+  assert.equal(h.result.fatal, undefined);
+  assert.equal(h.publishes.length, 0);
+  assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
+  assert.deepEqual(h.notes, []);
 });
 
 test("poll: a publish that rejects the bearer stops the account", async () => {
