@@ -90,12 +90,12 @@
           "fcm",
           "poll"
         ],
-        "description": "Retired: nothing reads it. Still accepted so an older config loads."
+        "description": "Retired: nothing reads it, and the plugin removes it from the config when the gateway starts. Still accepted so an older config loads."
       },
       "firebase": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Retired: nothing reads it. Still accepted so an older config loads.",
+        "description": "Retired: nothing reads it, and the plugin removes it from the config when the gateway starts. Still accepted so an older config loads.",
         "properties": {
           "projectId": {
             "type": "string",

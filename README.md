@@ -112,8 +112,8 @@ The plugin is configured under `plugins.entries.filament-openclaw.config`, and
 ## How work arrives
 
 The agent long-polls Filament for work (`poll_work`): no push registration and no connection to
-Google. `transport` and `firebase`, settings an older version wrote, are retired: still accepted
-so an older config loads, and ignored.
+Google. `transport` and `firebase`, settings an older version wrote, are retired: the plugin
+removes them from the config when the gateway starts.
 
 ## Updates
 
