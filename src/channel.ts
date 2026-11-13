@@ -218,10 +218,9 @@ export function registerFilamentChannel(
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message: string) => log(`[${accountId}] ${message}`);
-        // One config write after the other: two concurrent patches could each drop the other's.
-        void ensureGroupSilenceAllowedOnce(log).then(() =>
-          removeRetiredSettingsOnce(pluginConfig, log),
-        );
+        // The group-silence default follows it once this account is connected (below): one
+        // config write after the other, since two concurrent patches could each drop the other's.
+        const retiredCleanup = removeRetiredSettingsOnce(pluginConfig, log);
         const holdOpen = async (): Promise<void> => {
           if (abortSignal.aborted) return;
           await new Promise<void>((resolve) => {
@@ -472,6 +471,13 @@ export function registerFilamentChannel(
             accountLog(`filament-update: checks stopped: ${String(error)}`);
           });
 
+          // Only once connected, never on a first start without a token: that start comes while
+          // the agent that installed the plugin is still in its turn, and a `surfaces` change then
+          // needs a channel reload the gateway defers. The login's pending sign-in, written in that
+          // same turn, queued behind it, and its open request held the reload for the gateway's
+          // 300 s limit before the gateway even polled for the owner's approval. Here the reload
+          // restarts this account once, after the hello.
+          void retiredCleanup.then(() => ensureGroupSilenceAllowedOnce(log));
           setFilamentClient(connection.client, accountId);
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);
