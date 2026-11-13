@@ -126,6 +126,24 @@ test("inboundMessageFields: the last message is the turn's; earlier ones are his
   ]);
 });
 
+test("inboundMessageFields: the last sender's run at the end is the body, so none goes unanswered", () => {
+  const messages = [
+    { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 1 },
+    { event_id: "$o1", sender: "@owner:x", body: "Reply with ALPHA.", ts: 2 },
+    { event_id: "$o2", sender: "@owner:x", body: "Reply with BRAVO.", ts: 3 },
+  ];
+  const fields = inboundMessageFields(messages);
+  assert.equal(fields.body, "Reply with ALPHA.\n\nReply with BRAVO.");
+  assert.equal(fields.current, messages[2]);
+  assert.deepEqual(fields.history, [
+    { sender: "@alice:x", body: "ship it?", timestamp: 1, messageId: "$a1" },
+  ]);
+  // One sender only: everything is the body, nothing is history.
+  const own = inboundMessageFields(messages.slice(1));
+  assert.equal(own.body, "Reply with ALPHA.\n\nReply with BRAVO.");
+  assert.deepEqual(own.history, []);
+});
+
 test("dispatchWorkItemTurn: an item's room facts become the sender's name and the group's channel and loop", async () => {
   const { runtime, contexts } = fakeRuntime();
   const facts = {
