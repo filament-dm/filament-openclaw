@@ -322,7 +322,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             pending: pendingSignIn,
             abortSignal,
             log: accountLog,
-            writeConfig: writeGatewayConfig,
+            writeConfig: (mutate, opts) => writeGatewayConfig(mutate, void 0, opts),
             saveEnd: saveSignInEnd,
             clearEnd: clearSignInEnd
           });

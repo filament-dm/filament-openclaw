@@ -411,7 +411,7 @@ export function registerFilamentChannel(
             pending: pendingSignIn,
             abortSignal,
             log: accountLog,
-            writeConfig: writeGatewayConfig,
+            writeConfig: (mutate, opts) => writeGatewayConfig(mutate, undefined, opts),
             saveEnd: saveSignInEnd,
             clearEnd: clearSignInEnd,
           });

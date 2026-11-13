@@ -49,6 +49,7 @@ function applySignInResult(draft, accountId, deviceCode, token) {
   }
   return true;
 }
+const SAVE_HAND_OFF_MS = 5e3;
 async function finishPendingSignIn(params) {
   const { accountId, pending, abortSignal, log } = params;
   const now = params.now ?? Date.now;
@@ -75,9 +76,12 @@ async function finishPendingSignIn(params) {
     );
     params.saveEnd?.(accountId, { reason, at: now() });
     let current = true;
-    await params.writeConfig((draft) => {
-      current = applySignInResult(draft, accountId, pending.deviceCode);
-    }).catch((writeError) => {
+    await params.writeConfig(
+      (draft) => {
+        current = applySignInResult(draft, accountId, pending.deviceCode);
+      },
+      { abortSignal, handOffAfterMs: SAVE_HAND_OFF_MS }
+    ).catch((writeError) => {
       log(`filament: could not clear the ended sign-in: ${String(writeError)}`);
     });
     return current ? reason : "superseded";
@@ -87,9 +91,12 @@ async function finishPendingSignIn(params) {
   for (; ; ) {
     try {
       let current = true;
-      await params.writeConfig((draft) => {
-        current = applySignInResult(draft, accountId, pending.deviceCode, token);
-      });
+      await params.writeConfig(
+        (draft) => {
+          current = applySignInResult(draft, accountId, pending.deviceCode, token);
+        },
+        { abortSignal, handOffAfterMs: SAVE_HAND_OFF_MS }
+      );
       if (!current) {
         log("filament: a newer sign-in replaced this one; dropping its token");
         return "superseded";
@@ -112,6 +119,7 @@ async function finishPendingSignIn(params) {
   }
 }
 export {
+  SAVE_HAND_OFF_MS,
   applySignInResult,
   finishPendingSignIn,
   parsePendingSignIn,

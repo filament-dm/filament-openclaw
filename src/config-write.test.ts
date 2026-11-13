@@ -179,3 +179,75 @@ test("awaitConfigApplied: applied once the predicate holds, timeout at the deadl
   aborted.abort();
   assert.equal(await waiting, "aborted");
 });
+
+/** A `config patch` that never answers by itself, as when the gateway defers its reload. */
+function stuckPatchCli(file: { pluginConfig: unknown; bindings: unknown }, persists = true) {
+  const state = { patchEnded: false, patches: 0, answer: (_r: CliResult) => {} };
+  const ok = (stdout: string): CliResult => ({ code: 0, stdout, stderr: "" });
+  const run = (args: string[], stdin?: string, signal?: AbortSignal): Promise<CliResult> => {
+    if (args[1] === "get" && args[2] === "bindings")
+      return Promise.resolve(ok(JSON.stringify(file.bindings)));
+    if (args[1] === "get") return Promise.resolve(ok(JSON.stringify(file.pluginConfig)));
+    state.patches++;
+    // The gateway puts the change on file at once, then holds the answer.
+    if (persists) {
+      const patch = JSON.parse(stdin!);
+      file.pluginConfig = patch.plugins.entries["filament-openclaw"].config;
+    }
+    return new Promise((resolve) => {
+      state.answer = resolve;
+      signal?.addEventListener("abort", () => {
+        state.patchEnded = true;
+        resolve({ code: 143, stdout: "", stderr: "" });
+      });
+    });
+  };
+  return { run, state };
+}
+
+test("writeGatewayConfig: a hand-off ends a patch the gateway holds once the file has it", async () => {
+  const cli = stuckPatchCli({ pluginConfig: {}, bindings: [] });
+  const wrote = await writeGatewayConfig(
+    (draft) => {
+      (draft as any).plugins.entries["filament-openclaw"].config.accounts = { main: { x: 1 } };
+    },
+    cli.run,
+    { handOffAfterMs: 5 },
+  );
+  assert.equal(wrote, true);
+  assert.equal(cli.state.patchEnded, true);
+});
+
+test("writeGatewayConfig: on the writer's abort it returns and leaves the patch running", async () => {
+  const cli = stuckPatchCli({ pluginConfig: {}, bindings: [] });
+  const abort = new AbortController();
+  const writing = writeGatewayConfig(
+    (draft) => {
+      (draft as any).plugins.entries["filament-openclaw"].config.accounts = { main: { x: 1 } };
+    },
+    cli.run,
+    { abortSignal: abort.signal },
+  );
+  setTimeout(() => abort.abort(), 5);
+  assert.equal(await writing, true);
+  assert.equal(cli.state.patchEnded, false);
+});
+
+test("writeGatewayConfig: a hand-off keeps waiting while the file does not have the change", async () => {
+  const cli = stuckPatchCli({ pluginConfig: {}, bindings: [] }, false);
+  let settled = false;
+  void writeGatewayConfig(
+    (draft) => {
+      (draft as any).plugins.entries["filament-openclaw"].config.accounts = { main: { x: 1 } };
+    },
+    cli.run,
+    { handOffAfterMs: 2 },
+  ).then(() => (settled = true));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(settled, false);
+  assert.equal(cli.state.patchEnded, false);
+  // The gateway answers in the end: the write returns then.
+  cli.state.answer({ code: 0, stdout: "", stderr: "" });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(settled, true);
+});

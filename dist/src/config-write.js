@@ -5,12 +5,12 @@ function openclawCliArgv(argv = process.argv, execPath = process.execPath) {
   const entry = argv[1];
   return entry && /[\\/]openclaw[\\/]/.test(entry) ? [execPath, entry] : ["openclaw"];
 }
-const runOpenclawCli = (args, stdin) => new Promise((resolve) => {
+const runOpenclawCli = (args, stdin, signal) => new Promise((resolve) => {
   const [command, ...prefix] = openclawCliArgv();
   const child = execFile(
     command,
     [...prefix, ...args],
-    { env: process.env, maxBuffer: 4 * 1024 * 1024 },
+    { env: process.env, maxBuffer: 4 * 1024 * 1024, ...signal ? { signal } : {} },
     (error, stdout, stderr) => {
       const code = error && "code" in error && typeof error.code === "number" ? error.code : null;
       resolve({ code: error ? code ?? 1 : 0, stdout: String(stdout), stderr: String(stderr) });
@@ -60,32 +60,70 @@ function parseJson(label, result) {
     throw new Error(`openclaw config get ${label} returned something that is not JSON`);
   }
 }
+async function patchConfig(patch, run, persisted, opts = {}) {
+  const { abortSignal, handOffAfterMs } = opts;
+  if (!abortSignal && handOffAfterMs === void 0) {
+    return run(["config", "patch", "--stdin"], JSON.stringify(patch));
+  }
+  const end = new AbortController();
+  const patching = run(["config", "patch", "--stdin"], JSON.stringify(patch), end.signal);
+  for (; ; ) {
+    let timer;
+    let onAbort;
+    const trigger = new Promise((resolve) => {
+      if (abortSignal?.aborted) return resolve("abort");
+      onAbort = () => resolve("abort");
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+      if (handOffAfterMs !== void 0)
+        timer = setTimeout(() => resolve("timeout"), handOffAfterMs);
+    });
+    const first = await Promise.race([patching, trigger]);
+    clearTimeout(timer);
+    if (onAbort) abortSignal?.removeEventListener("abort", onAbort);
+    if (first !== "abort" && first !== "timeout") return first;
+    if (first === "abort") return "handed-off";
+    if (await persisted().catch(() => false)) {
+      end.abort();
+      return "handed-off";
+    }
+  }
+}
 let writeQueue = Promise.resolve();
-function writeGatewayConfig(mutate, run = runOpenclawCli) {
-  const next = writeQueue.then(() => writeGatewayConfigNow(mutate, run));
+function writeGatewayConfig(mutate, run = runOpenclawCli, opts = {}) {
+  const next = writeQueue.then(() => writeGatewayConfigNow(mutate, run, opts));
   writeQueue = next.catch(() => {
   });
   return next;
 }
-async function writeGatewayConfigNow(mutate, run) {
+async function readFileState(run) {
   const [pluginConfig, bindings] = await Promise.all([
     run(["config", "get", PLUGIN_CONFIG_PATH, "--json"]).then(
       (r) => parseJson(PLUGIN_CONFIG_PATH, r)
     ),
     run(["config", "get", "bindings", "--json"]).then((r) => parseJson("bindings", r))
   ]);
-  const before = {
+  return {
     plugins: { entries: { [PLUGIN_ID]: { config: asRecord(pluginConfig) } } },
     bindings: Array.isArray(bindings) ? bindings : []
   };
+}
+async function writeGatewayConfigNow(mutate, run, opts) {
+  const before = await readFileState(run);
   const draft = structuredClone(before);
   mutate(draft);
-  const patch = configPatch(before, {
+  const after = {
     plugins: { entries: { [PLUGIN_ID]: { config: asRecord(pluginConfigOf(draft)) } } },
     bindings: Array.isArray(draft.bindings) ? draft.bindings : []
-  });
+  };
+  const patch = configPatch(before, after);
   if (patch === void 0) return false;
-  const result = await run(["config", "patch", "--stdin"], JSON.stringify(patch));
+  const result = await patchConfig(
+    patch,
+    run,
+    async () => configPatch(await readFileState(run), after) === void 0,
+    opts
+  );
+  if (result === "handed-off") return true;
   if (result.code !== 0) {
     throw new Error(`openclaw config patch failed (exit ${result.code}): ${result.stderr.trim()}`);
   }
@@ -117,6 +155,7 @@ export {
   configPatch,
   isUnsetPath,
   openclawCliArgv,
+  patchConfig,
   runOpenclawCli,
   writeGatewayConfig
 };
