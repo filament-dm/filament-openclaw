@@ -30,10 +30,13 @@ function senderLabel(sender, names) {
 }
 function inboundMessageFields(messages, senderNames) {
   const current = messages[messages.length - 1];
+  let start = messages.length - 1;
+  while (start > 0 && messages[start - 1].sender === current?.sender) start--;
+  const run = current ? messages.slice(start) : [];
   return {
-    body: current?.body ?? "",
+    body: run.map((m) => m.body).join("\n\n"),
     current,
-    history: messages.slice(0, -1).map((m) => ({
+    history: messages.slice(0, Math.max(start, 0)).map((m) => ({
       sender: senderLabel(m.sender, senderNames),
       body: m.body,
       timestamp: m.ts,
@@ -83,7 +86,8 @@ async function dispatchWorkItemTurn(params) {
     Body: body,
     BodyForAgent: rawBody,
     RawBody: rawBody,
-    CommandBody: rawBody,
+    // A command is the last message alone: an earlier line in the same run must not hide it.
+    CommandBody: lastMessage?.body ?? rawBody,
     From: lastMessage?.sender ?? "unknown",
     To: params.recipientAddress,
     SessionKey: effectiveRoute.sessionKey,

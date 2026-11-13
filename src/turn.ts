@@ -115,11 +115,15 @@ export interface InboundHistoryEntry {
 }
 
 /**
- * The item as OpenClaw's inbound context wants it: the last message is the turn's own (its
- * text the visible body; its event id and sender the `Conversation info` block's `message_id`
- * and `sender`), and the ones before it are `InboundHistory`, each with its own id and sender.
- * Ids and senders reach the model as OpenClaw-built context blocks, which its chat views strip,
- * so the conversation shows plain text and the agent can still react, quote and reply by id.
+ * The item as OpenClaw's inbound context wants it: the last message is the turn's own (its event
+ * id and sender the `Conversation info` block's `message_id` and `sender`), and the ones before it
+ * are `InboundHistory`, each with its own id and sender. Ids and senders reach the model as
+ * OpenClaw-built context blocks, which its chat views strip, so the conversation shows plain text
+ * and the agent can still react, quote and reply by id.
+ *
+ * The visible body is the last sender's whole run at the end of the item, not only their last
+ * message: two questions the owner sent while the agent was offline arrive as one item, and with
+ * the first one in history the agent answered only the second. Earlier runs stay history.
  */
 export function inboundMessageFields(
   messages: readonly WorkMessage[],
@@ -130,10 +134,13 @@ export function inboundMessageFields(
   history: InboundHistoryEntry[];
 } {
   const current = messages[messages.length - 1];
+  let start = messages.length - 1;
+  while (start > 0 && messages[start - 1]!.sender === current?.sender) start--;
+  const run = current ? messages.slice(start) : [];
   return {
-    body: current?.body ?? "",
+    body: run.map((m) => m.body).join("\n\n"),
     current,
-    history: messages.slice(0, -1).map((m) => ({
+    history: messages.slice(0, Math.max(start, 0)).map((m) => ({
       sender: senderLabel(m.sender, senderNames),
       body: m.body,
       timestamp: m.ts,
@@ -198,7 +205,8 @@ export async function dispatchWorkItemTurn(
     Body: body,
     BodyForAgent: rawBody,
     RawBody: rawBody,
-    CommandBody: rawBody,
+    // A command is the last message alone: an earlier line in the same run must not hide it.
+    CommandBody: lastMessage?.body ?? rawBody,
     From: lastMessage?.sender ?? "unknown",
     To: params.recipientAddress,
     SessionKey: effectiveRoute.sessionKey,

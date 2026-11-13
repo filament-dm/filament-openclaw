@@ -3,8 +3,10 @@
  * code, prints the link and code, saves the code as the account's `pendingSignIn` and exits: an
  * agent's shell may not outlive the call that ran it. The account, started with no token, polls
  * Filament until the owner approves, then saves the token in place of the pending sign-in, and
- * the reload that write causes connects it as usual. The device code is a credential until
- * redeemed, so it is never logged.
+ * the reload that write causes connects it as usual. That reload replaces the plugin, which waits
+ * for this account to finish: the token write hands its patch off on abort (config-write.ts)
+ * rather than holding the account until the gateway has applied it. The device code is a
+ * credential until redeemed, so it is never logged.
  */
 import { asRecord, FILAMENT_CHANNEL_ID, PLUGIN_ID } from "./accounts.js";
 import {
@@ -13,6 +15,7 @@ import {
   type DeviceAuthorization,
   type PollOptions,
 } from "./oauth-login.js";
+import type { WriteOptions } from "./config-write.js";
 import type { SignInEnd } from "./state/sign-in.js";
 
 /** As the config keeps it: `expiresAt` is an ISO time, so the file reads plainly. */
@@ -87,6 +90,9 @@ export function applySignInResult(
   return true;
 }
 
+/** How long a save waits for the gateway's apply before it checks the file and lets go. */
+export const SAVE_HAND_OFF_MS = 5_000;
+
 export type SignInOutcome = "signed-in" | SignInEnd["reason"] | "superseded" | "aborted";
 
 export interface FinishSignInParams extends Pick<PollOptions, "fetch" | "sleep" | "now"> {
@@ -94,7 +100,10 @@ export interface FinishSignInParams extends Pick<PollOptions, "fetch" | "sleep" 
   pending: DeviceAuthorization;
   abortSignal: AbortSignal;
   log: (message: string) => void;
-  writeConfig: (mutate: (draft: Record<string, unknown>) => void) => Promise<boolean>;
+  writeConfig: (
+    mutate: (draft: Record<string, unknown>) => void,
+    opts?: WriteOptions,
+  ) => Promise<boolean>;
   saveEnd?: (accountId: string, end: SignInEnd) => void;
   clearEnd?: (accountId: string) => void;
   /** Between failed attempts to save the token. */
@@ -138,9 +147,12 @@ export async function finishPendingSignIn(params: FinishSignInParams): Promise<S
     params.saveEnd?.(accountId, { reason, at: now() });
     let current = true;
     await params
-      .writeConfig((draft) => {
-        current = applySignInResult(draft, accountId, pending.deviceCode);
-      })
+      .writeConfig(
+        (draft) => {
+          current = applySignInResult(draft, accountId, pending.deviceCode);
+        },
+        { abortSignal, handOffAfterMs: SAVE_HAND_OFF_MS },
+      )
       .catch((writeError) => {
         log(`filament: could not clear the ended sign-in: ${String(writeError)}`);
       });
@@ -153,9 +165,12 @@ export async function finishPendingSignIn(params: FinishSignInParams): Promise<S
   for (;;) {
     try {
       let current = true;
-      await params.writeConfig((draft) => {
-        current = applySignInResult(draft, accountId, pending.deviceCode, token);
-      });
+      await params.writeConfig(
+        (draft) => {
+          current = applySignInResult(draft, accountId, pending.deviceCode, token);
+        },
+        { abortSignal, handOffAfterMs: SAVE_HAND_OFF_MS },
+      );
       if (!current) {
         log("filament: a newer sign-in replaced this one; dropping its token");
         return "superseded";

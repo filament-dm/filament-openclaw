@@ -20,7 +20,7 @@ import {
   pluginConfigFrom,
   retiredAccountKind,
 } from "./accounts.js";
-import { writeGatewayConfig } from "./config-write.js";
+import { writeGatewayConfig, type WriteOptions } from "./config-write.js";
 import {
   AGENT_ID_PATTERN,
   applyAgentConnect,
@@ -49,6 +49,9 @@ import {
   type RevokedBearer,
   type SignInEnd,
 } from "./state/sign-in.js";
+
+/** How long a login's hand-off waits for the gateway's apply before it checks the file. */
+export const LOGIN_HAND_OFF_MS = 5_000;
 
 export const CLI_ROOT = "filament";
 
@@ -228,7 +231,10 @@ export interface LoginDeps extends Pick<DeviceLoginOptions, "fetch" | "sleep" | 
   out?: Out;
   warn?: Out;
   env?: NodeJS.ProcessEnv;
-  writeConfig?: (mutate: (draft: Record<string, unknown>) => void) => Promise<boolean>;
+  writeConfig?: (
+    mutate: (draft: Record<string, unknown>) => void,
+    opts?: WriteOptions,
+  ) => Promise<boolean>;
   /** Where a pasted browser redirect is read from (browser flow). */
   pasteInput?: NodeJS.ReadableStream | null;
 }
@@ -295,9 +301,15 @@ export async function runLogin(opts: LoginCommandOptions, deps: LoginDeps): Prom
     if (!handoff) await out("Signed in. Saving the configuration ...");
     let displaced: string[] = [];
     try {
-      await (deps.writeConfig ?? writeGatewayConfig)((draft) => {
-        displaced = applyLogin(draft, agentId, credential, mcpUrl).displaced;
-      });
+      // A hand-off need not wait for the gateway to apply it (it may be deferring reloads while
+      // the agent that runs this login is in its turn); the token write in a browser or `--wait`
+      // login keeps waiting, so "Connected" stays true.
+      await (deps.writeConfig ?? ((m, o) => writeGatewayConfig(m, undefined, o)))(
+        (draft) => {
+          displaced = applyLogin(draft, agentId, credential, mcpUrl).displaced;
+        },
+        handoff ? { handOffAfterMs: LOGIN_HAND_OFF_MS } : {},
+      );
     } catch (error) {
       throw new LoginError(
         `${handoff ? "The sign-in could not be handed to the gateway" : "Signed in, but the configuration could not be saved"}: ${errorText(error)}. Run the login again.`,

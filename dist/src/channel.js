@@ -160,9 +160,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const pluginConfig = pluginConfigOf(ctx.cfg);
         const mcp = resolveAccountSettings(pluginConfig, accountId);
         const accountLog = (message) => log(`[${accountId}] ${message}`);
-        void ensureGroupSilenceAllowedOnce(log).then(
-          () => removeRetiredSettingsOnce(pluginConfig, log)
-        );
+        const retiredCleanup = removeRetiredSettingsOnce(pluginConfig, log);
         const holdOpen = async () => {
           if (abortSignal.aborted) return;
           await new Promise((resolve) => {
@@ -322,7 +320,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             pending: pendingSignIn,
             abortSignal,
             log: accountLog,
-            writeConfig: writeGatewayConfig,
+            writeConfig: (mutate, opts) => writeGatewayConfig(mutate, void 0, opts),
             saveEnd: saveSignInEnd,
             clearEnd: clearSignInEnd
           });
@@ -377,6 +375,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           ).catch((error) => {
             accountLog(`filament-update: checks stopped: ${String(error)}`);
           });
+          void retiredCleanup.then(() => ensureGroupSilenceAllowedOnce(log));
           setFilamentClient(connection.client, accountId);
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);

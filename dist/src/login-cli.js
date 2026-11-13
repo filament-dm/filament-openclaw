@@ -36,6 +36,7 @@ import {
   loadSignInEnd,
   tokenFingerprint
 } from "./state/sign-in.js";
+const LOGIN_HAND_OFF_MS = 5e3;
 const CLI_ROOT = "filament";
 function realpathOrSame(path) {
   try {
@@ -180,9 +181,12 @@ async function runLogin(opts, deps) {
     if (!handoff) await out("Signed in. Saving the configuration ...");
     let displaced = [];
     try {
-      await (deps.writeConfig ?? writeGatewayConfig)((draft) => {
-        displaced = applyLogin(draft, agentId, credential, mcpUrl).displaced;
-      });
+      await (deps.writeConfig ?? ((m, o) => writeGatewayConfig(m, void 0, o)))(
+        (draft) => {
+          displaced = applyLogin(draft, agentId, credential, mcpUrl).displaced;
+        },
+        handoff ? { handOffAfterMs: LOGIN_HAND_OFF_MS } : {}
+      );
     } catch (error) {
       throw new LoginError(
         `${handoff ? "The sign-in could not be handed to the gateway" : "Signed in, but the configuration could not be saved"}: ${errorText(error)}. Run the login again.`
@@ -351,6 +355,7 @@ function registerFilamentCli(api) {
 }
 export {
   CLI_ROOT,
+  LOGIN_HAND_OFF_MS,
   applyLogin,
   describeAccount,
   probeBearer,
