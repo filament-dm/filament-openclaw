@@ -529,12 +529,12 @@ test("runStatus: a token Filament rejects, or the gateway saw rejected, is revok
   assert.deepEqual(live.probed, [[DEV, "fmcp_m"]]);
   assert.equal(
     (await status({ kind: "revoked" })).line,
-    'sign-in revoked; run openclaw filament login again (OpenClaw agent "main")',
+    'sign-in refused: this agent was deleted or signed out in Filament; to connect again, your owner presses Connect for OpenClaw in the Filament app and sends you the setup message (OpenClaw agent "main")',
   );
   // Offline: the gateway's record of a rejection stands; without one, the stored identity.
   assert.equal(
     (await status({ kind: "unknown" }, "fmcp_m")).line,
-    'sign-in revoked; run openclaw filament login again (OpenClaw agent "main")',
+    'sign-in refused: this agent was deleted or signed out in Filament; to connect again, your owner presses Connect for OpenClaw in the Filament app and sends you the setup message (OpenClaw agent "main")',
   );
   assert.equal(
     (await status({ kind: "unknown" })).line,
