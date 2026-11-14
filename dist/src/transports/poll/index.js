@@ -61,6 +61,9 @@ function classifyPublish(res) {
 }
 const SHUTDOWN_PUBLISH_TIMEOUT_MS = 5e3;
 const RECOVERY_HOLD_MS = 2 * 6e4;
+function agentStillStarting(error) {
+  return /has not completed startup inspection/.test(String(error));
+}
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
@@ -164,6 +167,9 @@ async function runPollTransport(ctx, deps = {}) {
       result = await ctx.runTurn(item, media);
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
+      if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
+        return { kind: "held", diagnostic: `OpenClaw's agent is still starting: ${String(error)}` };
+      }
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
     const producedNothing = !result.sawFinal && !result.sawSkip && !result.sawError;
@@ -241,6 +247,7 @@ async function runPollTransport(ctx, deps = {}) {
 export {
   RECOVERY_HOLD_MS,
   SHUTDOWN_PUBLISH_TIMEOUT_MS,
+  agentStillStarting,
   classifyPublish,
   runPollTransport,
   skipReason

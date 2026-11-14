@@ -52,6 +52,8 @@ async function run(
     accountId?: string;
     /** As if the gateway began shutting down while the turn ran. */
     abortDuringTurn?: boolean;
+    /** An error the nth turn (from 1) throws, if any. */
+    turnThrows?: (n: number) => Error | undefined;
   } = {},
 ) {
   const controller = new AbortController();
@@ -104,6 +106,8 @@ async function run(
       turns.push(workItem);
       turnMedia.push(media);
       if (opts.abortDuringTurn) controller.abort();
+      const thrown = opts.turnThrows?.(turns.length);
+      if (thrown) throw thrown;
       return {
         finalText: "the reply",
         mediaUrls: [],
@@ -482,6 +486,31 @@ test("poll: with no recovered answer in time, the held message is dispatched aft
   assert.equal(h.turns.length, 1);
   assert.equal(h.publishes.length, 1);
   assert.deepEqual(loadInFlight("unrecovered", SELF), []);
+});
+
+test("poll: a turn refused while OpenClaw's agent starts up is offered again, not dropped", async () => {
+  const starting = new Error(
+    "Agent main (/tmp/openclaw-agent.sqlite): Agent main has not completed startup inspection",
+  );
+  starting.name = "AgentDatabaseAdmissionError";
+  const h = await run([offer(item()), offer(item())], {
+    accountId: "starting",
+    deps: { holdPollMs: 0 },
+    turnThrows: (n) => (n === 1 ? starting : undefined),
+  });
+  assert.equal(h.turns.length, 2);
+  assert.equal(h.publishes.length, 1);
+  // Not acked on the first offer, and offered again under the cursor it came with.
+  assert.equal(h.pollArgs[1]!.ack, undefined);
+});
+
+test("poll: a turn that throws for another reason is still dropped", async () => {
+  const h = await run([offer(item())], {
+    accountId: "throws",
+    turnThrows: () => new Error("boom"),
+  });
+  assert.equal(h.publishes.length, 0);
+  assert.deepEqual(h.pollArgs[1]!.ack, ["$e1"]);
 });
 
 test("poll: a held restart blocks other messages too, so nothing races the recovery claim", async () => {

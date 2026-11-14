@@ -100,6 +100,15 @@ export const SHUTDOWN_PUBLISH_TIMEOUT_MS = 5_000;
  */
 export const RECOVERY_HOLD_MS = 2 * 60_000;
 
+/**
+ * Whether a turn was refused because OpenClaw's agent is still starting up. Right after a gateway
+ * start, the first poll can hand over messages queued while it was down before the agent has
+ * finished its startup inspection; the turn throws and the messages wait for the next offer.
+ */
+export function agentStillStarting(error: unknown): boolean {
+  return /has not completed startup inspection/.test(String(error));
+}
+
 export async function runPollTransport(
   ctx: TransportContext,
   deps: PollTransportDeps = {},
@@ -235,6 +244,9 @@ export async function runPollTransport(
       result = await ctx.runTurn(item, media);
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
+      if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
+        return { kind: "held", diagnostic: `OpenClaw's agent is still starting: ${String(error)}` };
+      }
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
     }
     // A turn that produced nothing may have been cut short: its marker stays for the next start.
