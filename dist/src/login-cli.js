@@ -265,7 +265,7 @@ function describeAccount(pluginConfig, accountId, deps) {
     const marker = tryLoad(deps.loadRevoked, accountId);
     const marked = marker !== void 0 && (!plain || marker.fingerprint === tokenFingerprint(plain));
     if (probe?.kind === "revoked" || probe?.kind !== "ok" && marked) {
-      return "sign-in revoked; run openclaw filament login again";
+      return "sign-in refused: this agent was deleted or signed out in Filament; to connect again, your owner presses Connect for OpenClaw in the Filament app and sends you the setup message";
     }
     const identity = tryLoad(deps.loadIdentity, accountId);
     if (!identity || probe?.kind === "ok" && probe.mxid && probe.mxid !== identity.mxid) {

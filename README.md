@@ -62,8 +62,9 @@ not signed in (OpenClaw agent "idle")
 
 An ended sign-in shows as `sign-in expired`, `sign-in declined` or `sign-in failed`. Each signed-in
 agent's token is checked with one `get_self` call (5 s timeout): a token Filament rejects, because
-the agent was deleted or revoked, shows as `sign-in revoked; run openclaw filament login again`, as
-does one the gateway saw rejected. When Filament cannot be reached, `connected as …` carries
+the agent was deleted or revoked, shows as `sign-in refused: this agent was deleted or signed out in
+Filament; …` (the owner presses Connect again and sends the setup message), as does one the gateway
+saw rejected. When Filament cannot be reached, `connected as …` carries
 `(not verified)`.
 
 - `--agent <id>` names the OpenClaw agent. Without it the command picks the agent whose workspace
