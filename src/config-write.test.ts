@@ -251,3 +251,48 @@ test("writeGatewayConfig: a hand-off keeps waiting while the file does not have 
   await new Promise((r) => setTimeout(r, 10));
   assert.equal(settled, true);
 });
+
+/** A `config patch` that saves the change and then fails, as OpenClaw 2026.11.4 does for a deferred reload. */
+function deferringPatchCli(file: { pluginConfig: unknown; bindings: unknown }, persists = true) {
+  const ok = (stdout: string): CliResult => ({ code: 0, stdout, stderr: "" });
+  return async (args: string[], stdin?: string): Promise<CliResult> => {
+    if (args[1] === "get" && args[2] === "bindings") return ok(JSON.stringify(file.bindings));
+    if (args[1] === "get") return ok(JSON.stringify(file.pluginConfig));
+    if (persists) {
+      file.pluginConfig = JSON.parse(stdin!).plugins.entries["filament-openclaw"].config;
+    }
+    return {
+      code: 1,
+      stdout: "",
+      stderr:
+        "config.patch saved but deferred: Plugin filament-openclaw reload is waiting for retained work, calls, or previous cleanup; the previous plugin configuration remains active.",
+    };
+  };
+}
+
+test("writeGatewayConfig: a patch the gateway saved but deferred counts as written", async () => {
+  for (const opts of [{}, { handOffAfterMs: 50 }]) {
+    const file = { pluginConfig: {}, bindings: [] };
+    const wrote = await writeGatewayConfig(
+      (draft) => {
+        (draft as any).plugins.entries["filament-openclaw"].config.accounts = { main: { x: 1 } };
+      },
+      deferringPatchCli(file),
+      opts,
+    );
+    assert.equal(wrote, true);
+    assert.deepEqual(file.pluginConfig, { accounts: { main: { x: 1 } } });
+  }
+});
+
+test("writeGatewayConfig: a failed patch whose change is not on file still fails", async () => {
+  await assert.rejects(
+    writeGatewayConfig(
+      (draft) => {
+        (draft as any).plugins.entries["filament-openclaw"].config.accounts = { main: { x: 1 } };
+      },
+      deferringPatchCli({ pluginConfig: {}, bindings: [] }, false),
+    ),
+    /openclaw config patch failed \(exit 1\): config.patch saved but deferred/,
+  );
+});
