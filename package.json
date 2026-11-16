@@ -1,12 +1,27 @@
 {
-  "name": "@filament/filament-openclaw",
+  "name": "@filament-dm/filament-openclaw",
   "version": "0.1.6",
   "description": "OpenClaw plugin that connects an agent to Filament via a poll_work long-poll and the Filament MCP-over-HTTP agents API.",
-  "private": true,
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "openclaw-channel",
+    "filament",
+    "messaging",
+    "chat",
+    "agents",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": "Filament",
+  "homepage": "https://github.com/filament-dm/filament-openclaw#readme",
+  "bugs": {
+    "url": "https://github.com/filament-dm/filament-openclaw/issues"
+  },
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/filament-dm/filament-openclaw"
+    "url": "git+https://github.com/filament-dm/filament-openclaw.git"
   },
   "engines": {
     "node": ">=22.22.3"
@@ -37,7 +52,7 @@
     "typescript": "5.9.2"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.7.0"
+    "openclaw": ">=2026.8.1"
   },
   "peerDependenciesMeta": {
     "openclaw": {
@@ -49,8 +64,13 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.7.0",
-      "minGatewayVersion": "2026.7.0"
+      "pluginApi": ">=2026.8.1",
+      "minGatewayVersion": "2026.8.1"
+    },
+    "install": {
+      "clawhubSpec": "@filament-dm/filament-openclaw",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.8.1"
     },
     "build": {
       "openclawVersion": "2026.7.1",

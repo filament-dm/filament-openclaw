@@ -6,19 +6,27 @@ channel, and the agent replies and uses Filament through a set of `filament_*` t
 
 ## Requirements
 
-- An OpenClaw gateway, version 2026.7 or later.
+- An OpenClaw gateway, version 2026.8.1 or later.
 - Node.js 22.22.3 or later.
 - A Filament account.
 
 ## Install
 
-On the machine where your gateway runs, install and enable the plugin, then sign the agent in to
+On the machine where your gateway runs, install the plugin from ClawHub, then sign the agent in to
 Filament. No token to copy:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh | bash
+openclaw plugins install clawhub:@filament-dm/filament-openclaw --accept-capabilities
 openclaw filament login --agent <agent id>
 ```
+
+`--accept-capabilities` grants what the plugin declares: the `filament` chat channel, its
+`filament_*` tools, the `openclaw filament` command and a short skill. A gateway older than 2026.10
+may install the plugin without enabling it; there, also run
+`openclaw plugins enable filament-openclaw --accept-capabilities`.
+
+Prefer to let your agent do it? In Filament, tap **Connect** on the OpenClaw card and send your
+agent the message it gives you.
 
 `openclaw filament login` prints a link and a code, hands the sign-in to the gateway and exits:
 
@@ -80,6 +88,24 @@ saw rejected. When Filament cannot be reached, `connected as …` carries
   `--no-open` it only prints the address, and a redirect pasted back at the terminal also works).
   It is also what the command does when a server offers no link and code; Filament does.
 
+### From GitHub
+
+To install a version that is not on ClawHub yet, install from this repository instead. A git
+source is not a trusted install source for OpenClaw, so it asks for confirmation, or needs
+`--force` when nothing can answer:
+
+```bash
+openclaw plugins install git:https://github.com/filament-dm/filament-openclaw.git@main --accept-capabilities
+openclaw plugins enable filament-openclaw --accept-capabilities
+```
+
+[`install.sh`](install.sh) does the same and checks the result; read it first, then run it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh -o install.sh
+bash install.sh
+```
+
 ### With a connect token
 
 A connect token from the Filament app (`fmcp_…`) still works, for reconnecting an agent without a
@@ -88,8 +114,7 @@ gateway's only agent when it names none; with several it must name one), and wai
 connected:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/install.sh \
-  | CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=<agent id> bash
+CONNECT_TOKEN=fmcp_... OPENCLAW_AGENT=<agent id> bash install.sh
 ```
 
 Running the script again is safe, and the header of `install.sh` lists every option.
@@ -97,6 +122,19 @@ Running the script again is safe, and the header of `install.sh` lists every opt
 Accounts an older version wrote for gateway pairing (`control: true`) or for picking the agent in
 chat (`pending: true`) stay idle now; `openclaw filament status` lists them as retired. Remove them
 and connect each agent with `openclaw filament login`.
+
+## What the plugin can do on your gateway
+
+- **Network:** it calls Filament's agents API (`https://api.filament.dm/mcp/agents` by default;
+  `mcpUrl` overrides it) and fetches the attachment links that API hands out. Once a day it reads
+  `openclaw.plugin.json` from this repository on GitHub to check for updates. `openclaw filament
+  login --browser` listens on a local port for the sign-in callback while it runs.
+- **Processes:** it runs the `openclaw` CLI to read and save its configuration (`openclaw config
+  get` / `openclaw config patch`) and, when the owner taps **Update now**, to run
+  `openclaw plugins update`. An interactive `login --browser` asks your OS to open the sign-in
+  page.
+- **Data:** it keeps each agent's sign-in token in your OpenClaw config (a SecretRef is accepted)
+  and small state files under the OpenClaw state directory.
 
 ## Configuration
 
@@ -133,7 +171,8 @@ again with `FILAMENT_PLUGIN_UPDATE=1`: it replaces the plugin outright.
 into `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal), rebuilds `dist/`,
 and npm commits `Release vX.Y.Z` and tags it. The **Bump version** workflow (Actions → Bump
 version → Run workflow → pick the level) does exactly that on `main` and pushes. A merge to `main` is already what
-gateways install; the bump is what tells running ones about it.
+installs from GitHub get; the bump is what tells running ones about it. A ClawHub install gets a
+version only once it is published to ClawHub.
 
 ## Troubleshooting
 
@@ -146,6 +185,14 @@ gateways install; the bump is what tells running ones about it.
   again with `openclaw filament login`.
 - **Upgrading from the `filament-fcm` plugin id.** Run `openclaw plugins uninstall filament-fcm`,
   then install and sign in again.
+
+## Support
+
+Report problems at https://github.com/filament-dm/filament-openclaw/issues.
+
+## License
+
+[MIT](LICENSE)
 
 ## Development
 
