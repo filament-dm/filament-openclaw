@@ -117,14 +117,11 @@ async function writeGatewayConfigNow(mutate, run, opts) {
   };
   const patch = configPatch(before, after);
   if (patch === void 0) return false;
-  const result = await patchConfig(
-    patch,
-    run,
-    async () => configPatch(await readFileState(run), after) === void 0,
-    opts
-  );
+  const persisted = async () => configPatch(await readFileState(run), after) === void 0;
+  const result = await patchConfig(patch, run, persisted, opts);
   if (result === "handed-off") return true;
   if (result.code !== 0) {
+    if (await persisted().catch(() => false)) return true;
     throw new Error(`openclaw config patch failed (exit ${result.code}): ${result.stderr.trim()}`);
   }
   return true;

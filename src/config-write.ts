@@ -12,6 +12,11 @@
  * shell waited minutes for an apply the gateway was holding back. So such writes hand the patch
  * off (`WriteOptions`) instead of awaiting the apply: once the gateway has the change on file, it
  * applies it by itself, and the writer can let go.
+ *
+ * Since OpenClaw 2026.11.4 the gateway no longer holds a busy reload: `config patch` exits 1 at
+ * once with "config.patch saved but deferred: Plugin ... reload is waiting for retained work", and
+ * applies the saved change when that work finishes. So a failed patch whose change is on file
+ * counts as written.
  */
 import { execFile } from "node:child_process";
 
@@ -204,14 +209,12 @@ async function writeGatewayConfigNow(
   };
   const patch = configPatch(before, after);
   if (patch === undefined) return false;
-  const result = await patchConfig(
-    patch,
-    run,
-    async () => configPatch(await readFileState(run), after) === undefined,
-    opts,
-  );
+  const persisted = async () => configPatch(await readFileState(run), after) === undefined;
+  const result = await patchConfig(patch, run, persisted, opts);
   if (result === "handed-off") return true;
   if (result.code !== 0) {
+    // A reload the gateway deferred: the change is saved and applies by itself.
+    if (await persisted().catch(() => false)) return true;
     throw new Error(`openclaw config patch failed (exit ${result.code}): ${result.stderr.trim()}`);
   }
   return true;
