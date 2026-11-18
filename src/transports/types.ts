@@ -19,6 +19,16 @@ export interface TurnResult extends DispatchTurnResult {
   mediaLocalRoots: readonly string[];
 }
 
+export interface TurnOptions {
+  /** Ends the turn: OpenClaw's reply operation stops at its next check. */
+  abortSignal?: AbortSignal;
+  /**
+   * Each step the turn reaches: OpenClaw's turn stages as `<stage>:<event>` ("record:done",
+   * "dispatch:start"), then "run:start" and "model:selected" once the agent's run begins.
+   */
+  onProgress?: (step: string) => void;
+}
+
 export interface TransportContext {
   accountId: string;
   client: FilamentMcpClient;
@@ -27,7 +37,7 @@ export interface TransportContext {
   abortSignal: AbortSignal;
   log: (message: string) => void;
   /** Throws only when the dispatcher itself throws. `media`: attachments saved for the turn. */
-  runTurn: (item: WorkItem, media?: InboundMedia[]) => Promise<TurnResult>;
+  runTurn: (item: WorkItem, media?: InboundMedia[], opts?: TurnOptions) => Promise<TurnResult>;
   /**
    * The plugin's own answer to a `/filament` command from the principal in its backchannel
    * (`isBackchannelCommandItem`): the item never wakes a turn. Never throws.

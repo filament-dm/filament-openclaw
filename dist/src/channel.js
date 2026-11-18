@@ -264,7 +264,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               // Filament, not OpenClaw, decides who can reach the agent; only the
               // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,
-              log: accountLog
+              log: accountLog,
+              abortSignal: opts?.abortSignal,
+              onProgress: opts?.onProgress
             });
           } finally {
             toolOutcome = endFilamentTurn(accountId);

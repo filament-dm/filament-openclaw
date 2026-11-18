@@ -12,6 +12,7 @@ import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { runPollLoop } from "./poll-work.js";
+import { runTurnWithStartDeadline } from "./turn-deadline.js";
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
   const d = data;
@@ -64,6 +65,7 @@ const RECOVERY_HOLD_MS = 2 * 6e4;
 function agentStillStarting(error) {
   return /has not completed startup inspection/.test(String(error));
 }
+const STUCK_TURN_GIVE_UP_MS = 10 * 6e4;
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
@@ -73,6 +75,7 @@ async function runPollTransport(ctx, deps = {}) {
   const { mxid } = ctx.identity;
   const startedAt = now();
   const run = randomUUID();
+  const stuckSince = /* @__PURE__ */ new Map();
   setLiveRun(accountId, run);
   const publish = async (replyWith, text, mediaUrls, mediaLocalRoots, signal, channelId) => {
     const attachments = await uploadMedia(client, mediaUrls, { mediaLocalRoots, log, signal });
@@ -164,7 +167,33 @@ async function runPollTransport(ctx, deps = {}) {
           run
         });
       }
-      result = await ctx.runTurn(item, media);
+      const watched = await runTurnWithStartDeadline(
+        (turnOpts) => ctx.runTurn(item, media, turnOpts),
+        {
+          abortSignal,
+          startTimeoutMs: deps.turnStartTimeoutMs,
+          settleMs: deps.stuckTurnSettleMs
+        }
+      );
+      if (watched.kind === "stuck") {
+        if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
+        const key = lastId ?? item.channel_id;
+        const since = stuckSince.get(key) ?? now();
+        const why = `the turn in ${item.channel_id} did not start the agent's run in time (last step: ${watched.lastStep ?? "none"}${watched.settled ? "" : "; it is still pending"})`;
+        if (abortSignal.aborted) return { kind: "held", diagnostic: why };
+        if (now() - since >= STUCK_TURN_GIVE_UP_MS) {
+          stuckSince.delete(key);
+          return {
+            kind: "dropped",
+            diagnostic: `${why}, for ${Math.round((now() - since) / 1e3)} s`
+          };
+        }
+        stuckSince.set(key, since);
+        log(`filament-poll: ${why}; offering it again`);
+        return { kind: "held", diagnostic: why };
+      }
+      if (lastId) stuckSince.delete(lastId);
+      result = watched.result;
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
@@ -247,6 +276,7 @@ async function runPollTransport(ctx, deps = {}) {
 export {
   RECOVERY_HOLD_MS,
   SHUTDOWN_PUBLISH_TIMEOUT_MS,
+  STUCK_TURN_GIVE_UP_MS,
   agentStillStarting,
   classifyPublish,
   runPollTransport,

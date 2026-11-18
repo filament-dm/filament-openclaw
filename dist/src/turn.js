@@ -139,6 +139,9 @@ async function dispatchWorkItemTurn(params) {
     storePath,
     ctxPayload,
     recordInboundSession: runtime.session.recordInboundSession,
+    ...params.onProgress ? {
+      log: (event) => params.onProgress?.(`${event.stage}:${event.event}`)
+    } : {},
     record: {
       onRecordError: (error) => params.log(`record error (continuing): ${String(error)}`)
     },
@@ -177,7 +180,14 @@ async function dispatchWorkItemTurn(params) {
           params.log(`dispatch error (${info?.kind ?? "?"}): ${String(error)}`);
         }
       },
-      replyOptions: { onModelSelected }
+      replyOptions: {
+        onModelSelected: (ctx) => {
+          params.onProgress?.("model:selected");
+          onModelSelected(ctx);
+        },
+        onAgentRunStart: () => params.onProgress?.("run:start"),
+        ...params.abortSignal ? { abortSignal: params.abortSignal } : {}
+      }
     })
   });
   return {

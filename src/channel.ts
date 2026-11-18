@@ -63,7 +63,7 @@ import {
 import { helloSentAs, markHelloSent } from "./state/hello.js";
 import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
 import { runPollTransport } from "./transports/poll/index.js";
-import type { TurnResult } from "./transports/types.js";
+import type { TurnOptions, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
 import {
   runUpdateChecks,
@@ -299,7 +299,7 @@ export function registerFilamentChannel(
         const runTurn = async (
           item: WorkItem,
           media?: InboundMedia[],
-          opts?: { sideSession?: string },
+          opts?: TurnOptions & { sideSession?: string },
         ): Promise<TurnResult> => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
@@ -342,6 +342,8 @@ export function registerFilamentChannel(
               // backchannel may run OpenClaw commands.
               commandAuthorized: item.is_backchannel === true,
               log: accountLog,
+              abortSignal: opts?.abortSignal,
+              onProgress: opts?.onProgress,
             });
           } finally {
             toolOutcome = endFilamentTurn(accountId);

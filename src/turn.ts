@@ -58,6 +58,10 @@ export interface DispatchWorkItemParams {
   loopName?: string;
   commandAuthorized: boolean;
   log: (message: string) => void;
+  /** Ends the turn (the reply operation's abort signal). */
+  abortSignal?: AbortSignal;
+  /** Each step the turn reaches; see `TurnOptions.onProgress`. */
+  onProgress?: (step: string) => void;
 }
 
 export interface DispatchTurnResult {
@@ -263,6 +267,12 @@ export async function dispatchWorkItemTurn(
     storePath,
     ctxPayload,
     recordInboundSession: runtime.session.recordInboundSession,
+    ...(params.onProgress
+      ? {
+          log: (event: { stage: string; event: string }) =>
+            params.onProgress?.(`${event.stage}:${event.event}`),
+        }
+      : {}),
     record: {
       onRecordError: (error: unknown) => params.log(`record error (continuing): ${String(error)}`),
     },
@@ -305,7 +315,14 @@ export async function dispatchWorkItemTurn(
             params.log(`dispatch error (${info?.kind ?? "?"}): ${String(error)}`);
           },
         },
-        replyOptions: { onModelSelected },
+        replyOptions: {
+          onModelSelected: (ctx: Parameters<typeof onModelSelected>[0]) => {
+            params.onProgress?.("model:selected");
+            onModelSelected(ctx);
+          },
+          onAgentRunStart: () => params.onProgress?.("run:start"),
+          ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+        },
       }),
   });
 
