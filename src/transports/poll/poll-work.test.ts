@@ -11,6 +11,7 @@ import {
   PENDING_SWEEP_INTERVAL_MS,
   type PollClient,
   type PollWorkItem,
+  cursorCanReoffer,
   runPollLoop,
 } from "./poll-work.js";
 import { skipReason } from "./index.js";
@@ -192,6 +193,8 @@ test("retry outcome: left un-ack'd with a backoff while re-offered, ack'd on the
       dispatches += 1;
       return { kind: "retry", diagnostic: "transient: HTTP 502" };
     },
+    // A cursor the server can re-offer the batch under (see the hold tests for one it can't).
+    initialCursor: "c:start",
     backoffMs: (attempt) => {
       backoffCalls.push(attempt);
       return 0;
@@ -799,4 +802,105 @@ test("cursor: silent and dropped items are acked and the cursor advances", async
     await cursorsAfter([{ kind: "silent" }, { kind: "dropped", diagnostic: "refused" }]),
     ["c:0", "c:1", "c:2"],
   );
+});
+
+/** develop's poll_work cursor: "c:" + base64url of {"so": <stream ordering>}. */
+const encodeCursor = (so: number) =>
+  "c:" + Buffer.from(JSON.stringify({ so })).toString("base64url");
+const decodeCursor = (cursor: string | null | undefined): number =>
+  cursor ? Number(JSON.parse(Buffer.from(cursor.slice(2), "base64url").toString()).so) : 0;
+
+/**
+ * A server that keeps cursors the way develop's poll_work does: a poll finishes everything up to
+ * its cursor, or, without one (or with one at 0), up to the end of the last work it handed out;
+ * then it hands out the next unfinished item (one per poll) and remembers where that item ends.
+ */
+function cursorServer(itemCount: number, onEmpty: () => void) {
+  const finished = new Set<number>();
+  let saved = 0;
+  const calls: Array<{ cursor?: string | null }> = [];
+  const client: PollClient = {
+    pollWork: async (args) => {
+      calls.push({ cursor: args.cursor });
+      const from = decodeCursor(args.cursor) || saved;
+      for (let n = 1; n <= from; n++) finished.add(n);
+      for (const id of args.ack ?? []) finished.add(Number(id.slice(1)));
+      let next = 0;
+      for (let n = from + 1; n <= itemCount; n++) {
+        if (!finished.has(n)) {
+          next = n;
+          break;
+        }
+      }
+      if (!next) {
+        onEmpty();
+        return okResult({
+          work: [],
+          cursor: encodeCursor(from),
+          truncated: false,
+          acknowledged: 0,
+        });
+      }
+      saved = next;
+      const message = { event_id: "$" + next, sender: "@ada:server", body: "hi", ts: next };
+      return okResult({
+        work: [itemFixture({ messages: [message] })],
+        cursor: encodeCursor(next),
+        truncated: false,
+        acknowledged: 0,
+      });
+    },
+  };
+  return { client, calls };
+}
+
+/** Runs the loop on `server`: the first offer of each item is held, the second published. */
+async function holdOnce(initialCursor?: string, itemCount = 1) {
+  const controller = new AbortController();
+  const server = cursorServer(itemCount, () => controller.abort());
+  const dispatched: string[] = [];
+  await runPollLoop({
+    client: server.client,
+    abortSignal: controller.signal,
+    log: () => {},
+    holdPollMs: 0,
+    ...(initialCursor ? { initialCursor } : {}),
+    dispatchItem: async (item) => {
+      const id = item.messages[0]!.event_id;
+      const again = dispatched.includes(id);
+      dispatched.push(id);
+      return again ? { kind: "published" } : { kind: "held", diagnostic: "agent still starting" };
+    },
+  });
+  return { dispatched, calls: server.calls };
+}
+
+test("hold: an item held on a cursorless first poll is dispatched again, not lost", async () => {
+  // A new agent stopped before its first poll returned saved no cursor, so its first poll after
+  // the restart has none: any later poll, cursor or not, finishes that batch on the server.
+  const h = await holdOnce();
+  assert.deepEqual(h.dispatched, ["$1", "$1"]);
+  assert.equal(h.calls[0]!.cursor, undefined);
+});
+
+test("hold: a cursor at position 0 counts as none: its held item is dispatched again", async () => {
+  // A new agent's first, empty poll returns the cursor at 0, which the server reads as no cursor.
+  const h = await holdOnce(encodeCursor(0));
+  assert.deepEqual(h.dispatched, ["$1", "$1"]);
+});
+
+test("hold: an item held on a poll with a cursor comes back under that cursor", async () => {
+  // Item 1 was finished before; the poll from position 1 hands out item 2.
+  const h = await holdOnce(encodeCursor(1), 2);
+  assert.deepEqual(h.dispatched, ["$2", "$2"]);
+  assert.equal(h.calls[1]!.cursor, encodeCursor(1));
+});
+
+test("cursorCanReoffer: no cursor and position 0 cannot; a later or unreadable one can", () => {
+  assert.equal(cursorCanReoffer(undefined), false);
+  assert.equal(cursorCanReoffer(""), false);
+  assert.equal(cursorCanReoffer(encodeCursor(0)), false);
+  assert.equal(cursorCanReoffer(encodeCursor(42)), true);
+  assert.equal(cursorCanReoffer("c:1"), true);
+  assert.equal(cursorCanReoffer("opaque"), true);
 });

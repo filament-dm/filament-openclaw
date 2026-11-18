@@ -5,6 +5,7 @@ import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
 import { clearInterruptedIn, loadInFlight, releaseInterruptedIn } from "../../state/in-flight.js";
 import { loadPendingReplies } from "../../state/pending-replies.js";
+import { savePollCursor } from "../../state/poll-cursors.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
@@ -137,6 +138,9 @@ async function run(
       };
     },
   };
+  // The scripted polls re-offer an unfinished item, as the server does under a cursor it can bring
+  // the batch back with; give the run one (poll-work.test.ts covers a first poll without).
+  savePollCursor(ctx.accountId, SELF, "c:start");
   const result = await runPollTransport(ctx, opts.deps);
   return { result, pollArgs, publishes, turns, turnMedia, events, notes, turnAborts };
 }

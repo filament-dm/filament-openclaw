@@ -94,6 +94,17 @@ const HOLD_POLL_MS = 5e3;
 const MAX_REPLY_ATTEMPTS = 3;
 const BUSY_DEFAULT_WAIT_MS = 1e3;
 const DEFAULT_WAIT_SECONDS = 30;
+function cursorCanReoffer(cursor) {
+  if (!cursor) return false;
+  const body = /^c:([A-Za-z0-9_-]+)$/.exec(cursor)?.[1];
+  if (!body) return true;
+  try {
+    const parsed = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    return !(parsed && typeof parsed === "object" && parsed.so === 0);
+  } catch {
+    return true;
+  }
+}
 function itemKey(item) {
   const ids = item.messages.map((m) => m.event_id).sort();
   return `${item.channel_id}\0${item.thread_id ?? ""}\0${ids.join(",")}`;
@@ -173,76 +184,91 @@ async function runPollLoop(opts) {
     pendingAck = [];
     let unfinished = false;
     if (parsed.invites.length > 0) await sweep();
-    for (const item of parsed.work) {
-      if (abortSignal.aborted) return {};
-      if (!item.reply_with) {
-        log(`filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`);
-        continue;
-      }
-      const key = itemKey(item);
-      const held = ambiguousSeen.get(key);
-      if (held && now() < held.nextAt) {
-        unfinished = true;
-        await sleepAbortable(holdPollMs, abortSignal);
-        continue;
-      }
-      const outcome = await dispatchItem(item);
-      const ack = () => {
-        pendingAck.push(...item.messages.map((m) => m.event_id));
-        opts.onAcked?.(item);
-      };
-      if (outcome.kind === "held") {
-        unfinished = true;
-        await sleepAbortable(holdPollMs, abortSignal);
-        continue;
-      }
-      if (outcome.kind !== "retry") replyAttempts.delete(key);
-      if (outcome.kind === "fatal") {
-        log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);
-        return { fatal: outcome.diagnostic };
-      }
-      if (outcome.kind === "silent") ack();
-      if (outcome.kind === "dropped") {
-        log(`filament-poll: dropping the item in ${item.channel_id}: ${outcome.diagnostic}`);
-        ack();
-      }
-      if (outcome.kind === "retry") {
-        const attempts = (replyAttempts.get(key) ?? 0) + 1;
-        if (attempts >= MAX_REPLY_ATTEMPTS) {
-          replyAttempts.delete(key);
-          log(
-            `filament-poll: reply in ${item.channel_id} failed ${attempts} times (${outcome.diagnostic}); acknowledging without a reply`
-          );
-          ack();
-        } else {
-          replyAttempts.set(key, attempts);
-          unfinished = true;
-          const backoff = backoffMs(attempts);
-          log(
-            `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`
-          );
-          await sleepAbortable(backoff, abortSignal);
-        }
-      }
-      if (outcome.kind === "ambiguous") {
-        const offers = (held?.offers ?? 0) + 1;
+    const reofferable = cursorCanReoffer(sentCursor);
+    let batch = parsed.work;
+    while (batch.length > 0) {
+      const left = [];
+      for (const item of batch) {
         if (abortSignal.aborted) return {};
-        if (offers > AMBIGUOUS_HOLD_MS.length) {
-          ambiguousSeen.delete(key);
+        if (!item.reply_with) {
           log(
-            `filament-poll: ${item.channel_id} produced no output ${offers} times; acknowledging without a reply`
+            `filament-poll: ${item.channel_id} item has no reply_with; server already consumed it`
           );
-          ack();
-        } else {
-          const hold = AMBIGUOUS_HOLD_MS[offers - 1];
-          ambiguousSeen.set(key, { offers, nextAt: now() + hold });
-          log(
-            `filament-poll: ${item.channel_id} produced no output; offering it again in ${hold}ms`
-          );
-          unfinished = true;
+          continue;
         }
+        const key = itemKey(item);
+        const held = ambiguousSeen.get(key);
+        if (held && now() < held.nextAt) {
+          left.push(item);
+          await sleepAbortable(holdPollMs, abortSignal);
+          continue;
+        }
+        const outcome = await dispatchItem(item);
+        const ack = () => {
+          pendingAck.push(...item.messages.map((m) => m.event_id));
+          opts.onAcked?.(item);
+        };
+        if (outcome.kind === "held") {
+          left.push(item);
+          await sleepAbortable(holdPollMs, abortSignal);
+          continue;
+        }
+        if (outcome.kind !== "retry") replyAttempts.delete(key);
+        if (outcome.kind === "fatal") {
+          log(`filament-poll: item in ${item.channel_id}: ${outcome.diagnostic}; stopping`);
+          return { fatal: outcome.diagnostic };
+        }
+        if (outcome.kind === "silent") ack();
+        if (outcome.kind === "dropped") {
+          log(`filament-poll: dropping the item in ${item.channel_id}: ${outcome.diagnostic}`);
+          ack();
+        }
+        if (outcome.kind === "retry") {
+          const attempts = (replyAttempts.get(key) ?? 0) + 1;
+          if (attempts >= MAX_REPLY_ATTEMPTS) {
+            replyAttempts.delete(key);
+            log(
+              `filament-poll: reply in ${item.channel_id} failed ${attempts} times (${outcome.diagnostic}); acknowledging without a reply`
+            );
+            ack();
+          } else {
+            replyAttempts.set(key, attempts);
+            left.push(item);
+            const backoff = backoffMs(attempts);
+            log(
+              `filament-poll: reply in ${item.channel_id} failed (${outcome.diagnostic}); retrying on the next offer in ${backoff}ms`
+            );
+            await sleepAbortable(backoff, abortSignal);
+          }
+        }
+        if (outcome.kind === "ambiguous") {
+          const offers = (held?.offers ?? 0) + 1;
+          if (abortSignal.aborted) return {};
+          if (offers > AMBIGUOUS_HOLD_MS.length) {
+            ambiguousSeen.delete(key);
+            log(
+              `filament-poll: ${item.channel_id} produced no output ${offers} times; acknowledging without a reply`
+            );
+            ack();
+          } else {
+            const hold = AMBIGUOUS_HOLD_MS[offers - 1];
+            ambiguousSeen.set(key, { offers, nextAt: now() + hold });
+            log(
+              `filament-poll: ${item.channel_id} produced no output; offering it again in ${hold}ms`
+            );
+            left.push(item);
+          }
+        }
+        if (outcome.kind !== "ambiguous") ambiguousSeen.delete(key);
       }
-      if (outcome.kind !== "ambiguous") ambiguousSeen.delete(key);
+      unfinished = left.length > 0;
+      if (!unfinished || reofferable || abortSignal.aborted) break;
+      if (batch === parsed.work) {
+        log(
+          `filament-poll: ${left.length} unfinished item(s) from a poll whose cursor can't bring them back; dispatching them again here`
+        );
+      }
+      batch = left;
     }
     cursor = unfinished && sentCursor ? sentCursor : parsed.cursor;
   }
@@ -252,6 +278,7 @@ export {
   AMBIGUOUS_HOLD_MS,
   MAX_REPLY_ATTEMPTS,
   PENDING_SWEEP_INTERVAL_MS,
+  cursorCanReoffer,
   parsePollWorkResponse,
   runPollLoop
 };
