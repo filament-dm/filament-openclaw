@@ -171,15 +171,18 @@ async function runPollTransport(ctx, deps = {}) {
         (turnOpts) => ctx.runTurn(item, media, turnOpts),
         {
           abortSignal,
+          log: (line) => log(`filament-poll: ${item.channel_id}: ${line}`),
           startTimeoutMs: deps.turnStartTimeoutMs,
-          settleMs: deps.stuckTurnSettleMs
+          idleTimeoutMs: deps.turnIdleTimeoutMs,
+          settleMs: deps.stuckTurnSettleMs,
+          heartbeatMs: deps.turnHeartbeatMs
         }
       );
       if (watched.kind === "stuck") {
         if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
         const key = lastId ?? item.channel_id;
         const since = stuckSince.get(key) ?? now();
-        const why = `the turn in ${item.channel_id} did not start the agent's run in time (last step: ${watched.lastStep ?? "none"}${watched.settled ? "" : "; it is still pending"})`;
+        const why = `the turn in ${item.channel_id} ${watched.started ? "stalled after the agent's run started" : "did not start the agent's run in time"} (last step: ${watched.lastStep ?? "none"}${watched.settled ? "" : "; it is still pending"}; steps: ${watched.trail})`;
         if (abortSignal.aborted) return { kind: "held", diagnostic: why };
         if (now() - since >= STUCK_TURN_GIVE_UP_MS) {
           stuckSince.delete(key);
@@ -194,9 +197,13 @@ async function runPollTransport(ctx, deps = {}) {
       }
       if (lastId) stuckSince.delete(lastId);
       result = watched.result;
+      log(
+        `filament-poll: turn in ${item.channel_id} ended: final=${result.sawFinal} skip=${result.sawSkip} error=${result.sawError} tool replies=${result.repliedTo.size}; steps: ${watched.trail}`
+      );
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
+        log(`filament-poll: OpenClaw's agent is still starting; offering ${item.channel_id} again`);
         return { kind: "held", diagnostic: `OpenClaw's agent is still starting: ${String(error)}` };
       }
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };

@@ -57,6 +57,8 @@ async function run(
     turnThrows?: (n: number) => Error | undefined;
     /** The nth turn (from 1) never starts the agent's run and never settles, abort or not. */
     turnHangs?: (n: number) => boolean;
+    /** The nth turn (from 1) starts the agent's run, then goes quiet and never settles. */
+    turnStalls?: (n: number) => boolean;
   } = {},
 ) {
   const controller = new AbortController();
@@ -109,10 +111,11 @@ async function run(
     runTurn: async (workItem, media, turnOpts) => {
       turns.push(workItem);
       turnMedia.push(media);
-      if (opts.turnHangs?.(turns.length)) {
+      if (opts.turnHangs?.(turns.length) || opts.turnStalls?.(turns.length)) {
         const n = turns.length - 1;
         turnAborts[n] = false;
         turnOpts?.onProgress?.("record:done");
+        if (opts.turnStalls?.(turns.length)) turnOpts?.onProgress?.("model:selected");
         turnOpts?.abortSignal?.addEventListener("abort", () => (turnAborts[n] = true));
         return await new Promise<never>(() => {});
       }
@@ -570,6 +573,7 @@ test("poll: once OpenClaw's recovery has posted to the room, held work goes ahea
 const quickDeadline: PollTransportDeps = {
   holdPollMs: 0,
   turnStartTimeoutMs: 5,
+  turnIdleTimeoutMs: 5,
   stuckTurnSettleMs: 5,
 };
 
@@ -604,4 +608,16 @@ test("poll: a turn that keeps failing to start is dropped once it has been stuck
   const acked = h.pollArgs.findIndex((p) => p.ack?.includes("$e1"));
   assert.ok(acked > 1, `acked at poll ${acked}`);
   assert.ok(h.turns.length >= 2 && h.turns.length <= 3);
+});
+
+test("poll: a turn whose run starts and then goes quiet is aborted and offered again, not acked", async () => {
+  const h = await run([offer(item()), offer(item())], {
+    accountId: "stalled-once",
+    deps: quickDeadline,
+    turnStalls: (n) => n === 1,
+  });
+  assert.equal(h.turns.length, 2);
+  assert.equal(h.turnAborts[0], true);
+  assert.equal(h.publishes.length, 1);
+  assert.equal(h.pollArgs[1]!.ack, undefined);
 });

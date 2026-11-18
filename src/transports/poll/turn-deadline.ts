@@ -1,37 +1,58 @@
 /**
- * A turn that never starts. Since OpenClaw 2026.11.4 a reply turn that arrives while the agent is
+ * A turn that stops moving. Since OpenClaw 2026.11.4 a reply turn that arrives while the agent is
  * still in its startup preparation waits for it (openclaw #174958) instead of failing at once. On
- * some starts that wait ends and the turn still never reaches the agent's run, and never settles:
- * the poll loop then sat on it, and the messages queued while the gateway was down got no answer.
+ * some starts the turn then never answers and never settles: the poll loop sat on it, and the
+ * messages queued while the gateway was down got no answer.
  *
- * So a turn has to show that the agent's run began (OpenClaw's run start or model choice) within a
- * deadline, or finish. One that does neither is aborted and offered again under the same cursor:
- * the item is not acknowledged, and nothing was published for it.
+ * So a turn has to keep moving. Before the agent's run starts (OpenClaw's run start or model
+ * choice) it gets `startTimeoutMs`; after that, `idleTimeoutMs` between steps (a turn stage, a
+ * tool or block reply, the final). One that stalls is aborted and offered again under the same
+ * cursor: the item is not acknowledged, and nothing was published for it. Every step is kept with
+ * its time, and a turn still running is reported every `heartbeatMs`, so the log shows where a
+ * turn stopped.
  */
 import type { TurnOptions, TurnResult } from "../types.js";
 
 /** How long a turn gets to start the agent's run, or finish, before it counts as stuck. */
 export const TURN_START_TIMEOUT_MS = 90_000;
+/**
+ * Once the agent's run started, the longest quiet spell between two steps. Long enough for a slow
+ * model call or tool; a run that says nothing for this long is not coming back.
+ */
+export const TURN_IDLE_TIMEOUT_MS = 5 * 60_000;
 /** After aborting a stuck turn, how long it gets to settle before the loop lets it go. */
 export const STUCK_TURN_SETTLE_MS = 10_000;
+/** How often a turn still running is reported. */
+export const TURN_HEARTBEAT_MS = 60_000;
 
-/** Steps that mean the agent's run began: from here the turn is the model's, however long. */
+/** Steps that mean the agent's run began: from here the turn is the model's. */
 const RUN_STARTED = new Set(["run:start", "model:selected"]);
 
 export type WatchedTurn =
-  | { kind: "result"; result: TurnResult }
-  /** Neither started nor finished in time. `lastStep`: the last step OpenClaw reported. */
-  | { kind: "stuck"; lastStep: string | undefined; settled: boolean };
+  | { kind: "result"; result: TurnResult; trail: string }
+  /** Stalled. `lastStep`: the last step OpenClaw reported; `trail`: every step with its time. */
+  | {
+      kind: "stuck";
+      started: boolean;
+      lastStep: string | undefined;
+      settled: boolean;
+      trail: string;
+    };
 
 export interface TurnDeadlineOptions {
   /** The transport's own abort (gateway shutdown): passed on to the turn. */
   abortSignal: AbortSignal;
+  /** Heartbeats and the run's start. */
+  log?: (message: string) => void;
   startTimeoutMs?: number;
+  idleTimeoutMs?: number;
   settleMs?: number;
+  heartbeatMs?: number;
+  now?: () => number;
 }
 
 /**
- * Runs `turn` with a start deadline. Throws what the turn throws, unless the turn was already
+ * Runs `turn` under the deadlines above. Throws what the turn throws, unless the turn was already
  * judged stuck. A result that lands during the settle wait is still used.
  */
 export async function runTurnWithStartDeadline(
@@ -39,39 +60,70 @@ export async function runTurnWithStartDeadline(
   opts: TurnDeadlineOptions,
 ): Promise<WatchedTurn> {
   const startTimeoutMs = opts.startTimeoutMs ?? TURN_START_TIMEOUT_MS;
+  const idleTimeoutMs = opts.idleTimeoutMs ?? TURN_IDLE_TIMEOUT_MS;
   const settleMs = opts.settleMs ?? STUCK_TURN_SETTLE_MS;
+  const heartbeatMs = opts.heartbeatMs ?? TURN_HEARTBEAT_MS;
+  const now = opts.now ?? Date.now;
+  const log = opts.log ?? (() => {});
+  const t0 = now();
+  const steps: Array<{ step: string; at: number }> = [];
+  let started = false;
+  let lastMoveAt = t0;
+  const secs = (ms: number) => (ms / 1000).toFixed(1);
+  const trail = () => steps.map((s) => `${s.step}@${secs(s.at - t0)}s`).join(" ") || "no steps";
+  let wake: () => void = () => {};
+
   const stuck = new AbortController();
-  let lastStep: string | undefined;
-  let markStarted: () => void = () => {};
-  const started = new Promise<"started">((resolve) => {
-    markStarted = () => resolve("started");
-  });
   const running = turn({
     abortSignal: AbortSignal.any([opts.abortSignal, stuck.signal]),
     onProgress: (step) => {
-      lastStep = step;
-      if (RUN_STARTED.has(step)) markStarted();
+      const at = now();
+      steps.push({ step, at });
+      lastMoveAt = at;
+      if (!started && RUN_STARTED.has(step)) {
+        started = true;
+        log(`the agent's run started after ${secs(at - t0)} s (${step})`);
+      }
+      wake();
     },
   });
+  let done = false;
   const settled = running.then(
-    () => "settled" as const,
-    () => "settled" as const,
+    () => void (done = true),
+    () => void (done = true),
   );
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), startTimeoutMs);
-  });
-  const first = await Promise.race([settled, started, deadline]);
-  clearTimeout(timer);
-  if (first !== "timeout") return { kind: "result", result: await running };
+  // Wakes on a step, on the turn settling, or on the next deadline or heartbeat.
+  let nextHeartbeat = t0 + heartbeatMs;
+  while (!done) {
+    const deadline = started ? lastMoveAt + idleTimeoutMs : t0 + startTimeoutMs;
+    const at = now();
+    if (at >= deadline) break;
+    if (at >= nextHeartbeat) {
+      log(
+        `turn still running after ${secs(at - t0)} s (${started ? "run started" : "run not started"}; last step: ${steps.at(-1)?.step ?? "none"})`,
+      );
+      nextHeartbeat += heartbeatMs;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        wake = resolve;
+        timer = setTimeout(resolve, Math.max(0, Math.min(deadline, nextHeartbeat) - now()));
+      }),
+    ]);
+    clearTimeout(timer);
+    wake = () => {};
+  }
+  if (done) return { kind: "result", result: await running, trail: trail() };
 
-  stuck.abort(new Error(`the turn did not start within ${startTimeoutMs} ms`));
+  stuck.abort(new Error(started ? "the turn stalled" : "the turn did not start in time"));
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const grace = new Promise<"grace">((resolve) => {
     graceTimer = setTimeout(() => resolve("grace"), settleMs);
   });
-  const after = await Promise.race([settled, grace]);
+  const after = await Promise.race([settled.then(() => "settled" as const), grace]);
   clearTimeout(graceTimer);
   if (after === "settled") {
     const outcome = await running.then(
@@ -79,8 +131,14 @@ export async function runTurnWithStartDeadline(
       () => undefined,
     );
     if (outcome && (outcome.sawFinal || outcome.sawSkip || outcome.sawError)) {
-      return { kind: "result", result: outcome };
+      return { kind: "result", result: outcome, trail: trail() };
     }
   }
-  return { kind: "stuck", lastStep, settled: after === "settled" };
+  return {
+    kind: "stuck",
+    started,
+    lastStep: steps.at(-1)?.step,
+    settled: after === "settled",
+    trail: trail(),
+  };
 }

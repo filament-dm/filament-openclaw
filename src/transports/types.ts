@@ -24,7 +24,8 @@ export interface TurnOptions {
   abortSignal?: AbortSignal;
   /**
    * Each step the turn reaches: OpenClaw's turn stages as `<stage>:<event>` ("record:done",
-   * "dispatch:start"), then "run:start" and "model:selected" once the agent's run begins.
+   * "dispatch:start"), "run:start" and "model:selected" once the agent's run begins, then
+   * "deliver:<tool|block|final>", "skip" and "error" as the dispatcher reports them.
    */
   onProgress?: (step: string) => void;
 }

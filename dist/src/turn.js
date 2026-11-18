@@ -152,6 +152,7 @@ async function dispatchWorkItemTurn(params) {
         ...replyPipeline,
         // Only "final" text is collected; "tool" and "block" callbacks are intermediate.
         deliver: async (payload, info) => {
+          params.onProgress?.(`deliver:${info?.kind ?? "?"}`);
           if (info?.kind !== "final") return;
           const host = hostReplyKind(payload);
           if (host) {
@@ -171,10 +172,12 @@ async function dispatchWorkItemTurn(params) {
           mediaUrls.push(...resolveOutboundMediaUrls(normalized));
         },
         onSkip: () => {
+          params.onProgress?.("skip");
           sawSkip = true;
         },
         // oxlint-disable-next-line typescript/no-explicit-any
         onError: (error, info) => {
+          params.onProgress?.("error");
           sawError = true;
           errorDetail = `${info?.kind ?? "?"}: ${String(error)}`;
           params.log(`dispatch error (${info?.kind ?? "?"}): ${String(error)}`);
