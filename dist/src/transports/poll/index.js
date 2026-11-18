@@ -12,6 +12,7 @@ import { loadPollCursor, savePollCursor } from "../../state/poll-cursors.js";
 import { decideWakeBeforeAddressing } from "../../wake-rules.js";
 import { isBackchannelCommandItem } from "../../commands.js";
 import { runPollLoop } from "./poll-work.js";
+import { runTurnWithStartDeadline } from "./turn-deadline.js";
 function publishSucceeded(data) {
   if (!data || typeof data !== "object") return false;
   const d = data;
@@ -64,6 +65,7 @@ const RECOVERY_HOLD_MS = 2 * 6e4;
 function agentStillStarting(error) {
   return /has not completed startup inspection/.test(String(error));
 }
+const STUCK_TURN_GIVE_UP_MS = 10 * 6e4;
 async function runPollTransport(ctx, deps = {}) {
   const { client, abortSignal, log } = ctx;
   const fetchMedia = deps.fetchInboundMedia ?? fetchInboundMedia;
@@ -73,6 +75,7 @@ async function runPollTransport(ctx, deps = {}) {
   const { mxid } = ctx.identity;
   const startedAt = now();
   const run = randomUUID();
+  const stuckSince = /* @__PURE__ */ new Map();
   setLiveRun(accountId, run);
   const publish = async (replyWith, text, mediaUrls, mediaLocalRoots, signal, channelId) => {
     const attachments = await uploadMedia(client, mediaUrls, { mediaLocalRoots, log, signal });
@@ -164,10 +167,43 @@ async function runPollTransport(ctx, deps = {}) {
           run
         });
       }
-      result = await ctx.runTurn(item, media);
+      const watched = await runTurnWithStartDeadline(
+        (turnOpts) => ctx.runTurn(item, media, turnOpts),
+        {
+          abortSignal,
+          log: (line) => log(`filament-poll: ${item.channel_id}: ${line}`),
+          startTimeoutMs: deps.turnStartTimeoutMs,
+          idleTimeoutMs: deps.turnIdleTimeoutMs,
+          settleMs: deps.stuckTurnSettleMs,
+          heartbeatMs: deps.turnHeartbeatMs
+        }
+      );
+      if (watched.kind === "stuck") {
+        if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
+        const key = lastId ?? item.channel_id;
+        const since = stuckSince.get(key) ?? now();
+        const why = `the turn in ${item.channel_id} ${watched.started ? "stalled after the agent's run started" : "did not start the agent's run in time"} (last step: ${watched.lastStep ?? "none"}${watched.settled ? "" : "; it is still pending"}; steps: ${watched.trail})`;
+        if (abortSignal.aborted) return { kind: "held", diagnostic: why };
+        if (now() - since >= STUCK_TURN_GIVE_UP_MS) {
+          stuckSince.delete(key);
+          return {
+            kind: "dropped",
+            diagnostic: `${why}, for ${Math.round((now() - since) / 1e3)} s`
+          };
+        }
+        stuckSince.set(key, since);
+        log(`filament-poll: ${why}; offering it again`);
+        return { kind: "held", diagnostic: why };
+      }
+      if (lastId) stuckSince.delete(lastId);
+      result = watched.result;
+      log(
+        `filament-poll: turn in ${item.channel_id} ended: final=${result.sawFinal} skip=${result.sawSkip} error=${result.sawError} tool replies=${result.repliedTo.size}; steps: ${watched.trail}`
+      );
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
+        log(`filament-poll: OpenClaw's agent is still starting; offering ${item.channel_id} again`);
         return { kind: "held", diagnostic: `OpenClaw's agent is still starting: ${String(error)}` };
       }
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };
@@ -247,6 +283,7 @@ async function runPollTransport(ctx, deps = {}) {
 export {
   RECOVERY_HOLD_MS,
   SHUTDOWN_PUBLISH_TIMEOUT_MS,
+  STUCK_TURN_GIVE_UP_MS,
   agentStillStarting,
   classifyPublish,
   runPollTransport,

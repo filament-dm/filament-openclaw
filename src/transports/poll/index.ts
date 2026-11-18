@@ -23,6 +23,7 @@ import { isBackchannelCommandItem } from "../../commands.js";
 import type { DispatchOutcome } from "../../work-item.js";
 import type { TransportContext, TransportResult } from "../types.js";
 import { type PollWorkItem, runPollLoop } from "./poll-work.js";
+import { runTurnWithStartDeadline } from "./turn-deadline.js";
 
 function publishSucceeded(data: unknown): boolean {
   if (!data || typeof data !== "object") return false;
@@ -88,6 +89,11 @@ export interface PollTransportDeps {
   now?: () => number;
   /** Passed to the poll loop (tests set 0). */
   holdPollMs?: number;
+  /** turn-deadline.ts's deadlines, settle wait and heartbeat (tests set them short). */
+  turnStartTimeoutMs?: number;
+  turnIdleTimeoutMs?: number;
+  stuckTurnSettleMs?: number;
+  turnHeartbeatMs?: number;
 }
 
 /** How long a reply that was ready at shutdown gets to land before the gateway goes. */
@@ -109,6 +115,14 @@ export function agentStillStarting(error: unknown): boolean {
   return /has not completed startup inspection/.test(String(error));
 }
 
+/**
+ * A turn that never starts the agent's run (turn-deadline.ts) is offered again until it has been
+ * stuck this long, then dropped: longer than OpenClaw's own startup admission wait (300 s plus a
+ * minute per two preparing agents), so a slow start is waited out, but a gateway that keeps losing
+ * turns does not hold the item for ever.
+ */
+export const STUCK_TURN_GIVE_UP_MS = 10 * 60_000;
+
 export async function runPollTransport(
   ctx: TransportContext,
   deps: PollTransportDeps = {},
@@ -121,6 +135,8 @@ export async function runPollTransport(
   const { mxid } = ctx.identity;
   const startedAt = now();
   const run = randomUUID();
+  // When each item's turn first got stuck, by the item's last event id.
+  const stuckSince = new Map<string, number>();
   setLiveRun(accountId, run);
 
   /** Uploads the reply's media and posts it where `reply_with` says. */
@@ -241,10 +257,46 @@ export async function runPollTransport(
           run,
         });
       }
-      result = await ctx.runTurn(item, media);
+      const watched = await runTurnWithStartDeadline(
+        (turnOpts) => ctx.runTurn(item, media, turnOpts),
+        {
+          abortSignal,
+          log: (line) => log(`filament-poll: ${item.channel_id}: ${line}`),
+          startTimeoutMs: deps.turnStartTimeoutMs,
+          idleTimeoutMs: deps.turnIdleTimeoutMs,
+          settleMs: deps.stuckTurnSettleMs,
+          heartbeatMs: deps.turnHeartbeatMs,
+        },
+      );
+      if (watched.kind === "stuck") {
+        if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
+        const key = lastId ?? item.channel_id;
+        const since = stuckSince.get(key) ?? now();
+        const why =
+          `the turn in ${item.channel_id} ${watched.started ? "stalled after the agent's run started" : "did not start the agent's run in time"}` +
+          ` (last step: ${watched.lastStep ?? "none"}${watched.settled ? "" : "; it is still pending"}; steps: ${watched.trail})`;
+        if (abortSignal.aborted) return { kind: "held", diagnostic: why };
+        if (now() - since >= STUCK_TURN_GIVE_UP_MS) {
+          stuckSince.delete(key);
+          return {
+            kind: "dropped",
+            diagnostic: `${why}, for ${Math.round((now() - since) / 1000)} s`,
+          };
+        }
+        stuckSince.set(key, since);
+        log(`filament-poll: ${why}; offering it again`);
+        return { kind: "held", diagnostic: why };
+      }
+      if (lastId) stuckSince.delete(lastId);
+      result = watched.result;
+      log(
+        `filament-poll: turn in ${item.channel_id} ended: final=${result.sawFinal} skip=${result.sawSkip}` +
+          ` error=${result.sawError} tool replies=${result.repliedTo.size}; steps: ${watched.trail}`,
+      );
     } catch (error) {
       if (lastId) clearInFlight(accountId, mxid, { eventId: lastId });
       if (agentStillStarting(error) && now() - startedAt < RECOVERY_HOLD_MS) {
+        log(`filament-poll: OpenClaw's agent is still starting; offering ${item.channel_id} again`);
         return { kind: "held", diagnostic: `OpenClaw's agent is still starting: ${String(error)}` };
       }
       return { kind: "dropped", diagnostic: `the turn threw: ${String(error)}` };

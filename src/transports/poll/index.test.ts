@@ -5,11 +5,13 @@ import type { FilamentMcpClient, ToolCallResult } from "../../mcp-client.js";
 import type { McpSettings } from "../../settings.js";
 import { clearInterruptedIn, loadInFlight, releaseInterruptedIn } from "../../state/in-flight.js";
 import { loadPendingReplies } from "../../state/pending-replies.js";
+import { savePollCursor } from "../../state/poll-cursors.js";
 import { useMemoryState } from "../../state/store.js";
 import type { WorkItem } from "../../work-item.js";
 import type { TransportContext, TurnResult } from "../types.js";
 import {
   classifyPublish,
+  STUCK_TURN_GIVE_UP_MS,
   type PollTransportDeps,
   RECOVERY_HOLD_MS,
   runPollTransport,
@@ -54,6 +56,10 @@ async function run(
     abortDuringTurn?: boolean;
     /** An error the nth turn (from 1) throws, if any. */
     turnThrows?: (n: number) => Error | undefined;
+    /** The nth turn (from 1) never starts the agent's run and never settles, abort or not. */
+    turnHangs?: (n: number) => boolean;
+    /** The nth turn (from 1) starts the agent's run, then goes quiet and never settles. */
+    turnStalls?: (n: number) => boolean;
   } = {},
 ) {
   const controller = new AbortController();
@@ -63,6 +69,7 @@ async function run(
   const turnMedia: unknown[] = [];
   const events: string[] = [];
   const notes: Array<{ tool: string; args: Record<string, unknown> }> = [];
+  const turnAborts: boolean[] = [];
   const client = {
     callTool: async (tool: string, args: Record<string, unknown> = {}) => {
       notes.push({ tool, args });
@@ -102,9 +109,18 @@ async function run(
     settings: { pollWaitSeconds: 30 } as unknown as McpSettings,
     abortSignal: controller.signal,
     log: () => {},
-    runTurn: async (workItem, media) => {
+    runTurn: async (workItem, media, turnOpts) => {
       turns.push(workItem);
       turnMedia.push(media);
+      if (opts.turnHangs?.(turns.length) || opts.turnStalls?.(turns.length)) {
+        const n = turns.length - 1;
+        turnAborts[n] = false;
+        turnOpts?.onProgress?.("record:done");
+        if (opts.turnStalls?.(turns.length)) turnOpts?.onProgress?.("model:selected");
+        turnOpts?.abortSignal?.addEventListener("abort", () => (turnAborts[n] = true));
+        return await new Promise<never>(() => {});
+      }
+      turnOpts?.onProgress?.("run:start");
       if (opts.abortDuringTurn) controller.abort();
       const thrown = opts.turnThrows?.(turns.length);
       if (thrown) throw thrown;
@@ -122,8 +138,11 @@ async function run(
       };
     },
   };
+  // The scripted polls re-offer an unfinished item, as the server does under a cursor it can bring
+  // the batch back with; give the run one (poll-work.test.ts covers a first poll without).
+  savePollCursor(ctx.accountId, SELF, "c:start");
   const result = await runPollTransport(ctx, opts.deps);
-  return { result, pollArgs, publishes, turns, turnMedia, events, notes };
+  return { result, pollArgs, publishes, turns, turnMedia, events, notes, turnAborts };
 }
 
 const offer = (work: unknown) => ({ work: [work], cursor: "c:1" });
@@ -553,4 +572,56 @@ test("poll: once OpenClaw's recovery has posted to the room, held work goes ahea
   assert.equal(h.turns.length, 1);
   assert.equal(h.turns[0]!.messages[0]!.event_id, "$other");
   assert.deepEqual(loadInFlight("released", SELF), []);
+});
+
+const quickDeadline: PollTransportDeps = {
+  holdPollMs: 0,
+  turnStartTimeoutMs: 5,
+  turnIdleTimeoutMs: 5,
+  stuckTurnSettleMs: 5,
+};
+
+test("poll: a turn that never starts the agent's run is aborted and offered again, not acked", async () => {
+  const h = await run([offer(item()), offer(item())], {
+    accountId: "stuck-once",
+    deps: quickDeadline,
+    turnHangs: (n) => n === 1,
+  });
+  assert.equal(h.turns.length, 2);
+  assert.equal(h.turnAborts[0], true);
+  // Answered once, by the second offer; the first offer was neither acked nor answered.
+  assert.equal(h.publishes.length, 1);
+  assert.equal(h.pollArgs[1]!.ack, undefined);
+  assert.deepEqual(loadInFlight("stuck-once", SELF), []);
+});
+
+test("poll: a turn that keeps failing to start is dropped once it has been stuck too long", async () => {
+  let clock = 0;
+  const h = await run([offer(item()), offer(item()), offer(item())], {
+    accountId: "stuck-always",
+    deps: {
+      ...quickDeadline,
+      // Each read of the clock moves it on a third of the give-up time.
+      now: () => (clock += STUCK_TURN_GIVE_UP_MS / 3),
+    },
+    turnHangs: () => true,
+  });
+  assert.equal(h.publishes.length, 0);
+  // Offered again (not acked) until the give-up time, then acked without a reply.
+  assert.equal(h.pollArgs[1]!.ack, undefined);
+  const acked = h.pollArgs.findIndex((p) => p.ack?.includes("$e1"));
+  assert.ok(acked > 1, `acked at poll ${acked}`);
+  assert.ok(h.turns.length >= 2 && h.turns.length <= 3);
+});
+
+test("poll: a turn whose run starts and then goes quiet is aborted and offered again, not acked", async () => {
+  const h = await run([offer(item()), offer(item())], {
+    accountId: "stalled-once",
+    deps: quickDeadline,
+    turnStalls: (n) => n === 1,
+  });
+  assert.equal(h.turns.length, 2);
+  assert.equal(h.turnAborts[0], true);
+  assert.equal(h.publishes.length, 1);
+  assert.equal(h.pollArgs[1]!.ack, undefined);
 });
