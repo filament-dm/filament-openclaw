@@ -45,6 +45,7 @@ import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
 import { createRoomLabels } from "./room-labels.js";
 import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
+import { LOOK_AROUND_SIDE_SESSION, lookAroundDue, lookAroundOnce } from "./look-around.js";
 import {
   parseIdentityMarkdown,
   seedName,
@@ -61,7 +62,13 @@ import {
   saveUpdateState,
   takeUpdateRequest,
 } from "./state/updates.js";
-import { helloSentAs, markHelloSent } from "./state/hello.js";
+import {
+  helloSentAs,
+  lookAroundDueFor,
+  markHelloSent,
+  markLookAroundDue,
+  takeLookAroundDue,
+} from "./state/hello.js";
 import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import type { TurnOptions, TurnResult } from "./transports/types.js";
@@ -300,7 +307,8 @@ export function registerFilamentChannel(
         const runTurn = async (
           item: WorkItem,
           media?: InboundMedia[],
-          opts?: TurnOptions & { sideSession?: string },
+          // `beside`: a gateway-started turn that runs while the transport dispatches its own.
+          opts?: TurnOptions & { sideSession?: string; beside?: boolean },
         ): Promise<TurnResult> => {
           if (!ctx.channelRuntime) {
             throw new Error("ctx.channelRuntime unavailable; cannot wake a turn");
@@ -313,7 +321,7 @@ export function registerFilamentChannel(
                 accountLog,
               ))(item.channel_id, abortSignal, item)
             : { label: item.channel_id };
-          beginFilamentTurn(item.is_backchannel === true, accountId);
+          beginFilamentTurn(item.is_backchannel === true, accountId, opts?.beside);
           let toolOutcome: FilamentTurnOutcome = { repliedTo: new Set(), reacted: false };
           let result;
           try {
@@ -345,10 +353,11 @@ export function registerFilamentChannel(
               log: accountLog,
               abortSignal: opts?.abortSignal,
               onProgress: opts?.onProgress,
-              onSessionKey: (sessionKey) => bindFilamentTurnSession(sessionKey, accountId),
+              onSessionKey: (sessionKey) =>
+                bindFilamentTurnSession(sessionKey, accountId, opts?.beside),
             });
           } finally {
-            toolOutcome = endFilamentTurn(accountId);
+            toolOutcome = endFilamentTurn(accountId, opts?.beside);
           }
           return {
             ...result,
@@ -456,7 +465,11 @@ export function registerFilamentChannel(
               accountLog(`filament-hello: ${String(error)}`);
               return "failed" as const;
             });
-            if (hello !== "failed" && hello !== "skipped") markHelloSent(accountId, mxid);
+            if (hello !== "failed" && hello !== "skipped") {
+              markHelloSent(accountId, mxid);
+              // Only a new agent looks around, never one this gateway merely had not met.
+              if (lookAroundDue(connection.client.instructions)) markLookAroundDue(accountId, mxid);
+            }
           }
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
@@ -481,8 +494,38 @@ export function registerFilamentChannel(
           // same turn, queued behind it, and its open request held the reload for the gateway's
           // 300 s limit before the gateway even polled for the owner's approval. Here the reload
           // restarts this account once, after the hello.
-          void retiredCleanup.then(() => ensureGroupSilenceAllowedOnce(log));
+          const configWritten = retiredCleanup.then(
+            async (retired) =>
+              (await ensureGroupSilenceAllowedOnce(log)) === "set" || retired === "removed",
+          );
           setFilamentClient(connection.client, accountId);
+          // Not awaited: the agent looks around while the transport listens.
+          const { client, identity } = connection;
+          void lookAroundOnce({
+            identity,
+            due: {
+              peek: () => lookAroundDueFor(accountId),
+              take: () => takeLookAroundDue(accountId),
+            },
+            reloadExpected: configWritten,
+            abortSignal,
+            runTurn: (item, opts) =>
+              runTurn(item, undefined, {
+                ...opts,
+                sideSession: LOOK_AROUND_SIDE_SESSION,
+                beside: true,
+              }),
+            setStatus: async (text) => {
+              if (!identity.ccRoomId) return;
+              await client.callTool(
+                "set_status",
+                { channel: identity.ccRoomId, ...(text ? { status_text: text } : {}) },
+                { signal: abortSignal },
+              );
+            },
+            say: sayToPrincipal,
+            log: accountLog,
+          });
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);
           });

@@ -35,6 +35,7 @@ import { connectTokenConfigPath, resolveAccountSettings } from "./settings.js";
 import { listGatewayAgents } from "./gateway.js";
 import { createRoomLabels } from "./room-labels.js";
 import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
+import { LOOK_AROUND_SIDE_SESSION, lookAroundDue, lookAroundOnce } from "./look-around.js";
 import {
   parseIdentityMarkdown,
   seedName,
@@ -48,7 +49,13 @@ import {
   saveUpdateState,
   takeUpdateRequest
 } from "./state/updates.js";
-import { helloSentAs, markHelloSent } from "./state/hello.js";
+import {
+  helloSentAs,
+  lookAroundDueFor,
+  markHelloSent,
+  markLookAroundDue,
+  takeLookAroundDue
+} from "./state/hello.js";
 import { clearRevoked, clearSignInEnd, markRevoked, saveSignInEnd } from "./state/sign-in.js";
 import { runPollTransport } from "./transports/poll/index.js";
 import { dispatchWorkItemTurn } from "./turn.js";
@@ -236,7 +243,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             connection.identity,
             accountLog
           ))(item.channel_id, abortSignal, item) : { label: item.channel_id };
-          beginFilamentTurn(item.is_backchannel === true, accountId);
+          beginFilamentTurn(item.is_backchannel === true, accountId, opts?.beside);
           let toolOutcome = { repliedTo: /* @__PURE__ */ new Set(), reacted: false };
           let result;
           try {
@@ -268,10 +275,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               log: accountLog,
               abortSignal: opts?.abortSignal,
               onProgress: opts?.onProgress,
-              onSessionKey: (sessionKey) => bindFilamentTurnSession(sessionKey, accountId)
+              onSessionKey: (sessionKey) => bindFilamentTurnSession(sessionKey, accountId, opts?.beside)
             });
           } finally {
-            toolOutcome = endFilamentTurn(accountId);
+            toolOutcome = endFilamentTurn(accountId, opts?.beside);
           }
           return {
             ...result,
@@ -361,7 +368,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               accountLog(`filament-hello: ${String(error)}`);
               return "failed";
             });
-            if (hello !== "failed" && hello !== "skipped") markHelloSent(accountId, mxid);
+            if (hello !== "failed" && hello !== "skipped") {
+              markHelloSent(accountId, mxid);
+              if (lookAroundDue(connection.client.instructions)) markLookAroundDue(accountId, mxid);
+            }
           }
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
@@ -379,8 +389,35 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           ).catch((error) => {
             accountLog(`filament-update: checks stopped: ${String(error)}`);
           });
-          void retiredCleanup.then(() => ensureGroupSilenceAllowedOnce(log));
+          const configWritten = retiredCleanup.then(
+            async (retired2) => await ensureGroupSilenceAllowedOnce(log) === "set" || retired2 === "removed"
+          );
           setFilamentClient(connection.client, accountId);
+          const { client, identity } = connection;
+          void lookAroundOnce({
+            identity,
+            due: {
+              peek: () => lookAroundDueFor(accountId),
+              take: () => takeLookAroundDue(accountId)
+            },
+            reloadExpected: configWritten,
+            abortSignal,
+            runTurn: (item, opts) => runTurn(item, void 0, {
+              ...opts,
+              sideSession: LOOK_AROUND_SIDE_SESSION,
+              beside: true
+            }),
+            setStatus: async (text) => {
+              if (!identity.ccRoomId) return;
+              await client.callTool(
+                "set_status",
+                { channel: identity.ccRoomId, ...text ? { status_text: text } : {} },
+                { signal: abortSignal }
+              );
+            },
+            say: sayToPrincipal,
+            log: accountLog
+          });
           void checkFilamentToolDrift(connection.client, accountLog).catch((error) => {
             accountLog(`filament: tool drift check failed: ${String(error)}`);
           });

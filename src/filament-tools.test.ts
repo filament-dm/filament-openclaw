@@ -558,3 +558,67 @@ test("a call that outlives its turn records its reply on that turn, not the next
   await pending;
   assert.equal(endFilamentTurn().repliedTo.size, 0);
 });
+
+test("a side turn: write tools beside the transport's turn, never ring0, and each end leaves the other", async () => {
+  const { api, tools } = fakeApi();
+  const { log } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const say = tools.get(`${TOOL_NAME_PREFIX}message_principal`)!;
+  const setProfile = tools.get(`${TOOL_NAME_PREFIX}set_profile`)!;
+  setFilamentClient({ callTool: async () => okResult({ event_id: "$x" }) });
+  const call = (tool: FilamentAgentTool) => tool.execute("call", {}, undefined, undefined, {});
+
+  // Alone, it authorizes writes but not the tools that change the agent itself.
+  beginFilamentTurn(true, undefined, true);
+  await call(say);
+  await assert.rejects(() => call(setProfile), /denied/);
+
+  // A transport turn that starts and ends meanwhile does not end it, and sees the same reply.
+  beginFilamentTurn(true);
+  await call(setProfile);
+  await call(say);
+  assert.deepEqual([...endFilamentTurn().repliedTo], ["backchannel"]);
+  await call(say);
+  assert.deepEqual([...endFilamentTurn(undefined, true).repliedTo], ["backchannel"]);
+  await assert.rejects(() => call(say), /denied/);
+
+  // And its own end leaves the transport's turn authorized.
+  beginFilamentTurn(false);
+  beginFilamentTurn(true, undefined, true);
+  endFilamentTurn(undefined, true);
+  await call(say);
+  endFilamentTurn();
+});
+
+test("a side turn in its own session: each session acts under its own turn alone", async () => {
+  const SIDE_SESSION = `${TURN_SESSION}:thread:filament-look-around`;
+  const transport = fakeApi({ sessionKey: TURN_SESSION });
+  const side = fakeApi({ sessionKey: SIDE_SESSION });
+  registerFilamentToolsFromSnapshot(transport.api, getFilamentClient, () => {});
+  registerFilamentToolsFromSnapshot(side.api, getFilamentClient, () => {});
+  setFilamentClient({ callTool: async () => okResult({ event_id: "$x" }) });
+  const post = (tools: Map<string, FilamentAgentTool>, channel: string) =>
+    tools
+      .get(`${TOOL_NAME_PREFIX}post_message`)!
+      .execute("c", { channel, markdown_body: "hi" }, undefined, undefined, {});
+
+  beginFilamentTurn(true, undefined, true);
+  bindFilamentTurnSession(SIDE_SESSION, undefined, true);
+  beginFilamentTurn(true);
+  bindFilamentTurnSession(TURN_SESSION);
+
+  // The side session never gets ring0, even while a backchannel turn runs beside it.
+  await assert.rejects(
+    () =>
+      side.tools.get(`${TOOL_NAME_PREFIX}set_profile`)!.execute("c", {}, undefined, undefined, {}),
+    /principal-only/,
+  );
+  await transport.tools
+    .get(`${TOOL_NAME_PREFIX}set_profile`)!
+    .execute("c", {}, undefined, undefined, {});
+  await post(side.tools, "!side");
+  await post(transport.tools, "!transport");
+
+  assert.deepEqual([...endFilamentTurn().repliedTo], ["!transport"]);
+  assert.deepEqual([...endFilamentTurn(undefined, true).repliedTo], ["!side"]);
+});

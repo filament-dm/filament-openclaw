@@ -9,6 +9,10 @@
  * session identity, so authorization reads a per-account "current turn" slot set around each
  * dispatched work item. Known limitation: a turn the same agent runs on another channel while a
  * Filament turn is in flight inherits that turn's authorization.
+ *
+ * A turn the gateway starts beside the transport's (look-around.ts) has a slot of its own, so
+ * neither turn ending takes the other's authorization. A call that names its session acts under
+ * that session's turn alone; one that names none is counted for both.
  */
 import { DEFAULT_ACCOUNT_ID, resolveToolAccountId, type ToolAccountContext } from "./accounts.js";
 import type {
@@ -97,19 +101,29 @@ function replyTarget(toolName: string, params: Record<string, unknown>): string 
 // One slot per account is enough: the transport dispatches each account's turns sequentially.
 // Other sessions of the same agent still run meanwhile, so a slot also names its session.
 const activeFilamentTurns = new Map<string, FilamentTurnState>();
+// The gateway's own turn beside them. It never counts as a backchannel turn: no ring0 tools.
+const sideFilamentTurns = new Map<string, FilamentTurnState>();
 
-export function beginFilamentTurn(isBackchannel: boolean, accountId = DEFAULT_ACCOUNT_ID): void {
-  activeFilamentTurns.set(accountId, {
-    backchannel: isBackchannel,
+export function beginFilamentTurn(
+  isBackchannel: boolean,
+  accountId = DEFAULT_ACCOUNT_ID,
+  side = false,
+): void {
+  (side ? sideFilamentTurns : activeFilamentTurns).set(accountId, {
+    backchannel: isBackchannel && !side,
     sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
   });
 }
 
-/** Binds the active turn to the OpenClaw session it runs in, before the agent's run starts. */
-export function bindFilamentTurnSession(sessionKey: string, accountId = DEFAULT_ACCOUNT_ID): void {
-  const turn = activeFilamentTurns.get(accountId);
+/** Binds the turn to the OpenClaw session it runs in, before the agent's run starts. */
+export function bindFilamentTurnSession(
+  sessionKey: string,
+  accountId = DEFAULT_ACCOUNT_ID,
+  side = false,
+): void {
+  const turn = (side ? sideFilamentTurns : activeFilamentTurns).get(accountId);
   if (turn) turn.sessionKey = sessionKey;
 }
 
@@ -118,9 +132,21 @@ function sameSession(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID): FilamentTurnOutcome {
-  const turn = activeFilamentTurns.get(accountId);
-  activeFilamentTurns.delete(accountId);
+// The turns a call runs under: its session's, or every turn in flight when it names no session.
+function callTurns(accountId: string, sessionKey: string | undefined): FilamentTurnState[] {
+  const turns = [activeFilamentTurns.get(accountId), sideFilamentTurns.get(accountId)].filter(
+    (turn): turn is FilamentTurnState => turn !== undefined,
+  );
+  if (sessionKey === undefined) return turns;
+  return turns.filter(
+    (turn) => turn.sessionKey !== null && sameSession(turn.sessionKey, sessionKey),
+  );
+}
+
+export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID, side = false): FilamentTurnOutcome {
+  const turns = side ? sideFilamentTurns : activeFilamentTurns;
+  const turn = turns.get(accountId);
+  turns.delete(accountId);
   return { repliedTo: turn?.repliedTo ?? new Set<string>(), reacted: turn?.reacted ?? false };
 }
 
@@ -145,25 +171,21 @@ export function authorizeToolCall(
   sessionKey?: string,
 ): AuthorizationResult {
   if (tier === "read") return { ok: true };
-  const activeFilamentTurn = activeFilamentTurns.get(accountId);
-  if (!activeFilamentTurn) {
+  if (!activeFilamentTurns.has(accountId) && !sideFilamentTurns.has(accountId)) {
     return {
       ok: false,
       reason: "no active Filament turn (not dispatched by this plugin's transport)",
     };
   }
-  if (
-    sessionKey !== undefined &&
-    (activeFilamentTurn.sessionKey === null ||
-      !sameSession(activeFilamentTurn.sessionKey, sessionKey))
-  ) {
+  const turns = callTurns(accountId, sessionKey);
+  if (turns.length === 0) {
     return {
       ok: false,
       reason:
         "the active Filament turn runs in another session; only that session can use this tool",
     };
   }
-  if (tier === "ring0" && !activeFilamentTurn.backchannel) {
+  if (tier === "ring0" && !turns.some((turn) => turn.backchannel)) {
     return {
       ok: false,
       reason: "principal-only tool; the active turn did not originate from the backchannel",
@@ -270,12 +292,15 @@ function makeExecute(
 ): FilamentAgentTool["execute"] {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params, signal) => {
-    // The turn this call is authorized under; the call may outlive it.
-    const turn = activeFilamentTurns.get(accountId);
+    // The turns this call is authorized under; the call may outlive them.
+    const turns = callTurns(accountId, sessionKey);
     const authz = authorizeToolCall(tier, accountId, sessionKey);
     if (!authz.ok) {
+      const inFlight = [activeFilamentTurns.get(accountId), sideFilamentTurns.get(accountId)]
+        .filter((turn) => turn !== undefined)
+        .map((turn) => turn.sessionKey ?? "unbound");
       const sessions = sessionKey
-        ? `, session ${sessionKey}, turn ${turn?.sessionKey ?? "none"}`
+        ? `, session ${sessionKey}, turn ${inFlight.join(" / ") || "none"}`
         : "";
       log(`filament-tools: ${qualifiedName} denied (account ${accountId}${sessions})`);
       throw new Error(`${qualifiedName}: denied — ${authz.reason}`);
@@ -308,8 +333,10 @@ function makeExecute(
     }
     log(`filament-tools: ${qualifiedName} ok`);
     const target = replyTarget(toolName, params);
-    if (target) turn?.repliedTo.add(target);
-    if (toolName === "react" && turn) turn.reacted = true;
+    for (const turn of turns) {
+      if (target) turn.repliedTo.add(target);
+      if (toolName === "react") turn.reacted = true;
+    }
     return {
       content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
       details: result.data,
