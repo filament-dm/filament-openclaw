@@ -104,6 +104,25 @@ test("dispatchWorkItemTurn: a side session keeps a gateway-written prompt out of
   assert.equal(contexts[1]!.InputProvenance, undefined);
 });
 
+test("dispatchWorkItemTurn: reports the session it runs in before the run starts", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  const seen: Array<{ key: string; contextsSoFar: number }> = [];
+  await dispatchWorkItemTurn(
+    params(
+      {
+        peerKind: "group",
+        channelId: "!room:x",
+        threadId: "$Thread",
+        onSessionKey: (key) => seen.push({ key, contextsSoFar: contexts.length }),
+      },
+      runtime,
+    ),
+  );
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]!.contextsSoFar, 0);
+  assert.equal(seen[0]!.key, contexts[0]!.SessionKey);
+});
+
 test("inboundMessageFields: the last message is the turn's; earlier ones are history with ids", () => {
   const messages = [
     { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 1 },

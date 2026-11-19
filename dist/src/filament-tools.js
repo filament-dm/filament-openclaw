@@ -35,9 +35,17 @@ const activeFilamentTurns = /* @__PURE__ */ new Map();
 function beginFilamentTurn(isBackchannel, accountId = DEFAULT_ACCOUNT_ID) {
   activeFilamentTurns.set(accountId, {
     backchannel: isBackchannel,
+    sessionKey: null,
     repliedTo: /* @__PURE__ */ new Set(),
     reacted: false
   });
+}
+function bindFilamentTurnSession(sessionKey, accountId = DEFAULT_ACCOUNT_ID) {
+  const turn = activeFilamentTurns.get(accountId);
+  if (turn) turn.sessionKey = sessionKey;
+}
+function sameSession(a, b) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID) {
   const turn = activeFilamentTurns.get(accountId);
@@ -47,13 +55,19 @@ function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID) {
 function _getActiveFilamentTurnForTest(accountId = DEFAULT_ACCOUNT_ID) {
   return activeFilamentTurns.get(accountId) ?? null;
 }
-function authorizeToolCall(tier, accountId = DEFAULT_ACCOUNT_ID) {
+function authorizeToolCall(tier, accountId = DEFAULT_ACCOUNT_ID, sessionKey) {
   if (tier === "read") return { ok: true };
   const activeFilamentTurn = activeFilamentTurns.get(accountId);
   if (!activeFilamentTurn) {
     return {
       ok: false,
       reason: "no active Filament turn (not dispatched by this plugin's transport)"
+    };
+  }
+  if (sessionKey !== void 0 && (activeFilamentTurn.sessionKey === null || !sameSession(activeFilamentTurn.sessionKey, sessionKey))) {
+    return {
+      ok: false,
+      reason: "the active Filament turn runs in another session; only that session can use this tool"
     };
   }
   if (tier === "ring0" && !activeFilamentTurn.backchannel) {
@@ -90,12 +104,14 @@ function normalizeEventIdArgs(params) {
   }
   return changed ? out : params;
 }
-function makeExecute(toolName, tier, accountId, getClient, log) {
+function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params, signal) => {
-    const authz = authorizeToolCall(tier, accountId);
+    const turn = activeFilamentTurns.get(accountId);
+    const authz = authorizeToolCall(tier, accountId, sessionKey);
     if (!authz.ok) {
-      log(`filament-tools: ${qualifiedName} denied (account ${accountId})`);
+      const sessions = sessionKey ? `, session ${sessionKey}, turn ${turn?.sessionKey ?? "none"}` : "";
+      log(`filament-tools: ${qualifiedName} denied (account ${accountId}${sessions})`);
       throw new Error(`${qualifiedName}: denied \u2014 ${authz.reason}`);
     }
     const client = getClient(accountId);
@@ -123,7 +139,6 @@ function makeExecute(toolName, tier, accountId, getClient, log) {
       );
     }
     log(`filament-tools: ${qualifiedName} ok`);
-    const turn = activeFilamentTurns.get(accountId);
     const target = replyTarget(toolName, params);
     if (target) turn?.repliedTo.add(target);
     if (toolName === "react" && turn) turn.reacted = true;
@@ -142,12 +157,13 @@ function registerFilamentToolsFromSnapshot(api, getClient, log, resolveAccount =
       (ctx) => {
         const accountId = resolveAccount(ctx ?? {});
         if (!accountId) return null;
+        const sessionKey = typeof ctx?.sessionKey === "string" && ctx.sessionKey.trim() !== "" ? ctx.sessionKey : void 0;
         return {
           name: qualifiedName,
           label: toLabel(descriptor.name),
           description: descriptor.description || descriptor.name,
           parameters: descriptor.inputSchema ?? FALLBACK_PARAMETERS,
-          execute: makeExecute(descriptor.name, tier, accountId, getClient, log)
+          execute: makeExecute(descriptor.name, tier, accountId, sessionKey, getClient, log)
         };
       },
       { names: [qualifiedName] }
@@ -197,6 +213,7 @@ export {
   _getActiveFilamentTurnForTest,
   authorizeToolCall,
   beginFilamentTurn,
+  bindFilamentTurnSession,
   checkFilamentToolDrift,
   classifyToolTier,
   endFilamentTurn,

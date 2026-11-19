@@ -60,6 +60,7 @@ async function dispatchWorkItemTurn(params) {
     normalizeThreadId: (id) => id
   }).sessionKey : route.sessionKey;
   const effectiveRoute = { ...route, sessionKey };
+  params.onSessionKey?.(sessionKey);
   const accountId = effectiveRoute.accountId ?? params.accountId;
   const buildEnvelope = createInboundEnvelopeBuilder({
     cfg: params.cfg,
