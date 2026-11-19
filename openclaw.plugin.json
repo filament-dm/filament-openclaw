@@ -3,6 +3,9 @@
   "name": "Filament",
   "description": "Connects an OpenClaw agent to Filament: receives work through the poll_work long-poll and replies through Filament's MCP-over-HTTP agents API.",
   "version": "0.1.6",
+  "categories": [
+    "channels"
+  ],
   "cliCommands": [
     {
       "name": "filament",

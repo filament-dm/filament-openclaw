@@ -4,7 +4,8 @@ name: Release
 # Manually-triggered release build. Produces a private, self-contained plugin
 # tarball (`npm pack`, which bundles the compiled dist/) as a workflow artifact,
 # and — when a tag is provided — a GitHub Release with that tarball attached.
-# Publishing to npm / ClawHub is intentionally stubbed for now.
+# Publishing to npm is intentionally stubbed for now; ClawHub publishing is
+# package-publish.yml.
 #
 # Hermeticity: builds one specific commit with a pinned Node (.nvmrc) and a
 # locked dependency tree (`npm ci` from package-lock.json), using the same
@@ -91,9 +92,6 @@ jobs:
 
       - name: Publish to npm (TODO)
         run: 'echo "TODO: npm publish — intentionally skipped for now."'
-
-      - name: Publish to clawhub (TODO)
-        run: 'echo "TODO: clawhub publish — intentionally skipped for now."'
 
       - name: Upload the private build artifact
         uses: actions/upload-artifact@v4

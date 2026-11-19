@@ -96,7 +96,7 @@ export function hostReplyKind(payload: unknown): "error" | "notice" | null {
 
 /**
  * Attachments for the inbound context, in both shapes: `media` is what current gateways read, and
- * the legacy `Media*` fields are all a gateway before 2026.9 reads (the plugin supports >=2026.7).
+ * the legacy `Media*` fields are all a gateway before 2026.9 reads (the plugin supports >=2026.8.1).
  */
 function inboundMediaFields(media: InboundMedia[] | undefined): Record<string, unknown> {
   if (!media?.length) return {};
