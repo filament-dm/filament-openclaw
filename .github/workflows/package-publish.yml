@@ -1,0 +1,126 @@
+name: Publish to ClawHub
+
+# Manually-triggered ClawHub publish. Builds the plugin from the commit this run
+# was started from ("Use workflow from" picks a branch or tag), packs it with
+# `npm pack`, and hands that tarball to ClawHub's reusable publish workflow.
+#
+# Dry run by default: it validates the package and shows what would be
+# published, without uploading. Untick "dry run" to publish for real; the run
+# then waits until ClawHub's security checks make the release public (up to
+# 30 minutes) and fails if they block it.
+#
+# Setup (once):
+# - Repository secret CLAWHUB_TOKEN: a ClawHub API token (clh_...) from an
+#   account that can publish for the `filament-dm` owner (ClawHub → Settings →
+#   API tokens, or `clawhub token` after `clawhub login`).
+# - After the first real publish, trusted publishing can replace the token for
+#   these manual runs:
+#     clawhub package trusted-publisher set @filament-dm/filament-openclaw \
+#       --repository filament-dm/filament-openclaw \
+#       --workflow-filename package-publish.yml
+#
+# Publish a version once: bump it first (Bump version workflow), then run this
+# from `main` or the release tag. ClawHub keeps every published version.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: validate and preview only, publish nothing."
+        type: boolean
+        required: false
+        default: true
+      changelog:
+        description: "Release notes shown on ClawHub (optional)."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clawhub-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Committed dist/ matches the build
+        run: |
+          changed="$(git status --porcelain -- dist)"
+          if [ -n "$changed" ]; then
+            echo "::error::dist/ does not match the source. Run 'npm run build' and commit dist/."
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Test
+        run: npm test
+
+      - name: Read the version
+        id: version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          manifest="$(node -p "require('./openclaw.plugin.json').version")"
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::package.json ($version) and openclaw.plugin.json ($manifest) disagree on the version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Pack
+        id: pack
+        run: |
+          # --ignore-scripts: ship exactly what `npm run build` just produced.
+          mkdir -p clawpack
+          file="$(npm pack --ignore-scripts --pack-destination clawpack | tail -n1)"
+          echo "tarball=clawpack/${file}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### ClawHub package"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- version: \`${{ steps.version.outputs.version }}\`"
+            echo "- dry run: \`${{ inputs.dry_run }}\`"
+            echo "- tarball: \`${file}\`"
+            echo "- sha256: \`$(sha256sum "clawpack/${file}" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clawpack
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    permissions:
+      actions: read # download the clawpack artifact
+      contents: read
+      id-token: write # trusted publishing, and how the reusable workflow finds its own source
+    # Pinned to a commit of openclaw/clawhub main (2026-11-19). To update, replace
+    # the SHA with a newer commit of that repository.
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@a8d742ae1d61cec53dc6b0834cc81d49945dfd63
+    with:
+      owner: filament-dm
+      family: code-plugin
+      package_artifact_name: clawpack
+      dry_run: ${{ inputs.dry_run }}
+      changelog: ${{ inputs.changelog }}
+      topics: filament,messaging,chat,agents,mcp
+    secrets:
+      clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

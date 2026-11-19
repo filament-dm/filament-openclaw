@@ -172,7 +172,10 @@ into `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal),
 and npm commits `Release vX.Y.Z` and tags it. The **Bump version** workflow (Actions → Bump
 version → Run workflow → pick the level) does exactly that on `main` and pushes. A merge to `main` is already what
 installs from GitHub get; the bump is what tells running ones about it. A ClawHub install gets a
-version only once it is published to ClawHub.
+version only once it is published to ClawHub: after the bump, run the **Publish to ClawHub**
+workflow (Actions → Publish to ClawHub → Run workflow) from `main`. It is a dry run unless you
+untick it; a real publish waits until ClawHub's security checks make the release public. It
+needs the `CLAWHUB_TOKEN` repository secret.
 
 ## Troubleshooting
 
