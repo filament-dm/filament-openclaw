@@ -2,7 +2,7 @@ import { PLUGIN_ID } from "./accounts.js";
 import { runOpenclawCli } from "./config-write.js";
 import { PLUGIN_VERSION } from "./version.js";
 const UPDATE_NOW_LABEL = "Update now";
-const UPDATE_CHECK_URL = "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
+const UPDATE_CHECK_URL = "https://clawhub.ai/api/v1/packages/%40filament-dm%2Ffilament-openclaw";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 function isNewerVersion(candidate, installed) {
   const parse = (v) => {
@@ -23,11 +23,12 @@ const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabiliti
 async function fetchLatestVersion(url, fetchImpl = fetch) {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const manifest = await res.json();
-  if (typeof manifest.version !== "string" || !manifest.version.trim()) {
-    throw new Error("the manifest has no version");
+  const body = await res.json();
+  const latest = body.package?.latestVersion;
+  if (typeof latest !== "string" || !latest.trim()) {
+    throw new Error("ClawHub returned no latest version");
   }
-  return manifest.version.trim();
+  return latest.trim();
 }
 function updateNoticeBody(latest, installed) {
   return [

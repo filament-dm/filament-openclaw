@@ -1,7 +1,8 @@
 /**
- * How a running gateway learns the plugin has a newer version on `main`, and how it takes it.
- * Once a day one account fetches the plugin manifest from GitHub and compares it with the
- * installed version. A newer one is announced once, in the principal's backchannel, with a button
+ * How a running gateway learns the plugin has a newer release, and how it takes it.
+ * Once a day one account asks ClawHub for the package's latest version and compares it with the
+ * installed one. ClawHub moves `latest` only once a release passes its security checks, so a
+ * version still being scanned, or merged to `main` but not released, is never announced. A newer one is announced once, in the principal's backchannel, with a button
  * that runs `openclaw plugins update` through the CLI; the gateway hot-reloads the plugin and the
  * account comes back on the new version and says so.
  */
@@ -15,8 +16,9 @@ export type { UpdateCheckState };
 /** The notice's button: a suggested message sends its own text, so the text is what the gateway parses. */
 export const UPDATE_NOW_LABEL = "Update now";
 
+/** ClawHub's public package endpoint for `@filament-dm/filament-openclaw`; no sign-in needed. */
 export const UPDATE_CHECK_URL =
-  "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
+  "https://clawhub.ai/api/v1/packages/%40filament-dm%2Ffilament-openclaw";
 
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -45,11 +47,12 @@ export async function fetchLatestVersion(
 ): Promise<string> {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const manifest = (await res.json()) as { version?: unknown };
-  if (typeof manifest.version !== "string" || !manifest.version.trim()) {
-    throw new Error("the manifest has no version");
+  const body = (await res.json()) as { package?: { latestVersion?: unknown } };
+  const latest = body.package?.latestVersion;
+  if (typeof latest !== "string" || !latest.trim()) {
+    throw new Error("ClawHub returned no latest version");
   }
-  return manifest.version.trim();
+  return latest.trim();
 }
 
 export function updateNoticeBody(latest: string, installed: string): string {

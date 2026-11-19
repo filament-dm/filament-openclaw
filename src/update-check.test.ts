@@ -6,6 +6,7 @@ import {
   isNewerVersion,
   runUpdateChecks,
   startPluginUpdate,
+  UPDATE_CHECK_URL,
   UPDATE_COMMAND,
   UPDATE_NOW_LABEL,
   type UpdateCheckContext,
@@ -14,14 +15,23 @@ import {
   updateFailureMessage,
   updateNoticeBody,
 } from "./update-check.js";
+import pkg from "../package.json" with { type: "json" };
 
 const DAY = 24 * 60 * 60 * 1000;
 
+// The shape of ClawHub's GET /api/v1/packages/<name>, trimmed to what the check reads.
 function manifest(version: string): typeof fetch {
   return (async () =>
-    new Response(JSON.stringify({ id: "filament-openclaw", version }), {
-      status: 200,
-    })) as unknown as typeof fetch;
+    new Response(
+      JSON.stringify({
+        package: {
+          name: "@filament-dm/filament-openclaw",
+          latestVersion: version,
+          scanStatus: "clean",
+        },
+      }),
+      { status: 200 },
+    )) as unknown as typeof fetch;
 }
 
 function harness(overrides: Partial<UpdateCheckContext> = {}) {
@@ -29,7 +39,7 @@ function harness(overrides: Partial<UpdateCheckContext> = {}) {
   const said: string[] = [];
   const ctx: UpdateCheckContext = {
     installed: "0.1.0",
-    url: "https://example.test/openclaw.plugin.json",
+    url: "https://example.test/api/v1/packages/x",
     fetchImpl: manifest("0.2.0"),
     load: () => state,
     save: (next) => {
@@ -140,4 +150,27 @@ test("runUpdateChecks: an abort during the check ends the loop without a sleep",
 
 test("updateNoticeBody: the button's label is the exact text the gateway reads as the command", () => {
   assert.ok(updateNoticeBody("0.2.0", "0.1.0").includes(`[${UPDATE_NOW_LABEL}]`));
+});
+
+test("checkForUpdate: reads ClawHub's latestVersion and ignores a body without one", async () => {
+  const logs: string[] = [];
+  const h = harness({
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ id: "filament-openclaw", version: "9.9.9" }), {
+        status: 200,
+      })) as unknown as typeof fetch,
+    log: (m) => {
+      logs.push(m);
+    },
+  });
+  assert.equal(await checkForUpdate(h.ctx), "failed");
+  assert.deepEqual(h.said, []);
+  assert.match(logs[0]!, /no latest version/);
+});
+
+test("UPDATE_CHECK_URL: the ClawHub package this plugin is published as", () => {
+  assert.equal(
+    UPDATE_CHECK_URL,
+    `https://clawhub.ai/api/v1/packages/${encodeURIComponent(pkg.name)}`,
+  );
 });

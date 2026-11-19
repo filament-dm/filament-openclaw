@@ -1,13 +1,20 @@
 name: Publish to ClawHub
 
-# Manually-triggered ClawHub publish. Builds the plugin from the commit this run
-# was started from ("Use workflow from" picks a branch or tag), packs it with
+# Publishes the plugin to ClawHub, which is where installs and the plugin's own
+# update check get it from. Builds the plugin from a commit, packs it with
 # `npm pack`, and hands that tarball to ClawHub's reusable publish workflow.
 #
-# Dry run by default: it validates the package and shows what would be
-# published, without uploading. Untick "dry run" to publish for real; the run
-# then waits until ClawHub's security checks make the release public (up to
-# 30 minutes) and fails if they block it.
+# Two ways in:
+# - The Bump version workflow calls this with the release tag it just pushed,
+#   for real. That is the normal release: a merge to main is not a release,
+#   the bump is, and the bump publishes.
+# - By hand (Actions → Publish to ClawHub), from the branch or tag picked in
+#   "Use workflow from", to re-publish a version or to preview one. A dry run by
+#   default: it validates the package and shows what would be published,
+#   without uploading.
+#
+# A real publish waits until ClawHub's security checks make the release public
+# (up to 30 minutes) and fails if they block it.
 #
 # Setup (once):
 # - Repository secret CLAWHUB_TOKEN: a ClawHub API token (clh_...) from an
@@ -18,9 +25,10 @@ name: Publish to ClawHub
 #     clawhub package trusted-publisher set @filament-dm/filament-openclaw \
 #       --repository filament-dm/filament-openclaw \
 #       --workflow-filename package-publish.yml
+#   A release started by Bump version runs under bump-version.yml, so it keeps
+#   using the token until that file is trusted as well.
 #
-# Publish a version once: bump it first (Bump version workflow), then run this
-# from `main` or the release tag. ClawHub keeps every published version.
+# ClawHub keeps every published version; publishing one twice fails.
 
 on:
   workflow_dispatch:
@@ -35,6 +43,23 @@ on:
         type: string
         required: false
         default: ""
+  workflow_call:
+    inputs:
+      ref:
+        description: "The tag or commit to build and publish."
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        required: false
+        default: false
+      changelog:
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CLAWHUB_TOKEN:
+        required: true
 
 permissions:
   contents: read
@@ -46,8 +71,27 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      source_ref: ${{ steps.source.outputs.source_ref }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Empty by hand: the commit the run was started from.
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Record the source
+        id: source
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # A release passes its tag (vX.Y.Z); by hand, the ref the run started from.
+          if [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "source_ref=refs/tags/${REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "source_ref=${GITHUB_REF}" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -92,7 +136,7 @@ jobs:
           echo "tarball=clawpack/${file}" >> "$GITHUB_OUTPUT"
           {
             echo "### ClawHub package"
-            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- commit: \`${{ steps.source.outputs.commit }}\`"
             echo "- version: \`${{ steps.version.outputs.version }}\`"
             echo "- dry run: \`${{ inputs.dry_run }}\`"
             echo "- tarball: \`${file}\`"
@@ -122,5 +166,9 @@ jobs:
       dry_run: ${{ inputs.dry_run }}
       changelog: ${{ inputs.changelog }}
       topics: filament,messaging,chat,agents,mcp
+      # The built commit, not the run's: a release builds the tag Bump version pushed.
+      source_repo: ${{ github.repository }}
+      source_commit: ${{ needs.build.outputs.commit }}
+      source_ref: ${{ needs.build.outputs.source_ref }}
     secrets:
       clawhub_token: ${{ secrets.CLAWHUB_TOKEN }}

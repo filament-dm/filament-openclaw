@@ -2,11 +2,13 @@
 name: Bump version
 run-name: "Bump version · ${{ inputs.level }} · by @${{ github.actor }}"
 
-# Manually-triggered release step: `npm version` on main. Its `version` lifecycle
-# script copies the number into openclaw.plugin.json and src/version.ts and
-# rebuilds dist/ (committed: gateways install from the git ref); npm commits
-# "Release vX.Y.Z" and tags it. Running gateways see the new manifest on main
-# within a day and offer the update in the principal's backchannel.
+# The release: `npm version` on main, then a publish to ClawHub. The `version`
+# lifecycle script copies the number into openclaw.plugin.json and
+# src/version.ts and rebuilds dist/; npm commits "Release vX.Y.Z" and tags it.
+# The publish job then builds that tag and publishes it to ClawHub, which is
+# what installs and the plugin's daily update check read. Once ClawHub's
+# security checks pass (up to 30 minutes), running gateways offer the update in
+# the principal's backchannel within a day.
 
 on:
   workflow_dispatch:
@@ -24,6 +26,8 @@ permissions:
 jobs:
   bump:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,3 +54,16 @@ jobs:
         run: |
           git push --follow-tags origin main
           echo "Released **v${{ steps.bump.outputs.version }}** (${{ inputs.level }})." >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: bump
+    permissions:
+      actions: read # download the packed artifact
+      contents: read
+      id-token: write # ClawHub's reusable workflow
+    uses: ./.github/workflows/package-publish.yml
+    with:
+      ref: v${{ needs.bump.outputs.version }}
+      changelog: "Release v${{ needs.bump.outputs.version }}"
+    secrets:
+      CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
