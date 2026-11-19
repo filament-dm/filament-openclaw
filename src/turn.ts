@@ -62,6 +62,8 @@ export interface DispatchWorkItemParams {
   abortSignal?: AbortSignal;
   /** Each step the turn reaches; see `TurnOptions.onProgress`. */
   onProgress?: (step: string) => void;
+  /** The OpenClaw session the turn runs in, before the agent's run starts. */
+  onSessionKey?: (sessionKey: string) => void;
 }
 
 export interface DispatchTurnResult {
@@ -180,6 +182,7 @@ export async function dispatchWorkItemTurn(
       }).sessionKey
     : route.sessionKey;
   const effectiveRoute = { ...route, sessionKey };
+  params.onSessionKey?.(sessionKey);
   const accountId = effectiveRoute.accountId ?? params.accountId;
 
   const buildEnvelope = createInboundEnvelopeBuilder({

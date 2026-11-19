@@ -77,6 +77,8 @@ export interface ToolAccountContext {
   agentId?: string;
   messageChannel?: string;
   agentAccountId?: string;
+  /** The calling OpenClaw session; see `authorizeToolCall`. */
+  sessionKey?: string;
 }
 
 /**

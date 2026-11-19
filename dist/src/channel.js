@@ -24,6 +24,7 @@ import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
 import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
+  bindFilamentTurnSession,
   checkFilamentToolDrift,
   endFilamentTurn,
   getFilamentClient,
@@ -266,7 +267,8 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               commandAuthorized: item.is_backchannel === true,
               log: accountLog,
               abortSignal: opts?.abortSignal,
-              onProgress: opts?.onProgress
+              onProgress: opts?.onProgress,
+              onSessionKey: (sessionKey) => bindFilamentTurnSession(sessionKey, accountId)
             });
           } finally {
             toolOutcome = endFilamentTurn(accountId);

@@ -6,6 +6,7 @@ import type { ListToolsResult, McpToolDescriptor, ToolCallResult } from "./mcp-c
 import {
   _getActiveFilamentTurnForTest,
   beginFilamentTurn,
+  bindFilamentTurnSession,
   checkFilamentToolDrift,
   classifyToolTier,
   endFilamentTurn,
@@ -290,6 +291,7 @@ test("beginFilamentTurn/endFilamentTurn: tracks and clears the active turn", () 
   beginFilamentTurn(true);
   assert.deepEqual(_getActiveFilamentTurnForTest(), {
     backchannel: true,
+    sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
   });
@@ -461,4 +463,98 @@ test("normalizeEventIdArgs: a `#$event` id from OpenClaw's history lines loses t
   // Only id arguments: a body or a room alias keeps its `#`.
   const same = { message_id: "$a1:x", channel: "#general", markdown_body: "#$ is fine here" };
   assert.equal(normalizeEventIdArgs(same), same);
+});
+
+const TURN_SESSION = "agent:main:filament:direct:!Backchannel:Example";
+
+test("a turn's write tools belong to its session: another session of the same agent is denied", async () => {
+  const { log, lines } = fakeLog();
+  const turnSession = fakeApi({ sessionKey: TURN_SESSION });
+  const otherSession = fakeApi({ sessionKey: "agent:main:telegram:direct:12345" });
+  registerFilamentToolsFromSnapshot(turnSession.api, getFilamentClient, log);
+  registerFilamentToolsFromSnapshot(otherSession.api, getFilamentClient, log);
+  const calls: string[] = [];
+  setFilamentClient({ callTool: async (name) => (calls.push(name), okResult({ ok: true })) });
+
+  beginFilamentTurn(true); // a backchannel turn: ring0 open to its own session
+  bindFilamentTurnSession(TURN_SESSION);
+  for (const name of ["set_profile", "post_message"]) {
+    await assert.rejects(
+      () =>
+        otherSession.tools
+          .get(`${TOOL_NAME_PREFIX}${name}`)!
+          .execute("other", { channel: "!x", markdown_body: "hi" }, undefined, undefined, {}),
+      /another session/,
+    );
+  }
+  await turnSession.tools
+    .get(`${TOOL_NAME_PREFIX}set_profile`)!
+    .execute("own", {}, undefined, undefined, {});
+  await turnSession.tools
+    .get(`${TOOL_NAME_PREFIX}post_message`)!
+    .execute("own", { channel: "!x", markdown_body: "hi" }, undefined, undefined, {});
+  const outcome = endFilamentTurn();
+
+  assert.deepEqual(calls, ["set_profile", "post_message"]);
+  // The denied post is not counted as the turn's reply.
+  assert.deepEqual([...outcome.repliedTo], ["!x"]);
+  assert.equal(lines.filter((l) => l.includes("denied")).length, 2);
+});
+
+test("a session key compares without case: OpenClaw may store it lowercased", async () => {
+  const { api, tools } = fakeApi({ sessionKey: TURN_SESSION.toLowerCase() });
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
+  setFilamentClient({ callTool: async () => okResult({ event_id: "$x" }) });
+  beginFilamentTurn(false);
+  bindFilamentTurnSession(TURN_SESSION);
+  const result = await tools
+    .get(`${TOOL_NAME_PREFIX}accept_invite`)!
+    .execute("c", { loop_id: "!x" }, undefined, undefined, {});
+  endFilamentTurn();
+  assert.deepEqual(result.details, { event_id: "$x" });
+});
+
+test("a session calling before the turn has its session is denied", async () => {
+  const { api, tools } = fakeApi({ sessionKey: TURN_SESSION });
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
+  setFilamentClient({ callTool: async () => okResult({}) });
+  beginFilamentTurn(true);
+  await assert.rejects(
+    () => tools.get(`${TOOL_NAME_PREFIX}set_profile`)!.execute("c", {}, undefined, undefined, {}),
+    /another session/,
+  );
+  endFilamentTurn();
+});
+
+test("read tools stay open to every session, with or without a turn", async () => {
+  const { api, tools } = fakeApi({ sessionKey: "agent:main:cron:daily:run:1" });
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
+  setFilamentClient({ callTool: async () => okResult({ channels: [] }) });
+  beginFilamentTurn(false);
+  bindFilamentTurnSession(TURN_SESSION);
+  const result = await tools
+    .get(`${TOOL_NAME_PREFIX}list_channels`)!
+    .execute("c", {}, undefined, undefined, {});
+  endFilamentTurn();
+  assert.deepEqual(result.details, { channels: [] });
+});
+
+test("a call that outlives its turn records its reply on that turn, not the next one", async () => {
+  const { api, tools } = fakeApi({ sessionKey: TURN_SESSION });
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, () => {});
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  setFilamentClient({ callTool: async () => (await gate, okResult({ event_id: "$x" })) });
+
+  beginFilamentTurn(false);
+  bindFilamentTurnSession(TURN_SESSION);
+  const pending = tools
+    .get(`${TOOL_NAME_PREFIX}post_message`)!
+    .execute("c", { channel: "!first", markdown_body: "hi" }, undefined, undefined, {});
+  endFilamentTurn();
+  beginFilamentTurn(false);
+  bindFilamentTurnSession(TURN_SESSION);
+  release();
+  await pending;
+  assert.equal(endFilamentTurn().repliedTo.size, 0);
 });
