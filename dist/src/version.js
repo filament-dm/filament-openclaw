@@ -1,4 +1,4 @@
-const PLUGIN_VERSION = "0.1.7";
+const PLUGIN_VERSION = "0.1.8";
 export {
   PLUGIN_VERSION
 };
