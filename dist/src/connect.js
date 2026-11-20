@@ -50,11 +50,12 @@ async function runConnect(opts) {
     log = () => {
     },
     abortSignal,
-    fetchImpl = fetch
+    fetchImpl = fetch,
+    mediaOrigins = []
   } = opts;
   const bearer = resolveBearer(token, log);
   if (abortSignal?.aborted) throw new ConnectAbortedError();
-  const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl);
+  const client = new FilamentMcpClient(mcpUrl, bearer, void 0, fetchImpl, mediaOrigins);
   let heartbeatTimer = null;
   const stop = () => {
     if (heartbeatTimer) clearInterval(heartbeatTimer);

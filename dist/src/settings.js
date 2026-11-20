@@ -7,6 +7,18 @@ function normalizeMcpUrl(raw) {
 }
 const MIN_POLL_WAIT_SECONDS = 1;
 const MAX_POLL_WAIT_SECONDS = 60;
+function normalizeMediaOrigins(raw) {
+  const origins = /* @__PURE__ */ new Set();
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (typeof entry !== "string") continue;
+    try {
+      const url = new URL(entry.trim());
+      if (url.protocol === "https:" || url.protocol === "http:") origins.add(url.origin);
+    } catch {
+    }
+  }
+  return [...origins];
+}
 function clampPollWaitSeconds(raw) {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
   if (!Number.isFinite(n)) return void 0;
@@ -35,7 +47,8 @@ function resolveMcpSettings(pluginConfig, env = process.env) {
   return {
     tokenInput,
     mcpUrl,
-    pollWaitSeconds: clampPollWaitSeconds(cfg.pollWaitSeconds)
+    pollWaitSeconds: clampPollWaitSeconds(cfg.pollWaitSeconds),
+    mediaOrigins: normalizeMediaOrigins(cfg.mediaOrigins)
   };
 }
 export {
@@ -44,6 +57,7 @@ export {
   MIN_POLL_WAIT_SECONDS,
   connectTokenConfigPath,
   normalizeMcpUrl,
+  normalizeMediaOrigins,
   resolveAccountSettings,
   resolveMcpSettings
 };

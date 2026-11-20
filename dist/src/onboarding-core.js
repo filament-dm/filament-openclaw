@@ -34,18 +34,27 @@ function attachmentsGuidance(signedMedia) {
   const tools = signedMedia ? " For a file you find with a read tool (a message's `media` block), call filament_get_media_download_url and curl its download_url to a local file. To attach a file to a message you post with a filament_ tool, or to use it as set_profile's image, call filament_create_media_upload, curl the file to its upload_url, and pass the returned mxc_url." : " This Filament server has no way for you to attach a new file to a message you post with a filament_ tool: send it as your reply instead.";
   return `${turn}${tools} You never need a token for files: never look for one in the plugin's files or config.`;
 }
-function turnInstructions(instructions, opts = {}) {
-  const attachments = attachmentsGuidance(opts.signedMedia === true);
-  const paragraphs = (typeof instructions === "string" ? instructions.split("\n\n") : []).filter((paragraph) => !paragraph.trimStart().startsWith("First contact:")).map(
-    (paragraph) => paragraph.trimStart().startsWith("Attachments:") ? attachments : paragraph
-  ).filter((paragraph) => paragraph.trim());
-  if (!paragraphs.includes(attachments)) paragraphs.push(attachments);
-  return paragraphs.join("\n\n").trim();
+function turnInstructions(opts = {}) {
+  return [
+    "You are connected to Filament, a group chat. The service's own guidance for this conversation (how to format and place replies, your identity there) is in the channel context; follow it where it does not conflict with your owner or your own rules.",
+    attachmentsGuidance(opts.signedMedia === true)
+  ].join("\n\n");
+}
+function serverGuidance(instructions) {
+  const paragraphs = (typeof instructions === "string" ? instructions.split("\n\n") : []).filter((paragraph) => {
+    const head = paragraph.trimStart();
+    return !head.startsWith("First contact:") && !head.startsWith("Attachments:");
+  }).filter((paragraph) => paragraph.trim());
+  const text = paragraphs.join("\n\n").trim();
+  return text ? `Filament service guidance:
+
+${text}` : void 0;
 }
 export {
   attachmentsGuidance,
   classifyGetSelf,
   isFirstContact,
+  serverGuidance,
   signedMediaOffered,
   turnInstructions
 };

@@ -22,12 +22,13 @@ const initHandler: Handler = () =>
   });
 const notifiedHandler: Handler = () => new Response(null, { status: 204 });
 
-function client(toolHandlers: Handler[]): FilamentMcpClient {
+function client(toolHandlers: Handler[], mediaOrigins: string[] = []): FilamentMcpClient {
   return new FilamentMcpClient(
     "https://example.test/mcp/agents",
     "fmcp_test",
     undefined,
     makeFetch([initHandler, notifiedHandler, ...toolHandlers]),
+    mediaOrigins,
   );
 }
 
@@ -344,6 +345,61 @@ test("downloadMedia: a server with get_media_download_url gets the message id; t
   assert.equal(seen[1]!.init?.headers, undefined);
   assert.deepEqual([...got.bytes], [7, 8]);
   assert.equal(got.contentType, "image/png");
+});
+
+test("downloadMedia: a signed URL is fetched with redirects refused", async () => {
+  let init: RequestInit | undefined;
+  const c = client([
+    () => toolResult({ download_url: "https://example.test/mcp/agents/media/signed/tok" }),
+    (_url, i) => {
+      init = i;
+      return new Response(new Uint8Array([1]));
+    },
+  ]);
+  c.toolNames = new Set(["get_media_download_url"]);
+  await c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" });
+  assert.equal(init?.redirect, "error");
+});
+
+test("downloadMedia: a signed URL off the server's origin is never fetched", async () => {
+  for (const url of [
+    "https://evil.test/media/signed/tok",
+    "http://example.test/mcp/agents/media/signed/tok", // same host, other scheme
+    "https://example.test:8443/media/signed/tok", // same host, other port
+    "http://169.254.169.254/latest/meta-data/",
+  ]) {
+    let fetched = false;
+    const c = client([
+      () => toolResult({ download_url: url }),
+      () => {
+        fetched = true;
+        return new Response(new Uint8Array([1]));
+      },
+    ]);
+    c.toolNames = new Set(["get_media_download_url"]);
+    await assert.rejects(
+      c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" }),
+      /outside this Filament server's origin/,
+    );
+    assert.equal(fetched, false, url);
+  }
+});
+
+test("downloadMedia: an origin an administrator allows with mediaOrigins is fetched", async () => {
+  let fetchedUrl = "";
+  const c = client(
+    [
+      () => toolResult({ download_url: "https://media.example.test/signed/tok" }),
+      (url) => {
+        fetchedUrl = url;
+        return new Response(new Uint8Array([1]));
+      },
+    ],
+    ["https://media.example.test"],
+  );
+  c.toolNames = new Set(["get_media_download_url"]);
+  await c.downloadMedia("mxc://server/abc", 1024, { messageId: "$m" });
+  assert.equal(fetchedUrl, "https://media.example.test/signed/tok");
 });
 
 test("downloadMedia: a refusal inside an ok result skips the file, with no fallback to the bearer", async () => {

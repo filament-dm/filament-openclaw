@@ -123,6 +123,20 @@ test("dispatchWorkItemTurn: reports the session it runs in before the run starts
   assert.equal(seen[0]!.key, contexts[0]!.SessionKey);
 });
 
+test("dispatchWorkItemTurn: the server's guidance is channel context, the plugin's text the system prompt", async () => {
+  const { runtime, contexts } = fakeRuntime();
+  await dispatchWorkItemTurn(
+    params(
+      { systemPrompt: "local rules", serverGuidance: "Filament service guidance: be brief" },
+      runtime,
+    ),
+  );
+  assert.equal(contexts[0]!.GroupSystemPrompt, "local rules");
+  assert.deepEqual(contexts[0]!.ChannelPromptContext, ["Filament service guidance: be brief"]);
+  await dispatchWorkItemTurn(params({}, runtime));
+  assert.equal(contexts[1]!.ChannelPromptContext, undefined);
+});
+
 test("inboundMessageFields: the last message is the turn's; earlier ones are history with ids", () => {
   const messages = [
     { event_id: "$a1", sender: "@alice:x", body: "ship it?", ts: 1 },

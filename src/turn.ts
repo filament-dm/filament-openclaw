@@ -43,8 +43,10 @@ export interface DispatchWorkItemParams {
   channelId: string;
   threadId: string | null;
   messages: WorkMessage[];
-  /** Filament's standing instructions for the agent, added to the turn's system prompt. */
+  /** The plugin's own fixed instructions, added to the turn's system prompt. */
   systemPrompt?: string;
+  /** The Filament server's guidance, given as channel context, never as system prompt. */
+  serverGuidance?: string;
   /** Attachments already saved for the turn (poll_work only). */
   media?: InboundMedia[];
   recipientAddress: string;
@@ -246,6 +248,8 @@ export async function dispatchWorkItemTurn(
       : {}),
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...(params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {}),
+    // Channel metadata that OpenClaw keeps out of the system prompt (2026.8.1 and newer).
+    ...(params.serverGuidance ? { ChannelPromptContext: [params.serverGuidance] } : {}),
     ...inboundMediaFields(params.media),
   });
 

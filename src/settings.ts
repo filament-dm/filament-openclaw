@@ -20,6 +20,23 @@ export interface McpSettings {
   tokenInput?: unknown;
   mcpUrl: string;
   pollWaitSeconds?: number;
+  /** Origins beyond `mcpUrl`'s that attachment downloads may use; set by an administrator. */
+  mediaOrigins: string[];
+}
+
+/** Each entry's origin (`https://host:port`); anything that is not an http(s) URL is dropped. */
+export function normalizeMediaOrigins(raw: unknown): string[] {
+  const origins = new Set<string>();
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    if (typeof entry !== "string") continue;
+    try {
+      const url = new URL(entry.trim());
+      if (url.protocol === "https:" || url.protocol === "http:") origins.add(url.origin);
+    } catch {
+      // Not a URL: ignored.
+    }
+  }
+  return [...origins];
 }
 
 function clampPollWaitSeconds(raw: unknown): number | undefined {
@@ -70,5 +87,6 @@ export function resolveMcpSettings(
     tokenInput,
     mcpUrl,
     pollWaitSeconds: clampPollWaitSeconds(cfg.pollWaitSeconds),
+    mediaOrigins: normalizeMediaOrigins(cfg.mediaOrigins),
   };
 }

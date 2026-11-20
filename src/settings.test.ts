@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { resolveMcpSettings } from "./settings.js";
+import { resolveAccountSettings, resolveMcpSettings } from "./settings.js";
 
 test("resolveMcpSettings: pollWaitSeconds is undefined when not configured", () => {
   const settings = resolveMcpSettings({}, {});
@@ -38,7 +38,12 @@ test("resolveMcpSettings: retired settings are ignored", () => {
     { transport: "fcm", firebase: { projectId: "p" }, connectToken: "fmcp_x" },
     { FILAMENT_TRANSPORT: "fcm", FILAMENT_FIREBASE_PROJECT_ID: "q" },
   );
-  assert.deepEqual(Object.keys(settings).sort(), ["mcpUrl", "pollWaitSeconds", "tokenInput"]);
+  assert.deepEqual(Object.keys(settings).sort(), [
+    "mcpUrl",
+    "mediaOrigins",
+    "pollWaitSeconds",
+    "tokenInput",
+  ]);
   assert.equal(settings.tokenInput, "fmcp_x");
 });
 
@@ -51,4 +56,33 @@ test("resolveMcpSettings: a bare server means its agents endpoint", () => {
     resolveMcpSettings({}, { FILAMENT_MCP_URL: "https://x/custom" }).mcpUrl,
     "https://x/custom",
   );
+});
+
+test("resolveMcpSettings: mediaOrigins keeps each entry's origin and drops what is not an http(s) URL", () => {
+  assert.deepEqual(resolveMcpSettings({}, {}).mediaOrigins, []);
+  assert.deepEqual(
+    resolveMcpSettings(
+      {
+        mediaOrigins: [
+          "https://media.example.test/path?x=1",
+          "http://localhost:8448",
+          "ftp://files.example.test",
+          "not a url",
+          42,
+          "https://media.example.test",
+        ],
+      },
+      {},
+    ).mediaOrigins,
+    ["https://media.example.test", "http://localhost:8448"],
+  );
+  const perAccount = resolveAccountSettings(
+    {
+      mediaOrigins: ["https://shared.example.test"],
+      accounts: { a: { connectToken: "fmcp_a", mediaOrigins: ["https://own.example.test"] } },
+    },
+    "a",
+    {},
+  );
+  assert.deepEqual(perAccount.mediaOrigins, ["https://own.example.test"]);
 });
