@@ -56,7 +56,7 @@ import {
   runUpdateChecks,
   startPluginUpdate,
   updatedBody,
-  updateFailureMessage
+  updateOutcomeBody
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 import { turnPeerKind, turnWasMentioned } from "./work-item.js";
@@ -181,18 +181,24 @@ function registerFilamentChannel(api, onConnectionChange = () => {
         const runUpdate = async () => {
           if (updateInFlight) return;
           updateInFlight = true;
-          markUpdateRequested(accountId, PLUGIN_VERSION);
-          const finished = startPluginUpdate();
-          void finished.then((result) => {
-            if (result.code === 0) return;
+          void startPluginUpdate({
+            installed: PLUGIN_VERSION,
+            beforeInstall: () => markUpdateRequested(accountId, PLUGIN_VERSION)
+          }).then((outcome) => {
+            if (outcome.kind === "started") {
+              accountLog(`filament-update: installed v${outcome.version} from ClawHub; reloading`);
+              return;
+            }
             updateInFlight = false;
             takeUpdateRequest(accountId);
-            const message = updateFailureMessage(result);
-            accountLog(`filament-update: ${message}`);
-            if (!abortSignal.aborted) {
-              sayToPrincipal(`Couldn't update the plugin: ${message}`).catch(() => {
-              });
+            if (outcome.kind === "failed" || outcome.kind === "manual") {
+              accountLog(
+                `filament-update: ${outcome.kind === "failed" ? outcome.detail : outcome.reason}`
+              );
             }
+            const body = updateOutcomeBody(outcome);
+            if (body && !abortSignal.aborted) sayToPrincipal(body).catch(() => {
+            });
           });
         };
         const sayToPrincipal = async (markdownBody) => {

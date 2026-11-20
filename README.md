@@ -158,13 +158,25 @@ removes them from the config when the gateway starts.
 
 Once a day the plugin asks ClawHub for the package's latest version and compares it with the
 installed one. ClawHub moves `latest` only after a release passes its security checks, so a
-version still being scanned is never offered. A newer one is announced once, in the principal's backchannel, with an
-**Update now** button. Tapping it (or sending `/filament update` there) runs
-`openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
-reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+version still being scanned is never offered. A newer one is announced once, in the principal's
+backchannel, with an **Update now** button. Tapping it (or sending `/filament update` there)
+reinstalls the plugin from ClawHub at that version, inside the gateway:
 
-The update is the whole plugin, dependencies included. If it reports a problem, run `install.sh`
-again with `FILAMENT_PLUGIN_UPDATE=1`: it replaces the plugin outright.
+```bash
+openclaw plugins install clawhub:@filament-dm/filament-openclaw@<version> --force --accept-capabilities
+```
+
+The gateway swaps the plugin in place, no restart, and the agent reports the new version when it
+is back. It keeps the plugin's config, so every agent stays signed in. A plugin installed from
+GitHub moves to ClawHub this way. A linked or local copy is left alone; update it yourself.
+
+It does not use `openclaw plugins update`: from OpenClaw 2026.11 that command refuses to run
+while the gateway is up. If the update fails, the agent says so and gives the command to run on
+the gateway host:
+
+```bash
+openclaw plugins install clawhub:@filament-dm/filament-openclaw --force --accept-capabilities
+```
 
 ### Releasing
 

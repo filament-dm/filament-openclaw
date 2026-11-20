@@ -7,12 +7,12 @@ import {
   runUpdateChecks,
   startPluginUpdate,
   UPDATE_CHECK_URL,
-  UPDATE_COMMAND,
+  INSTALL_COMMAND,
   UPDATE_NOW_LABEL,
   type UpdateCheckContext,
   type UpdateCheckState,
   updatedBody,
-  updateFailureMessage,
+  updateOutcomeBody,
   updateNoticeBody,
 } from "./update-check.js";
 import pkg from "../package.json" with { type: "json" };
@@ -63,7 +63,7 @@ test("checkForUpdate: a newer version is announced once, with the button and not
   assert.match(h.said[0]!, /v0\.2\.0/);
   assert.match(h.said[0]!, /v0\.1\.0/);
   assert.ok(h.said[0]!.includes(`[${UPDATE_NOW_LABEL}](filament:message-send)`));
-  assert.ok(!h.said[0]!.includes(UPDATE_COMMAND));
+  assert.ok(!h.said[0]!.includes(INSTALL_COMMAND));
   assert.deepEqual(h.state(), { lastCheckedAt: 1_000_000, notifiedVersion: "0.2.0" });
   // A day later, the same version is not announced again.
   h.ctx.now = () => 1_000_000 + DAY;
@@ -116,23 +116,137 @@ test("updatedBody: says the new version, or that it already was the latest", () 
   assert.match(updatedBody("0.2.0", "0.2.0"), /already on the latest version, v0\.2\.0/);
 });
 
-test("startPluginUpdate: starts the CLI update at once; the result is read later, never thrown", async () => {
+type Cli = { code: number; stdout: string; stderr: string };
+
+/** A fake `openclaw`: `plugins inspect` reports `source`; every call is recorded. */
+function fakeCli(
+  source: string | null,
+  install: Cli = { code: 0, stdout: "Installed", stderr: "" },
+) {
   const calls: string[][] = [];
-  let started = false;
-  const finished = startPluginUpdate(async (args) => {
-    started = true;
+  const run = async (args: string[]): Promise<Cli> => {
     calls.push(args);
-    return { code: 0, stdout: "Updated filament-openclaw: 0.1.0 -> 0.2.0", stderr: "" };
+    if (args[1] === "inspect") {
+      const body = source === null ? { plugin: {} } : { plugin: {}, install: { source } };
+      // OpenClaw may print log lines before the JSON.
+      return {
+        code: 0,
+        stdout: `[plugins] filament: registered\n${JSON.stringify(body)}`,
+        stderr: "",
+      };
+    }
+    return install;
+  };
+  return { run, calls };
+}
+
+const INSTALL_ARGS = [
+  "plugins",
+  "install",
+  "clawhub:@filament-dm/filament-openclaw@0.2.0",
+  "--force",
+  "--accept-capabilities",
+];
+
+test("startPluginUpdate: a ClawHub install behind the latest release reinstalls it from ClawHub", async () => {
+  const cli = fakeCli("clawhub");
+  let marked = false;
+  const outcome = await startPluginUpdate({
+    installed: "0.1.0",
+    run: cli.run,
+    latestVersion: async () => "0.2.0",
+    beforeInstall: () => {
+      marked = true;
+    },
   });
-  assert.equal(started, true);
-  assert.deepEqual(calls, [["plugins", "update", "filament-openclaw", "--accept-capabilities"]]);
-  assert.equal((await finished).code, 0);
-  const failed = await startPluginUpdate(async () => ({
-    code: 1,
-    stdout: "",
-    stderr: "not installed",
-  }));
-  assert.match(updateFailureMessage(failed), /failed \(exit 1\): not installed/);
+  assert.deepEqual(outcome, { kind: "started", version: "0.2.0" });
+  assert.equal(marked, true);
+  // Never `plugins update`: OpenClaw 2026.11 refuses it beside a running gateway.
+  assert.deepEqual(cli.calls, [
+    ["plugins", "inspect", "filament-openclaw", "--json"],
+    INSTALL_ARGS,
+  ]);
+});
+
+test("startPluginUpdate: a GitHub install moves to ClawHub, even on the same version", async () => {
+  for (const installed of ["0.1.0", "0.2.0"]) {
+    const cli = fakeCli("git");
+    const outcome = await startPluginUpdate({
+      installed,
+      run: cli.run,
+      latestVersion: async () => "0.2.0",
+    });
+    assert.equal(outcome.kind, "started");
+    assert.deepEqual(cli.calls[1], INSTALL_ARGS);
+  }
+});
+
+test("startPluginUpdate: a ClawHub install on the latest release installs nothing", async () => {
+  const cli = fakeCli("clawhub");
+  const outcome = await startPluginUpdate({
+    installed: "0.2.0",
+    run: cli.run,
+    latestVersion: async () => "0.2.0",
+    beforeInstall: () => assert.fail("no marker without an install"),
+  });
+  assert.deepEqual(outcome, { kind: "current", version: "0.2.0" });
+  assert.equal(cli.calls.length, 1);
+  assert.match(updateOutcomeBody(outcome)!, /already on the latest version, v0\.2\.0/);
+});
+
+test("startPluginUpdate: a linked or unrecorded copy is left to its owner", async () => {
+  for (const source of ["path", null]) {
+    const cli = fakeCli(source);
+    const outcome = await startPluginUpdate({
+      installed: "0.1.0",
+      run: cli.run,
+      latestVersion: async () => "0.2.0",
+    });
+    assert.equal(outcome.kind, "manual");
+    assert.equal(cli.calls.length, 1);
+    assert.match(updateOutcomeBody(outcome)!, /local copy/);
+  }
+});
+
+test("startPluginUpdate: a failed install is reported, never thrown, with the host command", async () => {
+  const cli = fakeCli("git", { code: 1, stdout: "", stderr: "registry unreachable" });
+  const outcome = await startPluginUpdate({
+    installed: "0.1.0",
+    run: cli.run,
+    latestVersion: async () => "0.2.0",
+  });
+  assert.equal(outcome.kind, "failed");
+  assert.match(outcome.kind === "failed" ? outcome.detail : "", /exit 1\): registry unreachable/);
+  const body = updateOutcomeBody(outcome)!;
+  assert.ok(body.includes(INSTALL_COMMAND));
+  assert.ok(!body.includes("registry unreachable"), "CLI details stay in the log");
+
+  const unreachable = await startPluginUpdate({
+    installed: "0.1.0",
+    run: fakeCli("clawhub").run,
+    latestVersion: async () => {
+      throw new Error("HTTP 503");
+    },
+  });
+  assert.deepEqual(unreachable, { kind: "failed", detail: "Error: HTTP 503" });
+});
+
+test("startPluginUpdate: a latest version that is not a release installs nothing", async () => {
+  const cli = fakeCli("clawhub");
+  const outcome = await startPluginUpdate({
+    installed: "0.1.0",
+    run: cli.run,
+    latestVersion: async () => "0.2.0 --force",
+  });
+  assert.equal(outcome.kind, "failed");
+  assert.equal(cli.calls.length, 1);
+});
+
+test("INSTALL_COMMAND: the published package, replacing any copy, keeping its config", () => {
+  assert.equal(
+    INSTALL_COMMAND,
+    `openclaw plugins install clawhub:${pkg.name} --force --accept-capabilities`,
+  );
 });
 
 test("runUpdateChecks: an abort during the check ends the loop without a sleep", async () => {
