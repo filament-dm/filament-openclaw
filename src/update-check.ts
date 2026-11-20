@@ -1,7 +1,12 @@
 /**
- * How a running gateway learns the plugin has a newer version on `main`, and how it takes it.
- * Once a day one account fetches the plugin manifest from GitHub and compares it with the
- * installed version. A newer one is announced once, in the principal's backchannel, with a button
+ * How a running gateway learns the plugin has a newer release, and how it takes it.
+ * Once a day one account asks ClawHub for the package's latest version and compares it with the
+ * installed one. ClawHub moves `latest` only once a release passes its security checks, so a
+ * version still being scanned, or merged to `main` but not released, is never announced.
+ *
+ * Taking it reinstalls the plugin at ClawHub's latest release when tapped, through the running gateway:
+ * `openclaw plugins update` refuses to run beside a live gateway from OpenClaw 2026.11, while
+ * `plugins install --force` is applied in place. A GitHub install moves to ClawHub on the way. A newer one is announced once, in the principal's backchannel, with a button
  * that runs `openclaw plugins update` through the CLI; the gateway hot-reloads the plugin and the
  * account comes back on the new version and says so.
  */
@@ -15,8 +20,9 @@ export type { UpdateCheckState };
 /** The notice's button: a suggested message sends its own text, so the text is what the gateway parses. */
 export const UPDATE_NOW_LABEL = "Update now";
 
+/** ClawHub's public package endpoint for `@filament-dm/filament-openclaw`; no sign-in needed. */
 export const UPDATE_CHECK_URL =
-  "https://raw.githubusercontent.com/filament-dm/filament-openclaw/main/openclaw.plugin.json";
+  "https://clawhub.ai/api/v1/packages/%40filament-dm%2Ffilament-openclaw";
 
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -37,7 +43,19 @@ export function isNewerVersion(candidate: string, installed: string): boolean {
   return false;
 }
 
-export const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
+/** The ClawHub package this plugin is released as. */
+export const CLAWHUB_PACKAGE = "@filament-dm/filament-openclaw";
+
+/**
+ * Installs the latest release over whatever copy the gateway runs, keeping the plugin's config.
+ * Also what an owner runs on the host when an update from chat fails.
+ */
+export const INSTALL_COMMAND = `openclaw plugins install clawhub:${CLAWHUB_PACKAGE} --force --accept-capabilities`;
+
+/** Install sources a published release may replace. A linked or local copy is its owner's. */
+const REPLACEABLE_SOURCES: ReadonlySet<string> = new Set(["clawhub", "git", "npm"]);
+
+const RELEASE_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
 export async function fetchLatestVersion(
   url: string,
@@ -45,11 +63,12 @@ export async function fetchLatestVersion(
 ): Promise<string> {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const manifest = (await res.json()) as { version?: unknown };
-  if (typeof manifest.version !== "string" || !manifest.version.trim()) {
-    throw new Error("the manifest has no version");
+  const body = (await res.json()) as { package?: { latestVersion?: unknown } };
+  const latest = body.package?.latestVersion;
+  if (typeof latest !== "string" || !latest.trim()) {
+    throw new Error("ClawHub returned no latest version");
   }
-  return manifest.version.trim();
+  return latest.trim();
 }
 
 export function updateNoticeBody(latest: string, installed: string): string {
@@ -133,16 +152,104 @@ export async function runUpdateChecks(
   }
 }
 
-/**
- * Starts `openclaw plugins update` from inside the gateway and returns its result as a promise
- * that the caller must not await from an account's call: the CLI waits for the gateway to apply
- * the reload, and the reload waits for the account to stop. Awaiting it there deadlocks until the
- * gateway's stop timeout kills the account with no replacement.
- */
-export function startPluginUpdate(run: RunCli = runOpenclawCli): Promise<CliResult> {
-  return run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
+export type PluginUpdateOutcome =
+  /** The install ran; the gateway reloads the plugin and the account that comes back reports it. */
+  | { kind: "started"; version: string }
+  | { kind: "current"; version: string }
+  /** Not a published install (a linked checkout, or no install record): left alone. */
+  | { kind: "manual"; reason: string }
+  | { kind: "failed"; detail: string };
+
+export interface PluginUpdateParams {
+  installed: string;
+  /** Called right before the install, the last moment the account can leave its marker. */
+  beforeInstall?: () => void;
+  run?: RunCli;
+  latestVersion?: () => Promise<string>;
 }
 
-export function updateFailureMessage(result: CliResult): string {
-  return `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`;
+function installSource(stdout: string): string | undefined {
+  const start = stdout.indexOf("{");
+  if (start < 0) return undefined;
+  const install = (JSON.parse(stdout.slice(start)) as { install?: { source?: unknown } }).install;
+  return typeof install?.source === "string" ? install.source : undefined;
+}
+
+function cliOutput(result: CliResult): string {
+  return (result.stderr || result.stdout).trim();
+}
+
+/**
+ * Takes the latest release from ClawHub and never throws. The caller must not await it from an
+ * account's own call: the install waits for the gateway to swap the plugin, and the swap waits
+ * for that account to stop.
+ */
+export async function startPluginUpdate(params: PluginUpdateParams): Promise<PluginUpdateOutcome> {
+  const run = params.run ?? runOpenclawCli;
+  try {
+    const inspection = await run(["plugins", "inspect", PLUGIN_ID, "--json"]);
+    if (inspection.code !== 0) {
+      return {
+        kind: "failed",
+        detail: `plugins inspect failed (exit ${inspection.code}): ${cliOutput(inspection)}`,
+      };
+    }
+    const source = installSource(inspection.stdout);
+    if (!source || !REPLACEABLE_SOURCES.has(source)) {
+      return {
+        kind: "manual",
+        reason: `the plugin is not a published install (source: ${source ?? "none"})`,
+      };
+    }
+    const latest = await (params.latestVersion ?? (() => fetchLatestVersion(UPDATE_CHECK_URL)))();
+    if (!RELEASE_VERSION.test(latest)) {
+      return { kind: "failed", detail: `ClawHub's latest version is not a release: ${latest}` };
+    }
+    // A ClawHub install on the latest release has nothing to take; any other source moves over.
+    if (source === "clawhub" && !isNewerVersion(latest, params.installed)) {
+      return { kind: "current", version: params.installed };
+    }
+    params.beforeInstall?.();
+    const result = await run([
+      "plugins",
+      "install",
+      `clawhub:${CLAWHUB_PACKAGE}@${latest}`,
+      "--force",
+      "--accept-capabilities",
+    ]);
+    if (result.code !== 0) {
+      return {
+        kind: "failed",
+        detail: `plugins install failed (exit ${result.code}): ${cliOutput(result)}`,
+      };
+    }
+    return { kind: "started", version: latest };
+  } catch (error) {
+    return { kind: "failed", detail: String(error) };
+  }
+}
+
+/** What the principal is told when the update did not start; the details stay in the log. */
+export function updateOutcomeBody(outcome: PluginUpdateOutcome): string | null {
+  switch (outcome.kind) {
+    case "started":
+      return null;
+    case "current":
+      return updatedBody(outcome.version, outcome.version);
+    case "manual":
+      return [
+        "This gateway runs the Filament plugin from a local copy, so I can't update it from here.",
+        "Update that copy, or switch to the published plugin by running this on the gateway host:",
+        "",
+        `\`${INSTALL_COMMAND}\``,
+      ].join("\n");
+    case "failed":
+      return [
+        "I couldn't update the Filament plugin from here. On the machine that runs this OpenClaw gateway, run:",
+        "",
+        `\`${INSTALL_COMMAND}\``,
+        "",
+        "Keep the gateway running: I stay signed in to Filament. If it says the replacement was not applied, restart the gateway once.",
+      ].join("\n");
+  }
 }

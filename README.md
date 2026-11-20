@@ -126,8 +126,8 @@ and connect each agent with `openclaw filament login`.
 ## What the plugin can do on your gateway
 
 - **Network:** it calls Filament's agents API (`https://api.filament.dm/mcp/agents` by default;
-  `mcpUrl` overrides it) and fetches the attachment links that API hands out. Once a day it reads
-  `openclaw.plugin.json` from this repository on GitHub to check for updates. `openclaw filament
+  `mcpUrl` overrides it) and fetches the attachment links that API hands out. Once a day it asks ClawHub
+  (`https://clawhub.ai/api/v1/packages/…`) for the package's latest version to check for updates. `openclaw filament
   login --browser` listens on a local port for the sign-in callback while it runs.
 - **Processes:** it runs the `openclaw` CLI to read and save its configuration (`openclaw config
   get` / `openclaw config patch`) and, when the owner taps **Update now**, to run
@@ -156,26 +156,44 @@ removes them from the config when the gateway starts.
 
 ## Updates
 
-Once a day the plugin reads `openclaw.plugin.json` from this repo's `main` and compares it with
-the installed version. A newer one is announced once, in the principal's backchannel, with an
-**Update now** button. Tapping it (or sending `/filament update` there) runs
-`openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
-reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+Once a day the plugin asks ClawHub for the package's latest version and compares it with the
+installed one. ClawHub moves `latest` only after a release passes its security checks, so a
+version still being scanned is never offered. A newer one is announced once, in the principal's
+backchannel, with an **Update now** button. Tapping it (or sending `/filament update` there)
+reinstalls the plugin from ClawHub, inside the gateway, at the latest release ClawHub has when
+you tap (normally the one announced):
 
-The update is the whole plugin, dependencies included. If it reports a problem, run `install.sh`
-again with `FILAMENT_PLUGIN_UPDATE=1`: it replaces the plugin outright.
+```bash
+openclaw plugins install clawhub:@filament-dm/filament-openclaw@<version> --force --accept-capabilities
+```
+
+The gateway swaps the plugin in place, no restart, and the agent reports the new version when it
+is back. It keeps the plugin's config, so every agent stays signed in. A plugin installed from
+GitHub moves to ClawHub this way. A linked or local copy is left alone; update it yourself.
+
+It does not use `openclaw plugins update`: from OpenClaw 2026.11 that command refuses to run
+while the gateway is up. If the update fails, the agent says so and gives the command to run on
+the gateway host:
+
+```bash
+openclaw plugins install clawhub:@filament-dm/filament-openclaw --force --accept-capabilities
+```
 
 ### Releasing
 
-`npm version <patch|minor|major>` is the release: its `version` script copies the number
-into `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal), rebuilds `dist/`,
-and npm commits `Release vX.Y.Z` and tags it. The **Bump version** workflow (Actions → Bump
-version → Run workflow → pick the level) does exactly that on `main` and pushes. A merge to `main` is already what
-installs from GitHub get; the bump is what tells running ones about it. A ClawHub install gets a
-version only once it is published to ClawHub: after the bump, run the **Publish to ClawHub**
-workflow (Actions → Publish to ClawHub → Run workflow) from `main`. It is a dry run unless you
-untick it; a real publish waits until ClawHub's security checks make the release public. It
-needs the `CLAWHUB_TOKEN` repository secret.
+A merge to `main` is not a release. The release is the **Bump version** workflow (Actions → Bump
+version → Run workflow → pick the level), and the bump publishes:
+
+1. It runs `npm version <level>` on `main`. The `version` script copies the number into
+   `openclaw.plugin.json` and `src/version.ts` (a test keeps the three equal) and rebuilds
+   `dist/`; npm commits `Release vX.Y.Z` and tags it, and the workflow pushes both.
+2. It then builds that tag and publishes it to ClawHub, waiting until ClawHub's security checks
+   make the release public (up to 30 minutes). That is when new installs get it and running
+   gateways are offered it.
+
+Publishing needs the `CLAWHUB_TOKEN` repository secret. **Publish to ClawHub** can also run by
+hand (Actions → Publish to ClawHub), a dry run unless you untick it, to preview a release or to
+publish one whose automatic publish failed.
 
 ## Troubleshooting
 
