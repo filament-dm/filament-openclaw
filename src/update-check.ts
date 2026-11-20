@@ -4,7 +4,7 @@
  * installed one. ClawHub moves `latest` only once a release passes its security checks, so a
  * version still being scanned, or merged to `main` but not released, is never announced.
  *
- * Taking it reinstalls the plugin from ClawHub at that version, through the running gateway:
+ * Taking it reinstalls the plugin at ClawHub's latest release when tapped, through the running gateway:
  * `openclaw plugins update` refuses to run beside a live gateway from OpenClaw 2026.11, while
  * `plugins install --force` is applied in place. A GitHub install moves to ClawHub on the way. A newer one is announced once, in the principal's backchannel, with a button
  * that runs `openclaw plugins update` through the CLI; the gateway hot-reloads the plugin and the

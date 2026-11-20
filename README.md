@@ -160,7 +160,8 @@ Once a day the plugin asks ClawHub for the package's latest version and compares
 installed one. ClawHub moves `latest` only after a release passes its security checks, so a
 version still being scanned is never offered. A newer one is announced once, in the principal's
 backchannel, with an **Update now** button. Tapping it (or sending `/filament update` there)
-reinstalls the plugin from ClawHub at that version, inside the gateway:
+reinstalls the plugin from ClawHub, inside the gateway, at the latest release ClawHub has when
+you tap (normally the one announced):
 
 ```bash
 openclaw plugins install clawhub:@filament-dm/filament-openclaw@<version> --force --accept-capabilities
