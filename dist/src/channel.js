@@ -17,6 +17,7 @@ import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { removeRetiredSettingsOnce } from "./retired-settings.js";
 import { ensureGroupSilenceAllowedOnce } from "./silent-reply-policy.js";
+import { ensurePrincipalOwnerQueued } from "./owner-policy.js";
 import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
@@ -397,9 +398,14 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           ).catch((error) => {
             accountLog(`filament-update: checks stopped: ${String(error)}`);
           });
-          const configWritten = retiredCleanup.then(
-            async (retired2) => await ensureGroupSilenceAllowedOnce(log) === "set" || retired2 === "removed"
-          );
+          const configWritten = retiredCleanup.then(async (retired2) => {
+            const silence = await ensureGroupSilenceAllowedOnce(log);
+            const owner = await ensurePrincipalOwnerQueued(
+              connection.identity.principal,
+              accountLog
+            );
+            return silence === "set" || retired2 === "removed" || owner === "set";
+          });
           setFilamentClient(connection.client, accountId);
           const { client, identity } = connection;
           void lookAroundOnce({

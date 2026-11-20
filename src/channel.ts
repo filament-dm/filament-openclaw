@@ -25,6 +25,7 @@ import { otherCommandBody, parseBackchannelCommand } from "./commands.js";
 import { writeGatewayConfig } from "./config-write.js";
 import { removeRetiredSettingsOnce } from "./retired-settings.js";
 import { ensureGroupSilenceAllowedOnce } from "./silent-reply-policy.js";
+import { ensurePrincipalOwnerQueued } from "./owner-policy.js";
 import { BearerRejectedError, type ConnectHandle, retryConnect, runConnect } from "./connect.js";
 import { type InboundMedia, type OutboundAttachment, uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
@@ -502,10 +503,15 @@ export function registerFilamentChannel(
           // same turn, queued behind it, and its open request held the reload for the gateway's
           // 300 s limit before the gateway even polled for the owner's approval. Here the reload
           // restarts this account once, after the hello.
-          const configWritten = retiredCleanup.then(
-            async (retired) =>
-              (await ensureGroupSilenceAllowedOnce(log)) === "set" || retired === "removed",
-          );
+          // Both config writes reload this account; the look-around waits for that reload (#28).
+          const configWritten = retiredCleanup.then(async (retired) => {
+            const silence = await ensureGroupSilenceAllowedOnce(log);
+            const owner = await ensurePrincipalOwnerQueued(
+              connection.identity.principal,
+              accountLog,
+            );
+            return silence === "set" || retired === "removed" || owner === "set";
+          });
           setFilamentClient(connection.client, accountId);
           // Not awaited: the agent looks around while the transport listens.
           const { client, identity } = connection;
