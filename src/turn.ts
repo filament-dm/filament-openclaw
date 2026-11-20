@@ -99,6 +99,21 @@ export function hostReplyKind(payload: unknown): "error" | "notice" | null {
 }
 
 /**
+ * The visible-reply mode a turn asks OpenClaw for. This plugin posts the turn's final text itself,
+ * so a direct turn asks for "automatic": otherwise a harness default (Codex's is "message_tool")
+ * keeps the answer private and the turn ends with nothing to post. An owner's own
+ * `messages.visibleReplies` still decides. Group turns never take a harness default.
+ */
+export function requestedReplyMode(
+  cfg: unknown,
+  peerKind: "direct" | "group",
+): "automatic" | undefined {
+  if (peerKind !== "direct") return undefined;
+  const messages = (cfg as { messages?: { visibleReplies?: unknown } } | null)?.messages;
+  return messages?.visibleReplies === undefined ? "automatic" : undefined;
+}
+
+/**
  * Attachments for the inbound context, in both shapes: `media` is what current gateways read, and
  * the legacy `Media*` fields are all a gateway before 2026.9 reads (the plugin supports >=2026.8.1).
  */
@@ -260,6 +275,7 @@ export async function dispatchWorkItemTurn(
     accountId,
   });
 
+  const replyMode = requestedReplyMode(params.cfg, params.peerKind);
   const finals: string[] = [];
   const mediaUrls: string[] = [];
   let sawSkip = false;
@@ -331,6 +347,7 @@ export async function dispatchWorkItemTurn(
             onModelSelected(ctx);
           },
           onAgentRunStart: () => params.onProgress?.("run:start"),
+          ...(replyMode ? { sourceReplyDeliveryMode: replyMode } : {}),
           ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
         },
       }),

@@ -19,6 +19,11 @@ function hostReplyKind(payload) {
   }
   return null;
 }
+function requestedReplyMode(cfg, peerKind) {
+  if (peerKind !== "direct") return void 0;
+  const messages = cfg?.messages;
+  return messages?.visibleReplies === void 0 ? "automatic" : void 0;
+}
 function inboundMediaFields(media) {
   if (!media?.length) return {};
   const facts = toInboundMediaFacts(media);
@@ -129,6 +134,7 @@ async function dispatchWorkItemTurn(params) {
     channel: params.channel,
     accountId
   });
+  const replyMode = requestedReplyMode(params.cfg, params.peerKind);
   const finals = [];
   const mediaUrls = [];
   let sawSkip = false;
@@ -192,6 +198,7 @@ async function dispatchWorkItemTurn(params) {
           onModelSelected(ctx);
         },
         onAgentRunStart: () => params.onProgress?.("run:start"),
+        ...replyMode ? { sourceReplyDeliveryMode: replyMode } : {},
         ...params.abortSignal ? { abortSignal: params.abortSignal } : {}
       }
     })
@@ -211,5 +218,6 @@ export {
   dispatchWorkItemTurn,
   hostReplyKind,
   inboundMessageFields,
+  requestedReplyMode,
   senderLabel
 };
