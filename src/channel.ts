@@ -56,6 +56,7 @@ import {
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
 import {
+  loadUpdateRequest,
   loadUpdateState,
   markUpdateRequested,
   saveUpdateState,
@@ -67,10 +68,11 @@ import { runPollTransport } from "./transports/poll/index.js";
 import type { TurnOptions, TurnResult } from "./transports/types.js";
 import { dispatchWorkItemTurn } from "./turn.js";
 import {
+  isNewerVersion,
   runUpdateChecks,
   startPluginUpdate,
   updatedBody,
-  updateFailureMessage,
+  UPDATE_FAILURE_BODY,
 } from "./update-check.js";
 import { PLUGIN_VERSION } from "./version.js";
 import { turnPeerKind, turnWasMentioned, type WorkItem } from "./work-item.js";
@@ -106,6 +108,7 @@ export function registerFilamentChannel(
   api: FilamentChannelApi,
   onConnectionChange: (connection: ConnectHandle | null) => void = () => {},
 ): void {
+  let updateInFlight = false;
   const log = (message: string) => {
     if (api.logger?.info) api.logger.info(message);
     else console.log(message);
@@ -240,25 +243,29 @@ export function registerFilamentChannel(
           return;
         }
 
-        // Started, not awaited: the update reloads the plugin, and the reload needs this account
-        // to stop. The marker outlives the account; the one that comes back reads it and says
-        // what happened. Only a failure, which leaves this account alive, is reported from here.
-        let updateInFlight = false;
+        // The gateway must be able to stop this account while the CLI applies the update.
         const runUpdate = async (): Promise<void> => {
           if (updateInFlight) return;
           updateInFlight = true;
-          markUpdateRequested(accountId, PLUGIN_VERSION);
-          const finished = startPluginUpdate();
-          void finished.then((result) => {
-            if (result.code === 0) return;
-            updateInFlight = false;
-            takeUpdateRequest(accountId);
-            const message = updateFailureMessage(result);
-            accountLog(`filament-update: ${message}`);
-            if (!abortSignal.aborted) {
-              sayToPrincipal(`Couldn't update the plugin: ${message}`).catch(() => {});
+          let marked = false;
+          try {
+            const outcome = await startPluginUpdate(PLUGIN_VERSION, () => {
+              abortSignal.throwIfAborted();
+              markUpdateRequested(accountId, PLUGIN_VERSION);
+              marked = true;
+            });
+            if (outcome === "current" && !abortSignal.aborted) {
+              await sayToPrincipal(updatedBody(PLUGIN_VERSION, PLUGIN_VERSION));
             }
-          });
+          } catch (error) {
+            accountLog(`filament-update: ${String(error)}`);
+            if (!abortSignal.aborted) {
+              if (marked) takeUpdateRequest(accountId);
+              await sayToPrincipal(UPDATE_FAILURE_BODY);
+            }
+          } finally {
+            updateInFlight = false;
+          }
         };
         /** Resolves true only when the message landed. */
         const sayToPrincipal = async (markdownBody: string): Promise<boolean> => {
@@ -290,7 +297,9 @@ export function registerFilamentChannel(
             );
           if (command.kind === "update") {
             accountLog("filament-update: update requested by the principal");
-            await runUpdate();
+            void runUpdate().catch((error) =>
+              accountLog(`filament-update: could not report the update: ${String(error)}`),
+            );
           } else {
             await sayToPrincipal(otherCommandBody(command.verb));
           }
@@ -458,14 +467,15 @@ export function registerFilamentChannel(
             });
             if (hello !== "failed" && hello !== "skipped") markHelloSent(accountId, mxid);
           }
-          const updateRequest = takeUpdateRequest(accountId);
-          if (updateRequest) {
+          const updateRequest = loadUpdateRequest(accountId);
+          if (updateRequest && isNewerVersion(PLUGIN_VERSION, updateRequest.fromVersion)) {
             accountLog(
               `filament-update: back on v${PLUGIN_VERSION} (was v${updateRequest.fromVersion})`,
             );
-            if (!(await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION)))) {
+            if (await sayToPrincipal(updatedBody(updateRequest.fromVersion, PLUGIN_VERSION))) {
+              takeUpdateRequest(accountId);
+            } else {
               accountLog("filament-update: could not report the update; will retry on connect");
-              markUpdateRequested(accountId, updateRequest.fromVersion);
             }
           }
           void runUpdateChecks(

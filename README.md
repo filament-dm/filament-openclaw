@@ -131,7 +131,7 @@ and connect each agent with `openclaw filament login`.
   login --browser` listens on a local port for the sign-in callback while it runs.
 - **Processes:** it runs the `openclaw` CLI to read and save its configuration (`openclaw config
   get` / `openclaw config patch`) and, when the owner taps **Update now**, to run
-  `openclaw plugins update`. An interactive `login --browser` asks your OS to open the sign-in
+  `openclaw plugins inspect` and `openclaw plugins install`. An interactive `login --browser` asks your OS to open the sign-in
   page.
 - **Data:** it keeps each agent's sign-in token in your OpenClaw config (a SecretRef is accepted)
   and small state files under the OpenClaw state directory.
@@ -158,12 +158,17 @@ removes them from the config when the gateway starts.
 
 Once a day the plugin reads `openclaw.plugin.json` from this repo's `main` and compares it with
 the installed version. A newer one is announced once, in the principal's backchannel, with an
-**Update now** button. Tapping it (or sending `/filament update` there) runs
-`openclaw plugins update filament-openclaw --accept-capabilities` inside the gateway; the gateway
-reloads the plugin in place, no restart, and the agent reports the new version when it is back.
+**Update now** button. Tap it or send `/filament update` to replace the plugin through the
+running gateway. GitHub installs from `main` or a release tag use the latest code from
+`main`. ClawHub installs use the announced version once it is published on ClawHub.
+The agent reports the new version after it reconnects.
 
-The update is the whole plugin, dependencies included. If it reports a problem, run `install.sh`
-again with `FILAMENT_PLUGIN_UPDATE=1`: it replaces the plugin outright.
+For custom sources, or to recover when the in-chat update fails, inspect the installed
+version and source with `openclaw plugins inspect filament-openclaw` on the gateway host.
+Stop the gateway through its service owner before running
+`openclaw plugins update filament-openclaw --accept-capabilities` with the same OpenClaw
+profile, then start it again. For a local checkout, update and rebuild the checkout before
+starting the gateway.
 
 ### Releasing
 

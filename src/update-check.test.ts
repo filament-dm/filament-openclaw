@@ -6,12 +6,11 @@ import {
   isNewerVersion,
   runUpdateChecks,
   startPluginUpdate,
-  UPDATE_COMMAND,
+  UPDATE_FAILURE_BODY,
   UPDATE_NOW_LABEL,
   type UpdateCheckContext,
   type UpdateCheckState,
   updatedBody,
-  updateFailureMessage,
   updateNoticeBody,
 } from "./update-check.js";
 
@@ -53,7 +52,6 @@ test("checkForUpdate: a newer version is announced once, with the button and not
   assert.match(h.said[0]!, /v0\.2\.0/);
   assert.match(h.said[0]!, /v0\.1\.0/);
   assert.ok(h.said[0]!.includes(`[${UPDATE_NOW_LABEL}](filament:message-send)`));
-  assert.ok(!h.said[0]!.includes(UPDATE_COMMAND));
   assert.deepEqual(h.state(), { lastCheckedAt: 1_000_000, notifiedVersion: "0.2.0" });
   // A day later, the same version is not announced again.
   h.ctx.now = () => 1_000_000 + DAY;
@@ -106,23 +104,112 @@ test("updatedBody: says the new version, or that it already was the latest", () 
   assert.match(updatedBody("0.2.0", "0.2.0"), /already on the latest version, v0\.2\.0/);
 });
 
-test("startPluginUpdate: starts the CLI update at once; the result is read later, never thrown", async () => {
-  const calls: string[][] = [];
-  let started = false;
-  const finished = startPluginUpdate(async (args) => {
-    started = true;
-    calls.push(args);
-    return { code: 0, stdout: "Updated filament-openclaw: 0.1.0 -> 0.2.0", stderr: "" };
-  });
-  assert.equal(started, true);
-  assert.deepEqual(calls, [["plugins", "update", "filament-openclaw", "--accept-capabilities"]]);
-  assert.equal((await finished).code, 0);
-  const failed = await startPluginUpdate(async () => ({
-    code: 1,
-    stdout: "",
-    stderr: "not installed",
-  }));
-  assert.match(updateFailureMessage(failed), /failed \(exit 1\): not installed/);
+const officialGit = {
+  source: "git",
+  gitUrl: "https://github.com/filament-dm/filament-openclaw.git",
+  gitRef: "v0.1.6",
+};
+
+function inspectOutput(install: unknown) {
+  return { code: 0, stdout: JSON.stringify({ install }), stderr: "" };
+}
+
+test("startPluginUpdate: records the request before asking the gateway to replace the Git plugin", async () => {
+  const steps: (string | string[])[] = [];
+  const result = await startPluginUpdate(
+    "0.1.6",
+    () => steps.push("marked"),
+    async (args) => {
+      steps.push(args);
+      return args[1] === "inspect"
+        ? inspectOutput(officialGit)
+        : { code: 0, stdout: "", stderr: "" };
+    },
+    async () => "0.1.7",
+  );
+  assert.equal(result, "installed");
+  assert.deepEqual(steps, [
+    ["plugins", "inspect", "filament-openclaw", "--json"],
+    "marked",
+    [
+      "plugins",
+      "install",
+      "git:https://github.com/filament-dm/filament-openclaw.git@main",
+      "--force",
+      "--no-enable",
+      "--accept-capabilities",
+    ],
+  ]);
+});
+
+test("startPluginUpdate: installs the announced version from ClawHub for a ClawHub install", async () => {
+  const result = await startPluginUpdate(
+    "0.1.6",
+    () => {},
+    async (args) => {
+      if (args[1] === "inspect") {
+        return inspectOutput({
+          source: "clawhub",
+          clawhubPackage: "@filament-dm/filament-openclaw",
+        });
+      }
+      assert.deepEqual(args, [
+        "plugins",
+        "install",
+        "clawhub:@filament-dm/filament-openclaw@0.1.7",
+        "--force",
+        "--no-enable",
+        "--accept-capabilities",
+      ]);
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    async () => "0.1.7",
+  );
+  assert.equal(result, "installed");
+});
+
+test("startPluginUpdate: a stale button cannot reinstall or downgrade a current version", async () => {
+  const result = await startPluginUpdate(
+    "0.1.7",
+    () => assert.fail("should not mark an update"),
+    async () => assert.fail("should not run the CLI"),
+    async () => "0.1.6",
+  );
+  assert.equal(result, "current");
+});
+
+test("startPluginUpdate: an unrecognized source needs manual recovery", async () => {
+  await assert.rejects(
+    startPluginUpdate(
+      "0.1.6",
+      () => assert.fail("should not mark an update"),
+      async (args) => {
+        assert.equal(args[1], "inspect");
+        return inspectOutput({ ...officialGit, gitRef: "development" });
+      },
+      async () => "0.1.7",
+    ),
+    /requires a manual update/,
+  );
+});
+
+test("startPluginUpdate: logs can carry CLI detail while chat gives recovery steps", async () => {
+  const privateError = "state root /private/home/.openclaw";
+  await assert.rejects(
+    startPluginUpdate(
+      "0.1.6",
+      () => {},
+      async (args) =>
+        args[1] === "inspect"
+          ? inspectOutput(officialGit)
+          : { code: 1, stdout: "", stderr: privateError },
+      async () => "0.1.7",
+    ),
+    { message: `Plugin install failed (exit 1): ${privateError}` },
+  );
+  assert.ok(UPDATE_FAILURE_BODY.includes("Stop the gateway"));
+  assert.ok(UPDATE_FAILURE_BODY.includes("Start the gateway again"));
+  assert.ok(!UPDATE_FAILURE_BODY.includes(privateError));
 });
 
 test("runUpdateChecks: an abort during the check ends the loop without a sleep", async () => {

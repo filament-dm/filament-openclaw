@@ -11,10 +11,14 @@ function saveUpdateState(state) {
 function markUpdateRequested(accountId, fromVersion) {
   requests.set(accountId, { fromVersion });
 }
+function loadUpdateRequest(accountId) {
+  return requests.get(accountId);
+}
 function takeUpdateRequest(accountId) {
   return requests.take(accountId);
 }
 export {
+  loadUpdateRequest,
   loadUpdateState,
   markUpdateRequested,
   saveUpdateState,

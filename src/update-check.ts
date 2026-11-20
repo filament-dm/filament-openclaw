@@ -2,10 +2,9 @@
  * How a running gateway learns the plugin has a newer version on `main`, and how it takes it.
  * Once a day one account fetches the plugin manifest from GitHub and compares it with the
  * installed version. A newer one is announced once, in the principal's backchannel, with a button
- * that runs `openclaw plugins update` through the CLI; the gateway hot-reloads the plugin and the
- * account comes back on the new version and says so.
+ * that replaces the plugin through the running gateway. The account reports the version it loads.
  */
-import { PLUGIN_ID } from "./accounts.js";
+import { asRecord, PLUGIN_ID } from "./accounts.js";
 import { type CliResult, type RunCli, runOpenclawCli } from "./config-write.js";
 import type { UpdateCheckState } from "./state/updates.js";
 import { PLUGIN_VERSION } from "./version.js";
@@ -37,7 +36,17 @@ export function isNewerVersion(candidate: string, installed: string): boolean {
   return false;
 }
 
-export const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
+const GIT_REPOSITORY = "https://github.com/filament-dm/filament-openclaw.git";
+const GIT_REPOSITORY_SSH = "git@github.com:filament-dm/filament-openclaw.git";
+const CLAWHUB_PACKAGE = "@filament-dm/filament-openclaw";
+
+export const UPDATE_FAILURE_BODY = [
+  "I couldn’t update the Filament plugin. Follow these steps on the OpenClaw host.",
+  "",
+  "1. Run `openclaw plugins inspect filament-openclaw` to check the installed version and source.",
+  "2. Stop the gateway through the service or terminal that started it, then run `openclaw plugins update filament-openclaw --accept-capabilities` using the same OpenClaw profile. If you installed from a local checkout, update and rebuild that checkout instead.",
+  "3. Start the gateway again. If the update failed, use the instructions printed in the terminal.",
+].join("\n");
 
 export async function fetchLatestVersion(
   url: string,
@@ -133,16 +142,61 @@ export async function runUpdateChecks(
   }
 }
 
-/**
- * Starts `openclaw plugins update` from inside the gateway and returns its result as a promise
- * that the caller must not await from an account's call: the CLI waits for the gateway to apply
- * the reload, and the reload waits for the account to stop. Awaiting it there deadlocks until the
- * gateway's stop timeout kills the account with no replacement.
- */
-export function startPluginUpdate(run: RunCli = runOpenclawCli): Promise<CliResult> {
-  return run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
+function updateInstallSpec(inspection: unknown, latest: string): string {
+  const install = asRecord(asRecord(inspection).install);
+  if (
+    install.source === "git" &&
+    (install.gitUrl === GIT_REPOSITORY || install.gitUrl === GIT_REPOSITORY_SSH) &&
+    (!install.gitRef ||
+      install.gitRef === "main" ||
+      /^v[0-9]+\.[0-9]+\.[0-9]+$/.test(String(install.gitRef)))
+  ) {
+    return `git:${install.gitUrl}@main`;
+  }
+  if (install.source === "clawhub" && install.clawhubPackage === CLAWHUB_PACKAGE) {
+    return `clawhub:${CLAWHUB_PACKAGE}@${latest}`;
+  }
+  throw new Error("This install source requires a manual update");
 }
 
-export function updateFailureMessage(result: CliResult): string {
-  return `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`;
+function requireCliSuccess(operation: string, result: CliResult): void {
+  if (result.code !== 0) {
+    throw new Error(
+      `${operation} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+}
+
+/**
+ * Installs a replacement through the live gateway. The caller starts this in the background:
+ * the CLI waits for the replacement, which in turn waits for the caller's account to stop.
+ */
+export async function startPluginUpdate(
+  installed: string,
+  beforeInstall: () => void,
+  run: RunCli = runOpenclawCli,
+  latestVersion = () => fetchLatestVersion(UPDATE_CHECK_URL),
+): Promise<"current" | "installed"> {
+  const latest = await latestVersion();
+  if (!/^([0-9]+\.){2}[0-9]+$/.test(latest)) {
+    throw new Error("The update manifest has an invalid release version");
+  }
+  if (!isNewerVersion(latest, installed)) return "current";
+
+  const inspection = await run(["plugins", "inspect", PLUGIN_ID, "--json"]);
+  requireCliSuccess("Plugin inspection", inspection);
+  const spec = updateInstallSpec(JSON.parse(inspection.stdout), latest);
+  beforeInstall();
+  // The published Filament sources are fixed above. Preserve existing activation settings and
+  // let OpenClaw enforce its installation policy and apply the new runtime.
+  const result = await run([
+    "plugins",
+    "install",
+    spec,
+    "--force",
+    "--no-enable",
+    "--accept-capabilities",
+  ]);
+  requireCliSuccess("Plugin install", result);
+  return "installed";
 }

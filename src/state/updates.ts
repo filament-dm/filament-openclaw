@@ -27,6 +27,10 @@ export function markUpdateRequested(accountId: string, fromVersion: string): voi
   requests.set(accountId, { fromVersion });
 }
 
+export function loadUpdateRequest(accountId: string): UpdateRequest | undefined {
+  return requests.get(accountId);
+}
+
 export function takeUpdateRequest(accountId: string): UpdateRequest | undefined {
   return requests.take(accountId);
 }

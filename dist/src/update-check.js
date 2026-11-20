@@ -1,4 +1,4 @@
-import { PLUGIN_ID } from "./accounts.js";
+import { asRecord, PLUGIN_ID } from "./accounts.js";
 import { runOpenclawCli } from "./config-write.js";
 import { PLUGIN_VERSION } from "./version.js";
 const UPDATE_NOW_LABEL = "Update now";
@@ -19,7 +19,16 @@ function isNewerVersion(candidate, installed) {
   }
   return false;
 }
-const UPDATE_COMMAND = `openclaw plugins update ${PLUGIN_ID} --accept-capabilities`;
+const GIT_REPOSITORY = "https://github.com/filament-dm/filament-openclaw.git";
+const GIT_REPOSITORY_SSH = "git@github.com:filament-dm/filament-openclaw.git";
+const CLAWHUB_PACKAGE = "@filament-dm/filament-openclaw";
+const UPDATE_FAILURE_BODY = [
+  "I couldn\u2019t update the Filament plugin. Follow these steps on the OpenClaw host.",
+  "",
+  "1. Run `openclaw plugins inspect filament-openclaw` to check the installed version and source.",
+  "2. Stop the gateway through the service or terminal that started it, then run `openclaw plugins update filament-openclaw --accept-capabilities` using the same OpenClaw profile. If you installed from a local checkout, update and rebuild that checkout instead.",
+  "3. Start the gateway again. If the update failed, use the instructions printed in the terminal."
+].join("\n");
 async function fetchLatestVersion(url, fetchImpl = fetch) {
   const res = await fetchImpl(url, { headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -85,23 +94,54 @@ async function runUpdateChecks(ctx, abortSignal, tickMs = 60 * 60 * 1e3) {
     });
   }
 }
-function startPluginUpdate(run = runOpenclawCli) {
-  return run(["plugins", "update", PLUGIN_ID, "--accept-capabilities"]);
+function updateInstallSpec(inspection, latest) {
+  const install = asRecord(asRecord(inspection).install);
+  if (install.source === "git" && (install.gitUrl === GIT_REPOSITORY || install.gitUrl === GIT_REPOSITORY_SSH) && (!install.gitRef || install.gitRef === "main" || /^v[0-9]+\.[0-9]+\.[0-9]+$/.test(String(install.gitRef)))) {
+    return `git:${install.gitUrl}@main`;
+  }
+  if (install.source === "clawhub" && install.clawhubPackage === CLAWHUB_PACKAGE) {
+    return `clawhub:${CLAWHUB_PACKAGE}@${latest}`;
+  }
+  throw new Error("This install source requires a manual update");
 }
-function updateFailureMessage(result) {
-  return `${UPDATE_COMMAND} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`;
+function requireCliSuccess(operation, result) {
+  if (result.code !== 0) {
+    throw new Error(
+      `${operation} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim()}`
+    );
+  }
+}
+async function startPluginUpdate(installed, beforeInstall, run = runOpenclawCli, latestVersion = () => fetchLatestVersion(UPDATE_CHECK_URL)) {
+  const latest = await latestVersion();
+  if (!/^([0-9]+\.){2}[0-9]+$/.test(latest)) {
+    throw new Error("The update manifest has an invalid release version");
+  }
+  if (!isNewerVersion(latest, installed)) return "current";
+  const inspection = await run(["plugins", "inspect", PLUGIN_ID, "--json"]);
+  requireCliSuccess("Plugin inspection", inspection);
+  const spec = updateInstallSpec(JSON.parse(inspection.stdout), latest);
+  beforeInstall();
+  const result = await run([
+    "plugins",
+    "install",
+    spec,
+    "--force",
+    "--no-enable",
+    "--accept-capabilities"
+  ]);
+  requireCliSuccess("Plugin install", result);
+  return "installed";
 }
 export {
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_CHECK_URL,
-  UPDATE_COMMAND,
+  UPDATE_FAILURE_BODY,
   UPDATE_NOW_LABEL,
   checkForUpdate,
   fetchLatestVersion,
   isNewerVersion,
   runUpdateChecks,
   startPluginUpdate,
-  updateFailureMessage,
   updateNoticeBody,
   updatedBody
 };
