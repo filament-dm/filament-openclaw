@@ -134,6 +134,7 @@ async function run(
         sawError: false,
         repliedTo: new Set(),
         reacted: false,
+        posted: [],
         ...opts.turn,
       };
     },

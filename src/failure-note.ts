@@ -40,6 +40,34 @@ export function answeredWithTools(
   return item.is_backchannel === true && repliedTo.has(REPLIED_BACKCHANNEL);
 }
 
+function words(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/**
+ * Whether a turn's final text repeats what the agent already posted in that room with a tool:
+ * most of its words appear in one post. Agents sometimes post their answer with post_message and
+ * then also end with it as the final text; a short "on it" note before a real answer does not
+ * match, so that answer is still published.
+ */
+export function finalRepeatsPost(
+  item: Pick<WorkItem, "is_backchannel" | "channel_id">,
+  result: Pick<TurnResult, "repliedTo" | "reacted" | "posted">,
+  finalText: string,
+): boolean {
+  if (!answeredWithTools(item, result)) return false;
+  const finalWords = words(finalText);
+  if (finalWords.length === 0) return false;
+  return result.posted.some((post) => {
+    const postWords = new Set(words(post));
+    const shared = finalWords.filter((word) => postWords.has(word)).length;
+    return shared / finalWords.length >= REPEAT_SHARE;
+  });
+}
+
+// Share of the final's words a post must hold for the final to count as a repeat.
+const REPEAT_SHARE = 0.6;
+
 /** Best effort: resolves true only when the note landed; never throws. */
 export async function notifyPrincipalOfFailure(
   client: Pick<FilamentMcpClient, "callTool">,

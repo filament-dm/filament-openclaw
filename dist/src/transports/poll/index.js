@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { acceptPending } from "../../accept-pending.js";
-import { answeredWithTools, notifyPrincipalOfFailure } from "../../failure-note.js";
+import {
+  answeredWithTools,
+  finalRepeatsPost,
+  notifyPrincipalOfFailure
+} from "../../failure-note.js";
 import { fetchInboundMedia, uploadOutboundMedia } from "../../media.js";
 import {
   loadPendingReplies,
@@ -221,6 +225,12 @@ async function runPollTransport(ctx, deps = {}) {
         await notifyPrincipalOfFailure(client, item, result, { signal: abortSignal, log });
       }
       return { kind: "dropped", diagnostic: `the turn failed: ${result.errorDetail ?? "?"}` };
+    }
+    if (result.sawFinal && finalRepeatsPost(item, result, result.finalText)) {
+      log(
+        `filament-poll: the final text in ${item.channel_id} repeats what the agent posted with a tool; not posting it again`
+      );
+      return { kind: "silent" };
     }
     if (result.sawFinal) {
       if (!abortSignal.aborted) {
