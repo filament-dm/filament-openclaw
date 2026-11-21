@@ -339,6 +339,16 @@ function makeExecute(
         `${qualifiedName}: ${result.kind ?? "error"} — ${result.error?.message ?? "unknown error"}`,
       );
     }
+    // The server answers some refusals (an unknown message_id) in the result, not as a failure:
+    // the agent reads them, but nothing was posted, so the turn records no reply.
+    const refusal = refusalOf(result.data);
+    if (refusal) {
+      log(`filament-tools: ${qualifiedName} refused: ${refusal}`);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
+        details: result.data,
+      };
+    }
     log(`filament-tools: ${qualifiedName} ok`);
     const target = replyTarget(toolName, params);
     for (const turn of turns) {
@@ -352,6 +362,12 @@ function makeExecute(
       details: result.data,
     };
   };
+}
+
+function refusalOf(data: unknown): string | null {
+  if (typeof data !== "object" || data === null) return null;
+  const error = (data as { error?: unknown }).error;
+  return typeof error === "string" ? error : null;
 }
 
 export interface RegisterFilamentToolsResult {
