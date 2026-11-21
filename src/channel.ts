@@ -49,6 +49,7 @@ import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
 import { LOOK_AROUND_SIDE_SESSION, lookAroundDue, lookAroundOnce } from "./look-around.js";
 import {
   parseIdentityMarkdown,
+  followName,
   seedName,
   seedProfile,
   type AvatarSource,
@@ -57,6 +58,7 @@ import {
 } from "./profile-seed.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
+import { followedName, recordFollowedName } from "./state/names.js";
 import {
   loadUpdateState,
   markUpdateRequested,
@@ -125,6 +127,38 @@ export function registerFilamentChannel(
 
   const liveConfig = (): unknown => api.runtime?.config?.current?.() ?? api.config;
 
+  // The workspace's IDENTITY.md, where OpenClaw's first conversation records the agent's name.
+  const identityFileOf = (cfg: unknown, agentId: string): { name?: string } | undefined => {
+    try {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const workspace = resolveAgentWorkspaceDir(cfg as any, agentId);
+      return parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+
+  // After the first seed: a later OpenClaw name (or a rename) reaches the Filament agent.
+  const followOpenClawName = async (
+    client: SeedClient,
+    accountId: string,
+    accountLog: (message: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const cfg = liveConfig();
+    const agentId = boundAgentOf(cfg, accountId);
+    if (!agentId) return;
+    const next = await followName({
+      client,
+      agentId,
+      name: seedName(cfg, agentId, identityFileOf(cfg, agentId)),
+      followed: followedName(accountId),
+      log: accountLog,
+      signal,
+    });
+    if (next) recordFollowedName(accountId, next);
+  };
+
   const seedFromOpenClaw = async (
     client: SeedClient,
     accountId: string,
@@ -136,13 +170,7 @@ export function registerFilamentChannel(
     if (!agentId) return null;
     // oxlint-disable-next-line typescript/no-explicit-any
     const sdkConfig = cfg as any;
-    let identityFile: { name?: string } | undefined;
-    try {
-      const workspace = resolveAgentWorkspaceDir(sdkConfig, agentId);
-      identityFile = parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
-    } catch {
-      identityFile = undefined;
-    }
+    const identityFile = identityFileOf(cfg, agentId);
     let avatar: AvatarSource = { kind: "none" };
     try {
       avatar = resolveAgentAvatar(sdkConfig, agentId);
@@ -367,6 +395,12 @@ export function registerFilamentChannel(
           } finally {
             toolOutcome = endFilamentTurn(accountId, opts?.beside);
           }
+          // A turn may have named the agent (OpenClaw's first conversation asks for a name).
+          if (connection) {
+            void followOpenClawName(connection.client, accountId, accountLog, abortSignal).catch(
+              (error) => accountLog(`filament-profile: ${String(error)}`),
+            );
+          }
           return {
             ...result,
             ...toolOutcome,
@@ -480,6 +514,10 @@ export function registerFilamentChannel(
               if (lookAroundDue(connection.client.instructions)) markLookAroundDue(accountId, mxid);
             }
           }
+          // Every connect: OpenClaw's name may have changed while this gateway was down.
+          void followOpenClawName(connection.client, accountId, accountLog, abortSignal).catch(
+            (error) => accountLog(`filament-profile: ${String(error)}`),
+          );
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
             accountLog(
