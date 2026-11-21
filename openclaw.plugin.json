@@ -194,6 +194,13 @@
               "type": "string",
               "description": "Overrides the top-level mcpUrl for this account."
             },
+            "mediaOrigins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Overrides the top-level mediaOrigins for this account."
+            },
             "pending": {
               "type": "boolean",
               "description": "Retired: written by an older install.sh with no OPENCLAW_AGENT. The account stays idle; remove it and connect the agent with `openclaw filament login`."
@@ -224,6 +231,13 @@
       "mcpUrl": {
         "type": "string",
         "description": "Filament MCP agents endpoint (defaults to production; set for staging/local)."
+      },
+      "mediaOrigins": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Origins (https://host[:port]) besides mcpUrl's that attachment downloads may use. Leave unset: Filament serves attachments from its own origin. For a deployment that serves them elsewhere."
       },
       "transport": {
         "$ref": "#/$defs/transport"

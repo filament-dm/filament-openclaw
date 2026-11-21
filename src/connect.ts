@@ -78,6 +78,8 @@ export interface RunConnectOptions {
   log?: (message: string) => void;
   abortSignal?: AbortSignal;
   fetchImpl?: typeof fetch;
+  /** See `McpSettings.mediaOrigins`. */
+  mediaOrigins?: readonly string[];
 }
 
 export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle> {
@@ -88,12 +90,13 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
     log = () => {},
     abortSignal,
     fetchImpl = fetch,
+    mediaOrigins = [],
   } = opts;
 
   const bearer = resolveBearer(token, log);
   if (abortSignal?.aborted) throw new ConnectAbortedError();
 
-  const client = new FilamentMcpClient(mcpUrl, bearer, undefined, fetchImpl);
+  const client = new FilamentMcpClient(mcpUrl, bearer, undefined, fetchImpl, mediaOrigins);
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   const stop = () => {

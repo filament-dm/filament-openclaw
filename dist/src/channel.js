@@ -21,7 +21,7 @@ import { BearerRejectedError, retryConnect, runConnect } from "./connect.js";
 import { uploadOutboundMedia } from "./media.js";
 import { sendToFilament, waitForClient } from "./outbound.js";
 import { interruptedIn, releaseInterruptedIn } from "./state/in-flight.js";
-import { signedMediaOffered, turnInstructions } from "./onboarding-core.js";
+import { serverGuidance, signedMediaOffered, turnInstructions } from "./onboarding-core.js";
 import {
   beginFilamentTurn,
   bindFilamentTurnSession,
@@ -266,9 +266,10 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               threadId: item.thread_id,
               messages: item.messages,
               media,
-              systemPrompt: turnInstructions(connection?.client.instructions, {
+              systemPrompt: turnInstructions({
                 signedMedia: signedMediaOffered(connection?.client.toolNames)
               }),
+              serverGuidance: serverGuidance(connection?.client.instructions),
               recipientAddress: identity?.mxid ?? `${FILAMENT_CHANNEL_ID}:agent`,
               conversationLabel: room.label,
               groupSubject: room.subject,
@@ -317,6 +318,7 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             connection = await retryConnect(
               () => runConnect({
                 mcpUrl: mcp.mcpUrl,
+                mediaOrigins: mcp.mediaOrigins,
                 token,
                 accountId,
                 log: accountLog,

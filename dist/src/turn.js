@@ -119,6 +119,8 @@ async function dispatchWorkItemTurn(params) {
     } : {},
     // Despite the name, the gateway adds this to the system prompt of direct turns too.
     ...params.systemPrompt ? { GroupSystemPrompt: params.systemPrompt } : {},
+    // Channel metadata that OpenClaw keeps out of the system prompt (2026.8.1 and newer).
+    ...params.serverGuidance ? { ChannelPromptContext: [params.serverGuidance] } : {},
     ...inboundMediaFields(params.media)
   });
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({

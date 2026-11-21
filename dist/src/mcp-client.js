@@ -63,11 +63,12 @@ class FilamentMcpClient {
   constructor(mcpUrl, token, clientInfo = {
     name: "filament-openclaw",
     version: PLUGIN_VERSION
-  }, fetchImpl = fetch) {
+  }, fetchImpl = fetch, mediaOrigins = []) {
     this.mcpUrl = mcpUrl;
     this.token = token;
     this.clientInfo = clientInfo;
     this.fetchImpl = fetchImpl;
+    this.mediaOrigins = mediaOrigins;
   }
   sessionId = null;
   nextId = 1;
@@ -76,6 +77,21 @@ class FilamentMcpClient {
   instructions = null;
   /** The tools the server listed, from the last successful `tools/list`; null before one. */
   toolNames = null;
+  /**
+   * A signed download stays on the Filament server the agent signed in to: the server signs it on
+   * its own public origin, which is `mcpUrl`'s. Anything else needs an administrator's opt-in.
+   */
+  isAllowedMediaUrl(url) {
+    let origin;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+      origin = parsed.origin;
+    } catch {
+      return false;
+    }
+    return origin === new URL(this.mcpUrl).origin || this.mediaOrigins.includes(origin);
+  }
   /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   async post(url, body, expectJson, opts) {
     const controller = new AbortController();
@@ -377,9 +393,18 @@ class FilamentMcpClient {
     const url = typeof data.download_url === "string" ? data.download_url : "";
     if (!/^https?:\/\//.test(url))
       throw new Error("get_media_download_url returned no download_url");
+    if (!this.isAllowedMediaUrl(url)) {
+      throw new Error(
+        "get_media_download_url returned a URL outside this Filament server's origin; an administrator can allow its origin with mediaOrigins"
+      );
+    }
     const signals = [AbortSignal.timeout(opts?.timeoutMs ?? MEDIA_TIMEOUT_MS)];
     if (opts?.signal) signals.push(opts.signal);
-    return await this.fetchImpl(url, { method: "GET", signal: AbortSignal.any(signals) });
+    return await this.fetchImpl(url, {
+      method: "GET",
+      redirect: "error",
+      signal: AbortSignal.any(signals)
+    });
   }
   /**
    * Uploads bytes through the `/upload` side-channel and returns their `mxc://` url. Not through

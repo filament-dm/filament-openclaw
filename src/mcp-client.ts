@@ -154,7 +154,25 @@ export class FilamentMcpClient {
       version: PLUGIN_VERSION,
     },
     private readonly fetchImpl: typeof fetch = fetch,
+    /** Origins besides `mcpUrl`'s that a signed download may point at (`mediaOrigins`). */
+    private readonly mediaOrigins: readonly string[] = [],
   ) {}
+
+  /**
+   * A signed download stays on the Filament server the agent signed in to: the server signs it on
+   * its own public origin, which is `mcpUrl`'s. Anything else needs an administrator's opt-in.
+   */
+  isAllowedMediaUrl(url: string): boolean {
+    let origin: string;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+      origin = parsed.origin;
+    } catch {
+      return false;
+    }
+    return origin === new URL(this.mcpUrl).origin || this.mediaOrigins.includes(origin);
+  }
 
   /** Our own timeout resolves as status 0 with no json; throws only on network failure or abort. */
   private async post(
@@ -529,9 +547,20 @@ export class FilamentMcpClient {
     const url = typeof data.download_url === "string" ? data.download_url : "";
     if (!/^https?:\/\//.test(url))
       throw new Error("get_media_download_url returned no download_url");
+    if (!this.isAllowedMediaUrl(url)) {
+      throw new Error(
+        "get_media_download_url returned a URL outside this Filament server's origin; " +
+          "an administrator can allow its origin with mediaOrigins",
+      );
+    }
     const signals = [AbortSignal.timeout(opts?.timeoutMs ?? MEDIA_TIMEOUT_MS)];
     if (opts?.signal) signals.push(opts.signal);
-    return await this.fetchImpl(url, { method: "GET", signal: AbortSignal.any(signals) });
+    // The server serves the bytes itself; a redirect would leave the checked origin.
+    return await this.fetchImpl(url, {
+      method: "GET",
+      redirect: "error",
+      signal: AbortSignal.any(signals),
+    });
   }
 
   /**

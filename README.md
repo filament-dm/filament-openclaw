@@ -131,13 +131,18 @@ and connect each agent with `openclaw filament login`.
 ## What the plugin can do on your gateway
 
 - **Network:** it calls Filament's agents API (`https://api.filament.dm/mcp/agents` by default;
-  `mcpUrl` overrides it) and fetches the attachment links that API hands out. Once a day it asks ClawHub
-  (`https://clawhub.ai/api/v1/packages/…`) for the package's latest version to check for updates. `openclaw filament
-  login --browser` listens on a local port for the sign-in callback while it runs.
+  `mcpUrl` overrides it) and downloads the attachment links that API hands out, only on that same
+  origin (no redirects) unless an administrator adds origins with `mediaOrigins`. Once a day it
+  asks ClawHub (`https://clawhub.ai/api/v1/packages/…`) for the package's latest version to check
+  for updates. `openclaw filament login --browser` listens on a local port for the sign-in
+  callback while it runs.
 - **Processes:** it runs the `openclaw` CLI to read and save its configuration (`openclaw config
-  get` / `openclaw config patch`) and, when the owner taps **Update now**, to run
-  `openclaw plugins update`. An interactive `login --browser` asks your OS to open the sign-in
-  page.
+  get` / `openclaw config patch`) and, when the owner taps **Update now**, to read its install
+  record (`openclaw plugins inspect`) and reinstall from ClawHub (`openclaw plugins install`). An
+  interactive `login --browser` asks your OS to open the sign-in page.
+- **Prompt:** the agent's system prompt gets only the plugin's own fixed text. What the Filament
+  server says about formatting, reply placement and the agent's identity reaches the model as
+  channel context, which OpenClaw keeps out of the system prompt.
 - **Data:** it keeps each agent's sign-in token in your OpenClaw config (a SecretRef is accepted)
   and small state files under the OpenClaw state directory.
 
@@ -152,6 +157,7 @@ The plugin is configured under `plugins.entries.filament-openclaw.config`, and
 | `connectToken` | `FILAMENT_MCP_TOKEN` | The agent's token, from `openclaw filament login` or the Filament app |
 | `mcpUrl` | `FILAMENT_MCP_URL` | A non-production Filament server |
 | `pollWaitSeconds` | | How long each poll waits for work, 1–60 s (default 30) |
+| `mediaOrigins` | | Extra origins attachment downloads may use (`https://host[:port]`). Leave unset: Filament serves attachments from its own origin |
 
 ## How work arrives
 

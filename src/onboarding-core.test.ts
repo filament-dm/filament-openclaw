@@ -6,6 +6,7 @@ import {
   attachmentsGuidance,
   classifyGetSelf,
   signedMediaOffered,
+  serverGuidance,
   turnInstructions,
 } from "./onboarding-core.js";
 
@@ -63,36 +64,31 @@ test("classifyGetSelf: other errors are transient", () => {
   assert.equal(classifyGetSelf(err(-32603)).status, "transient");
 });
 
-test("turnInstructions: keeps the server's guidance and drops the one-shot greeting", () => {
+test("serverGuidance: the server's text as channel context, without the greeting or its attachments note", () => {
   const instructions = [
     "Filament is multiplayer chat.",
-    "Message bodies are markdown, and only markdown.",
+    "Attachments: to read a message's file, call get_media_download_url and curl the download_url.",
     'Your identity: you are currently controlling the agent "Ada".',
     "First contact: introduce yourself to your Principal now — send them a short, friendly hello.",
   ].join("\n\n");
   assert.equal(
-    turnInstructions(instructions),
+    serverGuidance(instructions),
     [
+      "Filament service guidance:",
       "Filament is multiplayer chat.",
-      "Message bodies are markdown, and only markdown.",
       'Your identity: you are currently controlling the agent "Ada".',
-      attachmentsGuidance(false),
     ].join("\n\n"),
   );
+  assert.equal(serverGuidance(null), undefined);
+  assert.equal(serverGuidance("First contact: say hi."), undefined);
 });
 
-test("turnInstructions: the server's Attachments paragraph gives way to OpenClaw's, in place", () => {
-  const instructions = [
-    "Filament is multiplayer chat.",
-    "Attachments: to read a message's file, call get_media_download_url and curl the download_url.",
-    "Links: …",
-  ].join("\n\n");
-  const out = turnInstructions(instructions, { signedMedia: true });
-  assert.equal(
-    out,
-    ["Filament is multiplayer chat.", attachmentsGuidance(true), "Links: …"].join("\n\n"),
-  );
-  assert.ok(!out.includes("call get_media_download_url"));
+test("turnInstructions: fixed text only, whatever the server sends", () => {
+  const out = turnInstructions({ signedMedia: true });
+  assert.ok(out.endsWith(attachmentsGuidance(true)));
+  assert.match(out, /channel context/);
+  assert.ok(!out.includes("Filament service guidance"));
+  assert.ok(turnInstructions().endsWith(attachmentsGuidance(false)));
 });
 
 test("attachmentsGuidance: the turn's files are local and replies use MEDIA:; tools only when offered", () => {
@@ -107,12 +103,6 @@ test("attachmentsGuidance: the turn's files are local and replies use MEDIA:; to
   assert.match(withTools, /filament_create_media_upload/);
   assert.doesNotMatch(without, /filament_create_media_upload/);
   assert.match(without, /send it as your reply instead/);
-});
-
-test("turnInstructions: without instructions, only the attachments guidance", () => {
-  assert.equal(turnInstructions(null), attachmentsGuidance(false));
-  assert.equal(turnInstructions(""), attachmentsGuidance(false));
-  assert.equal(turnInstructions("First contact: say hi."), attachmentsGuidance(false));
 });
 
 test("signedMediaOffered: both the download and the upload tool are listed", () => {
