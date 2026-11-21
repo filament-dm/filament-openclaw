@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { answeredWithTools, failureNote, notifyPrincipalOfFailure } from "./failure-note.js";
+import {
+  finalRepeatsPost,
+  answeredWithTools,
+  failureNote,
+  notifyPrincipalOfFailure,
+} from "./failure-note.js";
 
 const EMPTY = "⚠️ The AI service returned an empty reply. Please try again.";
 
@@ -87,4 +92,28 @@ test("notifyPrincipalOfFailure: sends it with message_principal; a failure to se
     false,
   );
   assert.match(logs[0]!, /failure note not sent/);
+});
+
+test("finalRepeatsPost: a final that repeats a post in the same room is a repeat", () => {
+  const item = { is_backchannel: true, channel_id: "!cc:x" };
+  const posted =
+    'Saved option 2 (the clay-style robot) as your avatar. I also saved the "Main OpenClaw" identity and vibe.';
+  const result = { repliedTo: new Set(["!cc:x"]), reacted: false, posted: [posted] };
+  assert.equal(
+    finalRepeatsPost(
+      item,
+      result,
+      'Saved option 2, the clay-style robot, as your avatar. I saved the "Main OpenClaw" identity and vibe too.',
+    ),
+    true,
+  );
+  // A short note before the real answer: the answer is not a repeat.
+  const note = { ...result, posted: ["On it, one moment."] };
+  assert.equal(
+    finalRepeatsPost(item, note, "Here are the four avatar options you asked for."),
+    false,
+  );
+  // Posted elsewhere: this room still needs its answer.
+  const elsewhere = { ...result, repliedTo: new Set(["!other:x"]) };
+  assert.equal(finalRepeatsPost(item, elsewhere, posted), false);
 });

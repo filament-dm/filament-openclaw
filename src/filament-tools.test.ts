@@ -294,6 +294,7 @@ test("beginFilamentTurn/endFilamentTurn: tracks and clears the active turn", () 
     sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
+    posted: [],
   });
   endFilamentTurn();
   assert.equal(_getActiveFilamentTurnForTest(), null);

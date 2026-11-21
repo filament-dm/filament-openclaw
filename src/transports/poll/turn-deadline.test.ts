@@ -14,6 +14,7 @@ const answer = (overrides: Partial<TurnResult> = {}): TurnResult => ({
   sawError: false,
   repliedTo: new Set(),
   reacted: false,
+  posted: [],
   ...overrides,
 });
 
