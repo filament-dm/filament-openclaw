@@ -55,7 +55,10 @@ Once connected for the first time, the agent takes its OpenClaw agent's name and
 it in the app, and then says hello in
 your private chat with it, in its own voice (one agent turn); the Filament app waits for that
 hello. Both happen once per agent. If another of your agents already has the name, it takes the
-next number ("Carl 2"). An identity emoji is not carried over: Filament agents cannot
+next number ("Carl 2"). After that the Filament name keeps following the OpenClaw agent's, checked
+on every connect and after every turn, so a name it gets later (OpenClaw's first conversation in a
+new workspace asks what to call it) or a rename reaches Filament. A name you choose in the Filament
+app stops that: it is never replaced. An identity emoji is not carried over: Filament agents cannot
 set one themselves.
 
 A new agent then looks around once: in a turn of its own it reads its Filament tools and

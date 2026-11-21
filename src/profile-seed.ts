@@ -4,8 +4,9 @@
  * in code, before the first hello. A name the owner already chose in the app is kept: the profile
  * is seeded only while its name is still the server's default, and then the stock picture the app
  * gave it is replaced too. Filament has no emoji avatar an agent can set, so an identity emoji is
- * not carried over.
+ * not carried over. After that, followName keeps the name in step with the OpenClaw agent's.
  */
+import type { FollowedName } from "./state/names.js";
 import { asRecord } from "./accounts.js";
 import type { ToolCallResult } from "./mcp-client.js";
 
@@ -158,7 +159,10 @@ export function setProfileError(result: ToolCallResult): string | undefined {
 const NAME_ATTEMPTS = 5;
 
 /** The name, or "<name> 2", "<name> 3", … when the owner's other agents hold it; the one set. */
-async function setName(ctx: SeedContext, wanted: string): Promise<string | undefined> {
+async function setName(
+  ctx: Pick<SeedContext, "client" | "log" | "signal">,
+  wanted: string,
+): Promise<string | undefined> {
   for (let n = 1; n <= NAME_ATTEMPTS; n++) {
     const candidate = n === 1 ? wanted : `${wanted} ${n}`;
     const refused = setProfileError(
@@ -224,5 +228,52 @@ export async function seedProfile(ctx: SeedContext): Promise<SeedResult | null> 
   } catch (error) {
     log(`filament-profile: ${String(error)}`);
     return null;
+  }
+}
+
+export interface FollowContext {
+  client: SeedClient;
+  /** The OpenClaw agent id, the name the first seed falls back to. */
+  agentId: string;
+  /** seedName's answer now: the OpenClaw agent's current name. */
+  name: string | undefined;
+  /** What the plugin last followed for this account, if anything. */
+  followed: FollowedName | undefined;
+  log: (message: string) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Keeps the Filament agent's name in step with its OpenClaw agent's after the first seed, so a
+ * name chosen later (OpenClaw's first conversation in a new workspace asks for one) reaches
+ * Filament. It renames only a Filament name that is still the server's default or the one the
+ * plugin gave; a name the owner chose in Filament stays, and following stops until OpenClaw's
+ * name changes again. Costs nothing while OpenClaw's name is the one last followed.
+ * @returns What to record as followed now, or undefined when nothing changed or a call failed.
+ */
+export async function followName(ctx: FollowContext): Promise<FollowedName | undefined> {
+  const { client, name, followed, log, signal } = ctx;
+  if (!name || name === followed?.openclaw) return undefined;
+  try {
+    const self = await client.callTool("get_self", {}, { signal });
+    if (!self.ok) return undefined;
+    const data = asRecord(self.data);
+    const current = typeof data.display_name === "string" ? data.display_name : undefined;
+    const given = followed
+      ? followed.filament !== null && current === followed.filament
+      : // Seeded before names were followed: the id fallback is the plugin's.
+        current?.toLowerCase() === ctx.agentId.toLowerCase();
+    if (current === name) return { openclaw: name, filament: name };
+    if (!given && !isDefaultAgentName(current, asRecord(data.owner).display_name)) {
+      log("filament-profile: the owner named this agent; its OpenClaw name is not followed");
+      return { openclaw: name, filament: null };
+    }
+    const set = await setName({ client, log, signal }, name);
+    if (set === undefined) return undefined;
+    log(`filament-profile: renamed to "${set}", following the OpenClaw agent`);
+    return { openclaw: name, filament: set };
+  } catch (error) {
+    log(`filament-profile: ${String(error)}`);
+    return undefined;
   }
 }

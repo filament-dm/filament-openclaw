@@ -39,11 +39,13 @@ import { HELLO_SIDE_SESSION, helloDue, sayFirstHello } from "./hello.js";
 import { LOOK_AROUND_SIDE_SESSION, lookAroundDue, lookAroundOnce } from "./look-around.js";
 import {
   parseIdentityMarkdown,
+  followName,
   seedName,
   seedProfile
 } from "./profile-seed.js";
 import { finishPendingSignIn, parsePendingSignIn } from "./sign-in.js";
 import { loadIdentity } from "./state/identities.js";
+import { followedName, recordFollowedName } from "./state/names.js";
 import {
   loadUpdateState,
   markUpdateRequested,
@@ -81,18 +83,34 @@ function registerFilamentChannel(api, onConnectionChange = () => {
   };
   const pluginConfigOf = (cfg) => pluginConfigFrom(cfg) ?? api.pluginConfig;
   const liveConfig = () => api.runtime?.config?.current?.() ?? api.config;
+  const identityFileOf = (cfg, agentId) => {
+    try {
+      const workspace = resolveAgentWorkspaceDir(cfg, agentId);
+      return parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
+    } catch {
+      return void 0;
+    }
+  };
+  const followOpenClawName = async (client, accountId, accountLog, signal) => {
+    const cfg = liveConfig();
+    const agentId = boundAgentOf(cfg, accountId);
+    if (!agentId) return;
+    const next = await followName({
+      client,
+      agentId,
+      name: seedName(cfg, agentId, identityFileOf(cfg, agentId)),
+      followed: followedName(accountId),
+      log: accountLog,
+      signal
+    });
+    if (next) recordFollowedName(accountId, next);
+  };
   const seedFromOpenClaw = async (client, accountId, accountLog, signal) => {
     const cfg = liveConfig();
     const agentId = boundAgentOf(cfg, accountId);
     if (!agentId) return null;
     const sdkConfig = cfg;
-    let identityFile;
-    try {
-      const workspace = resolveAgentWorkspaceDir(sdkConfig, agentId);
-      identityFile = parseIdentityMarkdown(readFileSync(join(workspace, "IDENTITY.md"), "utf8"));
-    } catch {
-      identityFile = void 0;
-    }
+    const identityFile = identityFileOf(cfg, agentId);
     let avatar = { kind: "none" };
     try {
       avatar = resolveAgentAvatar(sdkConfig, agentId);
@@ -288,6 +306,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
           } finally {
             toolOutcome = endFilamentTurn(accountId, opts?.beside);
           }
+          if (connection) {
+            void followOpenClawName(connection.client, accountId, accountLog, abortSignal).catch(
+              (error) => accountLog(`filament-profile: ${String(error)}`)
+            );
+          }
           return {
             ...result,
             ...toolOutcome,
@@ -382,6 +405,9 @@ function registerFilamentChannel(api, onConnectionChange = () => {
               if (lookAroundDue(connection.client.instructions)) markLookAroundDue(accountId, mxid);
             }
           }
+          void followOpenClawName(connection.client, accountId, accountLog, abortSignal).catch(
+            (error) => accountLog(`filament-profile: ${String(error)}`)
+          );
           const updateRequest = takeUpdateRequest(accountId);
           if (updateRequest) {
             accountLog(
