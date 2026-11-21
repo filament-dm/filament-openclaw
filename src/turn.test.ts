@@ -5,6 +5,7 @@ import {
   dispatchWorkItemTurn,
   hostReplyKind,
   inboundMessageFields,
+  requestedReplyMode,
   type DispatchWorkItemParams,
 } from "./turn.js";
 import { turnPeerKind, turnWasMentioned } from "./work-item.js";
@@ -12,6 +13,7 @@ import { turnPeerKind, turnWasMentioned } from "./work-item.js";
 /** Stands in for the gateway: OpenClaw's default dmScope ("main") and groupScope ("per-group"). */
 function fakeRuntime(finals: unknown[] = [{ text: "hello back" }]) {
   const contexts: Array<Record<string, unknown>> = [];
+  const replyOptions: Array<Record<string, unknown>> = [];
   const runtime = {
     routing: {
       resolveAgentRoute: ({ peer }: { peer: { kind: string; id: string } }) => ({
@@ -35,14 +37,17 @@ function fakeRuntime(finals: unknown[] = [{ text: "hello back" }]) {
       },
       dispatchReplyWithBufferedBlockDispatcher: async ({
         dispatcherOptions,
+        replyOptions: options,
       }: {
         dispatcherOptions: { deliver: (p: unknown, i: { kind: string }) => Promise<void> };
+        replyOptions?: Record<string, unknown>;
       }) => {
+        replyOptions.push(options ?? {});
         for (const payload of finals) await dispatcherOptions.deliver(payload, { kind: "final" });
       },
     },
   };
-  return { runtime, contexts };
+  return { runtime, contexts, replyOptions };
 }
 
 function params(
@@ -388,4 +393,33 @@ test("dispatchWorkItemTurn: a group turn carries WasMentioned; a direct one neve
   assert.equal(contexts[0]!.WasMentioned, false);
   assert.equal(contexts[1]!.WasMentioned, true);
   assert.equal("WasMentioned" in contexts[2]!, false);
+});
+
+test("requestedReplyMode: a direct turn asks for automatic replies unless the owner chose", () => {
+  assert.equal(requestedReplyMode({}, "direct"), "automatic");
+  assert.equal(requestedReplyMode(undefined, "direct"), "automatic");
+  assert.equal(
+    requestedReplyMode({ messages: { visibleReplies: "message_tool" } }, "direct"),
+    undefined,
+  );
+  assert.equal(
+    requestedReplyMode({ messages: { visibleReplies: "automatic" } }, "direct"),
+    undefined,
+  );
+  assert.equal(requestedReplyMode({}, "group"), undefined);
+});
+
+test("dispatchWorkItemTurn: the backchannel's final text stays deliverable under a harness default", async () => {
+  const { runtime, replyOptions } = fakeRuntime();
+  const direct = await dispatchWorkItemTurn(params({}, runtime));
+  await dispatchWorkItemTurn(
+    params({ peerKind: "group", channelId: "!room:x", commandAuthorized: false }, runtime),
+  );
+  await dispatchWorkItemTurn(
+    params({ cfg: { messages: { visibleReplies: "message_tool" } } }, runtime),
+  );
+  assert.equal(direct.finalText, "hello back");
+  assert.equal(replyOptions[0]?.sourceReplyDeliveryMode, "automatic");
+  assert.equal(replyOptions[1]?.sourceReplyDeliveryMode, undefined);
+  assert.equal(replyOptions[2]?.sourceReplyDeliveryMode, undefined);
 });

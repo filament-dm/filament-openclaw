@@ -145,6 +145,18 @@ and connect each agent with `openclaw filament login`.
   channel context, which OpenClaw keeps out of the system prompt.
 - **Data:** it keeps each agent's sign-in token in your OpenClaw config (a SecretRef is accepted)
   and small state files under the OpenClaw state directory.
+- **Gateway settings:** once an agent connects, it sets two OpenClaw settings that are still
+  unset, and never changes a value you wrote:
+  - `surfaces.filament.silentReply.group` to `"allow"`, so a Filament group turn may end in silence.
+  - `commands.ownerAllowFrom` gets `filament:<you>`, the Filament account that connected the
+    agent, so your own Filament messages count as the owner's, like a sender approved by
+    `openclaw pairing`. Owner-only tools and commands (the `openclaw` tool, `/restart`, exec
+    approvals) then work from Filament. It is added once, only while no `filament:` owner is
+    listed; remove it and it stays removed.
+- **Replies in your private chat:** a turn there asks OpenClaw to deliver the agent's final answer
+  (`sourceReplyDeliveryMode: "automatic"`), because the plugin posts that answer to Filament
+  itself. Without it, the Codex harness's default for direct chats keeps the answer private and
+  the turn posts nothing. Set `messages.visibleReplies` yourself and the plugin follows it.
 
 ## Configuration
 
