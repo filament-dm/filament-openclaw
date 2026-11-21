@@ -55,6 +55,8 @@ test("seedName: identity name, IDENTITY.md, entry name, then the id — never a 
   // A fresh onboarded config names nothing but the id.
   assert.equal(seedName(cfg({ name: "main", identity: { name: "main" } }), "main"), undefined);
   assert.equal(seedName(cfg({ name: "newshound" }, "newshound"), "newshound"), "newshound");
+  // Only the id, spelled otherwise: OpenClaw's spelling, not the bare id.
+  assert.equal(seedName(cfg({ identity: { name: "Carl" } }, "carl"), "carl"), "Carl");
   assert.equal(seedName({}, "main"), undefined);
 });
 

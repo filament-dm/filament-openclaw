@@ -25,7 +25,8 @@ function seedName(gatewayConfig, agentId, identityFile) {
     (name) => name !== void 0 && name.toLowerCase() !== agentId.toLowerCase()
   );
   if (named) return named;
-  return agentId === "main" ? void 0 : agentId;
+  if (agentId === "main") return void 0;
+  return candidates.find((name) => name !== void 0) ?? agentId;
 }
 function normalizeName(name) {
   return name.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();

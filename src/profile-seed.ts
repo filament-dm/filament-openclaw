@@ -40,7 +40,8 @@ export function parseIdentityMarkdown(text: string): { name?: string; emoji?: st
 /**
  * The name to give the Filament agent: the OpenClaw identity's name, then IDENTITY.md's, then the
  * entry's, then the agent id. A value that only repeats the id counts for nothing ahead of a real
- * one, and OpenClaw's stock `main` never becomes a name: the server's default says more.
+ * one, but spells the id when nothing else names it; OpenClaw's stock `main` never becomes a name:
+ * the server's default says more.
  */
 export function seedName(
   gatewayConfig: unknown,
@@ -59,7 +60,9 @@ export function seedName(
     (name): name is string => name !== undefined && name.toLowerCase() !== agentId.toLowerCase(),
   );
   if (named) return named;
-  return agentId === "main" ? undefined : agentId;
+  if (agentId === "main") return undefined;
+  // Only the id, maybe spelled otherwise ("Carl" for `carl`): as OpenClaw spells it.
+  return candidates.find((name): name is string => name !== undefined) ?? agentId;
 }
 
 function normalizeName(name: string): string {
