@@ -189,8 +189,9 @@ test("execute: a snapshot tool the live server doesn't list is refused without a
     toolNames: new Set(["list_channels"]),
   };
   setFilamentClient(client);
-  await assert.rejects(
-    () => tool.execute("call-1", { mxc_url: "mxc://s/1" }, undefined, undefined, {}),
+  const refused = await tool.execute("call-1", { mxc_url: "mxc://s/1" }, undefined, undefined, {});
+  assert.match(
+    String((refused.details as { error: string }).error),
     /this Filament server doesn't offer get_media_download_url yet/,
   );
   assert.deepEqual(calls, []);
@@ -459,6 +460,11 @@ test("normalizeEventIdArgs: a `#$event` id from OpenClaw's history lines loses t
       key: "👍",
     }),
     { message_id: "$a1:x", about_message_id: "$b2:x", up_to: "$c3", key: "👍" },
+  );
+  // OpenClaw's conversation info shows `$` full width; the model copies it.
+  assert.deepEqual(
+    normalizeEventIdArgs({ message_id: "\uFF04a1:x", in_reply_to: "#\uFF04b2", channel: "!r" }),
+    { message_id: "$a1:x", in_reply_to: "$b2", channel: "!r" },
   );
   // Only id arguments: a body or a room alias keeps its `#`.
   const same = { message_id: "$a1:x", channel: "#general", markdown_body: "#$ is fine here" };

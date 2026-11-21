@@ -262,18 +262,20 @@ function toLabel(name: string): string {
 }
 
 /** Arguments that name a message by its event id. */
-const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$|^in_reply_to$/;
 
 /**
  * OpenClaw lists earlier messages to the model as `#<message_id> <sender>: <body>`, so a model
- * may hand back `#$event` for an id. Matrix event ids start with `$`; the `#` is never part of one.
+ * may hand back `#$event` for an id. Its conversation info shows an id's `$` as a full-width `＄`,
+ * which the model copies. Matrix event ids start with `$`; the `#` is never part of one.
  */
 export function normalizeEventIdArgs(params: Record<string, unknown>): Record<string, unknown> {
   let changed = false;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
-    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
-      out[key] = value.slice(1);
+    const id = EVENT_ID_ARG.test(key) && typeof value === "string" ? eventIdOf(value) : null;
+    if (id !== null) {
+      out[key] = id;
       changed = true;
     } else {
       out[key] = value;
@@ -281,6 +283,15 @@ export function normalizeEventIdArgs(params: Record<string, unknown>): Record<st
   }
   return changed ? out : params;
 }
+
+// The id a mangled one stands for, or null when it isn't mangled.
+function eventIdOf(value: string): string | null {
+  const bare = value.startsWith("#") ? value.slice(1) : value;
+  const id = bare.startsWith(FULL_WIDTH_DOLLAR) ? `$${bare.slice(1)}` : bare;
+  return id !== value && id.startsWith("$") ? id : null;
+}
+
+const FULL_WIDTH_DOLLAR = "\uFF04";
 
 function makeExecute(
   toolName: string,
@@ -312,11 +323,13 @@ function makeExecute(
     }
     // The snapshot can be newer than the server (e.g. the signed-URL media tools): say so rather
     // than send a call the server will reject as unknown. Unlisted yet: call through.
+    // Answered, not thrown: a throw inside OpenClaw's code mode ends the agent's whole turn.
     if (client.toolNames && !client.toolNames.has(toolName)) {
       log(`filament-tools: ${qualifiedName} not offered by this server`);
-      throw new Error(
-        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`,
-      );
+      const data = {
+        error: `this Filament server doesn't offer ${toolName} yet; go on without it`,
+      };
+      return { content: [{ type: "text", text: JSON.stringify(data) }], details: data };
     }
     let result: ToolCallResult;
     try {
