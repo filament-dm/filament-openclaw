@@ -42,6 +42,7 @@ function turnResult(overrides: Partial<TurnResult> = {}): TurnResult {
     sawError: false,
     repliedTo: new Set(),
     reacted: false,
+    posted: [],
     mediaLocalRoots: [],
     ...overrides,
   };

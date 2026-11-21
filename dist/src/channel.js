@@ -251,7 +251,11 @@ function registerFilamentChannel(api, onConnectionChange = () => {
             accountLog
           ))(item.channel_id, abortSignal, item) : { label: item.channel_id };
           beginFilamentTurn(item.is_backchannel === true, accountId, opts?.beside);
-          let toolOutcome = { repliedTo: /* @__PURE__ */ new Set(), reacted: false };
+          let toolOutcome = {
+            repliedTo: /* @__PURE__ */ new Set(),
+            reacted: false,
+            posted: []
+          };
           let result;
           try {
             result = await dispatchWorkItemTurn({

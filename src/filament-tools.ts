@@ -78,11 +78,14 @@ interface FilamentTurnState {
   // A reaction answers in the room, but OpenClaw doesn't count it: a turn it fails can still be one
   // the agent answered.
   reacted: boolean;
+  // What the write tools posted, so a final answer that repeats it isn't posted twice.
+  posted: string[];
 }
 
 export interface FilamentTurnOutcome {
   repliedTo: ReadonlySet<string>;
   reacted: boolean;
+  posted: readonly string[];
 }
 
 export const REPLIED_UNKNOWN_ROOM = "*";
@@ -114,6 +117,7 @@ export function beginFilamentTurn(
     sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
+    posted: [],
   });
 }
 
@@ -147,7 +151,11 @@ export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID, side = false): F
   const turns = side ? sideFilamentTurns : activeFilamentTurns;
   const turn = turns.get(accountId);
   turns.delete(accountId);
-  return { repliedTo: turn?.repliedTo ?? new Set<string>(), reacted: turn?.reacted ?? false };
+  return {
+    repliedTo: turn?.repliedTo ?? new Set<string>(),
+    reacted: turn?.reacted ?? false,
+    posted: turn?.posted ?? [],
+  };
 }
 
 export function _getActiveFilamentTurnForTest(
@@ -335,6 +343,8 @@ function makeExecute(
     const target = replyTarget(toolName, params);
     for (const turn of turns) {
       if (target) turn.repliedTo.add(target);
+      if (target && typeof params.markdown_body === "string")
+        turn.posted.push(params.markdown_body);
       if (toolName === "react") turn.reacted = true;
     }
     return {
