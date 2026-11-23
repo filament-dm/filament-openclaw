@@ -106,13 +106,14 @@ const FALLBACK_PARAMETERS = { type: "object", properties: {}, additionalProperti
 function toLabel(name) {
   return name.split("_").map((w) => w.length > 0 ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
 }
-const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$/;
+const EVENT_ID_ARG = /(^|_)message_id$|^thread_id$|^up_to$|^in_reply_to$/;
 function normalizeEventIdArgs(params) {
   let changed = false;
   const out = {};
   for (const [key, value] of Object.entries(params)) {
-    if (EVENT_ID_ARG.test(key) && typeof value === "string" && value.startsWith("#$")) {
-      out[key] = value.slice(1);
+    const id = EVENT_ID_ARG.test(key) && typeof value === "string" ? eventIdOf(value) : null;
+    if (id !== null) {
+      out[key] = id;
       changed = true;
     } else {
       out[key] = value;
@@ -120,6 +121,12 @@ function normalizeEventIdArgs(params) {
   }
   return changed ? out : params;
 }
+function eventIdOf(value) {
+  const bare = value.startsWith("#") ? value.slice(1) : value;
+  const id = bare.startsWith(FULL_WIDTH_DOLLAR) ? `$${bare.slice(1)}` : bare;
+  return id !== value && id.startsWith("$") ? id : null;
+}
+const FULL_WIDTH_DOLLAR = "\uFF04";
 function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
   const qualifiedName = `${TOOL_NAME_PREFIX}${toolName}`;
   return async (_toolCallId, params, signal) => {
@@ -138,9 +145,10 @@ function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
     }
     if (client.toolNames && !client.toolNames.has(toolName)) {
       log(`filament-tools: ${qualifiedName} not offered by this server`);
-      throw new Error(
-        `${qualifiedName}: this Filament server doesn't offer ${toolName} yet; tell your principal if you need it`
-      );
+      const data = {
+        error: `this Filament server doesn't offer ${toolName} yet; go on without it`
+      };
+      return { content: [{ type: "text", text: JSON.stringify(data) }], details: data };
     }
     let result;
     try {
