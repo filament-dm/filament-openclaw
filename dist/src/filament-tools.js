@@ -155,6 +155,14 @@ function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
         `${qualifiedName}: ${result.kind ?? "error"} \u2014 ${result.error?.message ?? "unknown error"}`
       );
     }
+    const refusal = refusalOf(result.data);
+    if (refusal) {
+      log(`filament-tools: ${qualifiedName} refused: ${refusal}`);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
+        details: result.data
+      };
+    }
     log(`filament-tools: ${qualifiedName} ok`);
     const target = replyTarget(toolName, params);
     for (const turn of turns) {
@@ -168,6 +176,11 @@ function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
       details: result.data
     };
   };
+}
+function refusalOf(data) {
+  if (typeof data !== "object" || data === null) return null;
+  const error = data.error;
+  return typeof error === "string" ? error : null;
 }
 function registerFilamentToolsFromSnapshot(api, getClient, log, resolveAccount = (ctx) => resolveToolAccountId(ctx, api.pluginConfig)) {
   const registered = [];
