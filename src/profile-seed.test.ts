@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ToolCallResult } from "./mcp-client.js";
+import type { FollowedName } from "./state/names.js";
 import {
+  followName,
   isDefaultAgentName,
   parseIdentityMarkdown,
   seedName,
@@ -53,6 +55,8 @@ test("seedName: identity name, IDENTITY.md, entry name, then the id — never a 
   // A fresh onboarded config names nothing but the id.
   assert.equal(seedName(cfg({ name: "main", identity: { name: "main" } }), "main"), undefined);
   assert.equal(seedName(cfg({ name: "newshound" }, "newshound"), "newshound"), "newshound");
+  // Only the id, spelled otherwise: OpenClaw's spelling, not the bare id.
+  assert.equal(seedName(cfg({ identity: { name: "Carl" } }, "carl"), "carl"), "Carl");
   assert.equal(seedName({}, "main"), undefined);
 });
 
@@ -238,4 +242,53 @@ test("seedProfile: nothing to give, or a failure anywhere, leaves the profile an
   const odd = await seed(DEFAULT_SELF, "Carl", { kind: "local", filePath: "/ws/a.bmp" });
   assert.equal(odd.uploads.length, 0);
   assert.deepEqual(odd.result, { name: "Carl", image: false });
+});
+
+async function follow(
+  displayName: string,
+  name: string | undefined,
+  followed: FollowedName | undefined,
+  agentId = "agent-3",
+) {
+  const fake = fakeServer({ ...DEFAULT_SELF, display_name: displayName });
+  const logs: string[] = [];
+  const result = await followName({
+    client: fake.client,
+    agentId,
+    name,
+    followed,
+    log: (line) => void logs.push(line),
+  });
+  return { result, logs, ...fake };
+}
+
+test("followName: a name the plugin gave follows a name OpenClaw learns later", async () => {
+  const run = await follow("agent-3", "Koopa", { openclaw: "agent-3", filament: "agent-3" });
+  assert.deepEqual(sets(run.calls), [{ name: "Koopa" }]);
+  assert.deepEqual(run.result, { openclaw: "Koopa", filament: "Koopa" });
+});
+
+test("followName: a default-named agent takes the OpenClaw name", async () => {
+  const run = await follow("Test One's agent 9", "Koopa", undefined);
+  assert.deepEqual(sets(run.calls), [{ name: "Koopa" }]);
+});
+
+test("followName: a name the owner chose in Filament stays, and is remembered", async () => {
+  const run = await follow("Kooper", "Koopa", { openclaw: "agent-3", filament: "agent-3" });
+  assert.deepEqual(sets(run.calls), []);
+  assert.deepEqual(run.result, { openclaw: "Koopa", filament: null });
+  assert.ok(run.logs.some((line) => /owner named this agent/.test(line)));
+});
+
+test("followName: an OpenClaw name already followed costs no call", async () => {
+  const run = await follow("Koopa", "Koopa", { openclaw: "Koopa", filament: "Koopa" });
+  assert.deepEqual(run.calls, []);
+  assert.equal(run.result, undefined);
+});
+
+test("followName: seeded before names were followed, the id fallback is the plugin's", async () => {
+  const run = await follow("koopa", "Koopa", undefined, "koopa");
+  assert.deepEqual(sets(run.calls), [{ name: "Koopa" }]);
+  const owners = await follow("Kooper", "Koopa", undefined, "koopa");
+  assert.deepEqual(sets(owners.calls), []);
 });

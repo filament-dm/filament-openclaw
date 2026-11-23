@@ -25,7 +25,8 @@ function seedName(gatewayConfig, agentId, identityFile) {
     (name) => name !== void 0 && name.toLowerCase() !== agentId.toLowerCase()
   );
   if (named) return named;
-  return agentId === "main" ? void 0 : agentId;
+  if (agentId === "main") return void 0;
+  return candidates.find((name) => name !== void 0) ?? agentId;
 }
 function normalizeName(name) {
   return name.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
@@ -142,7 +143,34 @@ async function seedProfile(ctx) {
     return null;
   }
 }
+async function followName(ctx) {
+  const { client, name, followed, log, signal } = ctx;
+  if (!name || name === followed?.openclaw) return void 0;
+  try {
+    const self = await client.callTool("get_self", {}, { signal });
+    if (!self.ok) return void 0;
+    const data = asRecord(self.data);
+    const current = typeof data.display_name === "string" ? data.display_name : void 0;
+    const given = followed ? followed.filament !== null && current === followed.filament : (
+      // Seeded before names were followed: the id fallback is the plugin's.
+      current?.toLowerCase() === ctx.agentId.toLowerCase()
+    );
+    if (current === name) return { openclaw: name, filament: name };
+    if (!given && !isDefaultAgentName(current, asRecord(data.owner).display_name)) {
+      log("filament-profile: the owner named this agent; its OpenClaw name is not followed");
+      return { openclaw: name, filament: null };
+    }
+    const set = await setName({ client, log, signal }, name);
+    if (set === void 0) return void 0;
+    log(`filament-profile: renamed to "${set}", following the OpenClaw agent`);
+    return { openclaw: name, filament: set };
+  } catch (error) {
+    log(`filament-profile: ${String(error)}`);
+    return void 0;
+  }
+}
 export {
+  followName,
   isDefaultAgentName,
   parseIdentityMarkdown,
   seedName,
