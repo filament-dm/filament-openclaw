@@ -294,6 +294,7 @@ test("beginFilamentTurn/endFilamentTurn: tracks and clears the active turn", () 
     sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
+    posted: [],
   });
   endFilamentTurn();
   assert.equal(_getActiveFilamentTurnForTest(), null);
@@ -435,6 +436,30 @@ test("a quote counts as the turn's reply", async () => {
     {},
   );
   assert.ok(endFilamentTurn().repliedTo.has(REPLIED_UNKNOWN_ROOM));
+});
+
+test("a post the server refuses in its result is not the turn's reply", async () => {
+  const { api, tools } = fakeApi();
+  const { log, lines } = fakeLog();
+  registerFilamentToolsFromSnapshot(api, getFilamentClient, log);
+  const tool = tools.get(`${TOOL_NAME_PREFIX}reply_in_thread`)!;
+  setFilamentClient({
+    callTool: async () => okResult({ error: "message_id $m not found" }),
+  });
+  beginFilamentTurn(false);
+  const result = await tool.execute(
+    "call-1",
+    { message_id: "$m", markdown_body: "the answer" },
+    undefined,
+    undefined,
+    {},
+  );
+  const outcome = endFilamentTurn();
+  assert.equal(outcome.repliedTo.size, 0);
+  assert.deepEqual(outcome.posted, []);
+  // The agent still reads why, so it can post another way.
+  assert.deepEqual(result.details, { error: "message_id $m not found" });
+  assert.ok(lines.some((l) => l.includes("reply_in_thread refused: message_id $m not found")));
 });
 
 test("a reaction is recorded on the turn, but is not a reply", async () => {

@@ -15,6 +15,8 @@ export interface TurnResult extends DispatchTurnResult {
   repliedTo: ReadonlySet<string>;
   /** The agent reacted to a message during the turn. */
   reacted: boolean;
+  /** What write tools posted during the turn (their markdown bodies). */
+  posted: readonly string[];
   /** Local directories the turn's agent may send files from (`mediaUrls` that are paths). */
   mediaLocalRoots: readonly string[];
 }

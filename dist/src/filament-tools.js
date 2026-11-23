@@ -38,7 +38,8 @@ function beginFilamentTurn(isBackchannel, accountId = DEFAULT_ACCOUNT_ID, side =
     backchannel: isBackchannel && !side,
     sessionKey: null,
     repliedTo: /* @__PURE__ */ new Set(),
-    reacted: false
+    reacted: false,
+    posted: []
   });
 }
 function bindFilamentTurnSession(sessionKey, accountId = DEFAULT_ACCOUNT_ID, side = false) {
@@ -61,7 +62,11 @@ function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID, side = false) {
   const turns = side ? sideFilamentTurns : activeFilamentTurns;
   const turn = turns.get(accountId);
   turns.delete(accountId);
-  return { repliedTo: turn?.repliedTo ?? /* @__PURE__ */ new Set(), reacted: turn?.reacted ?? false };
+  return {
+    repliedTo: turn?.repliedTo ?? /* @__PURE__ */ new Set(),
+    reacted: turn?.reacted ?? false,
+    posted: turn?.posted ?? []
+  };
 }
 function _getActiveFilamentTurnForTest(accountId = DEFAULT_ACCOUNT_ID) {
   return activeFilamentTurns.get(accountId) ?? null;
@@ -150,10 +155,20 @@ function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
         `${qualifiedName}: ${result.kind ?? "error"} \u2014 ${result.error?.message ?? "unknown error"}`
       );
     }
+    const refusal = refusalOf(result.data);
+    if (refusal) {
+      log(`filament-tools: ${qualifiedName} refused: ${refusal}`);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
+        details: result.data
+      };
+    }
     log(`filament-tools: ${qualifiedName} ok`);
     const target = replyTarget(toolName, params);
     for (const turn of turns) {
       if (target) turn.repliedTo.add(target);
+      if (target && typeof params.markdown_body === "string")
+        turn.posted.push(params.markdown_body);
       if (toolName === "react") turn.reacted = true;
     }
     return {
@@ -161,6 +176,11 @@ function makeExecute(toolName, tier, accountId, sessionKey, getClient, log) {
       details: result.data
     };
   };
+}
+function refusalOf(data) {
+  if (typeof data !== "object" || data === null) return null;
+  const error = data.error;
+  return typeof error === "string" ? error : null;
 }
 function registerFilamentToolsFromSnapshot(api, getClient, log, resolveAccount = (ctx) => resolveToolAccountId(ctx, api.pluginConfig)) {
   const registered = [];

@@ -78,11 +78,14 @@ interface FilamentTurnState {
   // A reaction answers in the room, but OpenClaw doesn't count it: a turn it fails can still be one
   // the agent answered.
   reacted: boolean;
+  // What the write tools posted, so a final answer that repeats it isn't posted twice.
+  posted: string[];
 }
 
 export interface FilamentTurnOutcome {
   repliedTo: ReadonlySet<string>;
   reacted: boolean;
+  posted: readonly string[];
 }
 
 export const REPLIED_UNKNOWN_ROOM = "*";
@@ -114,6 +117,7 @@ export function beginFilamentTurn(
     sessionKey: null,
     repliedTo: new Set(),
     reacted: false,
+    posted: [],
   });
 }
 
@@ -147,7 +151,11 @@ export function endFilamentTurn(accountId = DEFAULT_ACCOUNT_ID, side = false): F
   const turns = side ? sideFilamentTurns : activeFilamentTurns;
   const turn = turns.get(accountId);
   turns.delete(accountId);
-  return { repliedTo: turn?.repliedTo ?? new Set<string>(), reacted: turn?.reacted ?? false };
+  return {
+    repliedTo: turn?.repliedTo ?? new Set<string>(),
+    reacted: turn?.reacted ?? false,
+    posted: turn?.posted ?? [],
+  };
 }
 
 export function _getActiveFilamentTurnForTest(
@@ -331,10 +339,22 @@ function makeExecute(
         `${qualifiedName}: ${result.kind ?? "error"} — ${result.error?.message ?? "unknown error"}`,
       );
     }
+    // The server answers some refusals (an unknown message_id) in the result, not as a failure:
+    // the agent reads them, but nothing was posted, so the turn records no reply.
+    const refusal = refusalOf(result.data);
+    if (refusal) {
+      log(`filament-tools: ${qualifiedName} refused: ${refusal}`);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.data ?? null) }],
+        details: result.data,
+      };
+    }
     log(`filament-tools: ${qualifiedName} ok`);
     const target = replyTarget(toolName, params);
     for (const turn of turns) {
       if (target) turn.repliedTo.add(target);
+      if (target && typeof params.markdown_body === "string")
+        turn.posted.push(params.markdown_body);
       if (toolName === "react") turn.reacted = true;
     }
     return {
@@ -342,6 +362,12 @@ function makeExecute(
       details: result.data,
     };
   };
+}
+
+function refusalOf(data: unknown): string | null {
+  if (typeof data !== "object" || data === null) return null;
+  const error = (data as { error?: unknown }).error;
+  return typeof error === "string" ? error : null;
 }
 
 export interface RegisterFilamentToolsResult {

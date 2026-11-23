@@ -12,6 +12,20 @@ function answeredWithTools(item, result) {
   if (repliedTo.has(REPLIED_UNKNOWN_ROOM) || repliedTo.has(item.channel_id)) return true;
   return item.is_backchannel === true && repliedTo.has(REPLIED_BACKCHANNEL);
 }
+function words(text) {
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+function finalRepeatsPost(item, result, finalText) {
+  if (!answeredWithTools(item, result)) return false;
+  const finalWords = words(finalText);
+  if (finalWords.length === 0) return false;
+  return result.posted.some((post) => {
+    const postWords = new Set(words(post));
+    const shared = finalWords.filter((word) => postWords.has(word)).length;
+    return shared / finalWords.length >= REPEAT_SHARE;
+  });
+}
+const REPEAT_SHARE = 0.6;
 async function notifyPrincipalOfFailure(client, item, result, opts) {
   try {
     const res = await client.callTool(
@@ -29,5 +43,6 @@ async function notifyPrincipalOfFailure(client, item, result, opts) {
 export {
   answeredWithTools,
   failureNote,
+  finalRepeatsPost,
   notifyPrincipalOfFailure
 };
