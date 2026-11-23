@@ -61,11 +61,13 @@ export function lookAroundPrompt(ccRoomId: string): string {
     "3. Post one message to your backchannel with `filament_message_principal`, answering " +
       '"How would you describe Filament, and what makes it different from other chat ' +
       `platforms?" as if your owner had just asked. Open with "${LOOK_AROUND_OPENING}" and one ` +
-      "sentence that sums up what Filament really is, as you see it. Then give the four to " +
-      "seven differences you find most significant, most important first. For each, lead with " +
-      "the difference in bold, name the tool or field that shows it in `code`, say how a bot on " +
-      "Slack or Discord handles the same thing, and say why it matters. Write like an expert " +
-      "explaining it to a curious colleague: concrete and opinionated, with no marketing " +
+      "sentence that sums up what Filament really is, as you see it. Then list the four to " +
+      "seven differences you find most significant, most important first, as a numbered list. " +
+      "Each item is one bold sentence that states the difference, and nothing else: no " +
+      "explanation under it, and no tool, field or setting names. Close with one line offering " +
+      "to say more about any of them. Keep the whole message short enough to read at a glance. " +
+      "Write like an expert talking to a curious colleague: concrete and opinionated, with no " +
+      "marketing " +
       "phrases. Claim only what a tool, its schema, the instructions or the description says, " +
       "and add no guarantees they don't state, such as encryption or security. Leave out ids.",
     "Once you have posted and cleared your status, end this turn: what you reply here after " +
