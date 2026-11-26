@@ -304,6 +304,10 @@ class FilamentMcpClient {
   getSelf(opts) {
     return this.callTool("get_self", {}, opts);
   }
+  /** Each report replaces the agent's previous one in `agent_runtime`; `get_self` returns it. */
+  reportRuntime(args, opts) {
+    return this.callTool("report_runtime", args, opts);
+  }
   listPendingInvites(opts) {
     return this.callTool("list_pending_invites", {}, opts);
   }

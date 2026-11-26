@@ -2,12 +2,15 @@
  * The connect sequence: resolve the bearer, poll `get_self` until the agent
  * is finalized, then keep a presence heartbeat.
  */
+import { hostname } from "node:os";
+
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
 import { resolveBearer } from "./credentials.js";
 import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient, type ToolCallResult } from "./mcp-client.js";
 import { classifyGetSelf, type ResolvedIdentity } from "./onboarding-core.js";
 import { saveIdentity } from "./state/identities.js";
+import { PLUGIN_VERSION } from "./version.js";
 
 const GETSELF_MAX_ATTEMPTS = 40; // ~2 min at the default 3s interval
 const GETSELF_INTERVAL_MS = 3_000;
@@ -62,6 +65,25 @@ export async function retryConnect<T>(
       await sleep(wait, abortSignal);
       if (abortSignal?.aborted) throw new ConnectAbortedError();
     }
+  }
+}
+
+/** Reports the plugin version and host to `report_runtime`. A failure is logged, never thrown. */
+export async function reportRuntime(
+  client: Pick<FilamentMcpClient, "reportRuntime">,
+  log: (message: string) => void,
+  abortSignal?: AbortSignal,
+  machine: string = hostname(),
+): Promise<void> {
+  const args = { harness: "openclaw", version: PLUGIN_VERSION, ...(machine ? { machine } : {}) };
+  try {
+    const res = await client.reportRuntime(args, { signal: abortSignal });
+    if (!res.ok)
+      log(
+        `filament-connect: report_runtime failed: ${res.error?.message ?? res.kind ?? res.httpStatus}`,
+      );
+  } catch (error) {
+    if (!abortSignal?.aborted) log(`filament-connect: report_runtime threw: ${String(error)}`);
   }
 }
 
@@ -143,6 +165,7 @@ export async function runConnect(opts: RunConnectOptions): Promise<ConnectHandle
   log(
     `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`,
   );
+  await reportRuntime(client, log, abortSignal);
 
   const beat = async () => {
     try {

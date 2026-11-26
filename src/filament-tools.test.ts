@@ -216,6 +216,16 @@ test("the signed-URL media tools are registered; get_wake_url is not", () => {
   assert.ok(lines.some((l) => l.includes("snapshot matches the live server's tool surface")));
 });
 
+test("report_runtime is plugin-owned: not registered, not reported as drift", () => {
+  assert.ok(!KNOWN_TOOL_NAMES.includes("report_runtime"));
+  const { log, lines } = fakeLog();
+  logToolDrift(
+    [...TOOL_SNAPSHOT.map((t) => readDescriptor(t.name)), readDescriptor("report_runtime")],
+    log,
+  );
+  assert.ok(lines.some((l) => l.includes("snapshot matches the live server's tool surface")));
+});
+
 test("ring0 write tool (set_profile): denied outside a backchannel turn, allowed inside one", async () => {
   const { api, tools } = fakeApi();
   const { log, lines } = fakeLog();
