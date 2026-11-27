@@ -45,6 +45,16 @@ function parseToolResult(result) {
   }
   return result;
 }
+const MAX_TOOL_ERROR_CHARS = 500;
+function toolResultText(result) {
+  if (!result || typeof result !== "object") return void 0;
+  const isText = (item) => !!item && typeof item === "object" && item.type === "text" && typeof item.text === "string";
+  const content = result.content;
+  const block = Array.isArray(content) ? content.find(isText) : isText(result) ? result : void 0;
+  const text = block?.text.trim();
+  if (!text) return void 0;
+  return text.length > MAX_TOOL_ERROR_CHARS ? `${text.slice(0, MAX_TOOL_ERROR_CHARS)}\u2026` : text;
+}
 function isAbortError(error) {
   return error instanceof Error && error.name === "AbortError" || typeof error === "object" && error !== null && error.name === "AbortError";
 }
@@ -239,7 +249,7 @@ class FilamentMcpClient {
     const rawIsError = rawResult && typeof rawResult === "object" && rawResult.isError === true;
     const data = parseToolResult(rawResult);
     if (rawIsError) {
-      const message = data && typeof data === "object" && typeof data.error === "string" ? data.error : "tool reported an error";
+      const message = data && typeof data === "object" && typeof data.error === "string" ? data.error : toolResultText(rawResult) ?? "tool reported an error";
       return {
         ok: false,
         httpStatus: status,

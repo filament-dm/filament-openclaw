@@ -110,6 +110,24 @@ export function parseToolResult(result: unknown): unknown {
   return result;
 }
 
+// Enough for a sentence or two of guidance; a server that dumps more is cut.
+const MAX_TOOL_ERROR_CHARS = 500;
+
+/** The first text block of a tool result, trimmed and clipped; `undefined` when it has none. */
+function toolResultText(result: unknown): string | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const isText = (item: unknown): item is { text: string } =>
+    !!item &&
+    typeof item === "object" &&
+    (item as { type?: unknown }).type === "text" &&
+    typeof (item as { text?: unknown }).text === "string";
+  const content = (result as { content?: unknown }).content;
+  const block = Array.isArray(content) ? content.find(isText) : isText(result) ? result : undefined;
+  const text = block?.text.trim();
+  if (!text) return undefined;
+  return text.length > MAX_TOOL_ERROR_CHARS ? `${text.slice(0, MAX_TOOL_ERROR_CHARS)}…` : text;
+}
+
 function isAbortError(error: unknown): boolean {
   return (
     (error instanceof Error && error.name === "AbortError") ||
@@ -351,10 +369,11 @@ export class FilamentMcpClient {
       (rawResult as { isError?: unknown }).isError === true;
     const data = parseToolResult(rawResult);
     if (rawIsError) {
+      // From MCP 2025-11-25 (SEP-1303) a failure can arrive as plain text rather than {"error": …}.
       const message =
         data && typeof data === "object" && typeof (data as { error?: unknown }).error === "string"
           ? (data as { error: string }).error
-          : "tool reported an error";
+          : (toolResultText(rawResult) ?? "tool reported an error");
       return {
         ok: false,
         httpStatus: status,
