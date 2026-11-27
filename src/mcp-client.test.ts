@@ -126,6 +126,43 @@ test("callTool: result.isError === true classifies as tool, even on HTTP 200", a
   assert.equal(res.kind, "tool");
 });
 
+function isErrorResult(result: Record<string, unknown>): Handler {
+  return () =>
+    new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, result: { isError: true, ...result } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+}
+
+test("callTool: an isError result keeps the server's message", async () => {
+  const plain =
+    "Invalid arguments: channel: required but missing. Expected get_recent_messages(channel, limit?, cursor?).";
+  const text = await client([
+    isErrorResult({ content: [{ type: "text", text: `  ${plain}\n` }] }),
+  ]).callTool("get_recent_messages", {});
+  assert.equal(text.ok, false);
+  assert.equal(text.kind, "tool");
+  assert.equal(text.error?.code, -32000);
+  assert.equal(text.error?.message, plain);
+  assert.equal(text.data, `  ${plain}\n`);
+
+  const json = await client([
+    isErrorResult({ content: [{ type: "text", text: '{"error":"message_id $x not found"}' }] }),
+  ]).callTool("get_thread", {});
+  assert.equal(json.kind, "tool");
+  assert.equal(json.error?.message, "message_id $x not found");
+  assert.deepEqual(json.data, { error: "message_id $x not found" });
+
+  const empty = await client([isErrorResult({ content: [] })]).callTool("get_self", {});
+  assert.equal(empty.kind, "tool");
+  assert.equal(empty.error?.message, "tool reported an error");
+
+  const long = await client([
+    isErrorResult({ content: [{ type: "text", text: "x".repeat(2_000) }] }),
+  ]).callTool("get_self", {});
+  assert.equal(long.error?.message, `${"x".repeat(500)}…`);
+});
+
 test("callTool: our own timeout classifies as transient (never throws)", async () => {
   const c = client([
     (_url, init) =>
