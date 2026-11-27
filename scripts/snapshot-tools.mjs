@@ -19,6 +19,7 @@ const EXCLUDED_TOOLS = new Set([
   "register_push_token",
   "list_push_tokens",
   "get_wake_url",
+  "report_runtime",
 ]);
 
 const OUTPUT_PATH = fileURLToPath(new URL("../src/filament-tools.snapshot.json", import.meta.url));

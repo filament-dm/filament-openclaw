@@ -1,9 +1,11 @@
+import { hostname } from "node:os";
 import { DEFAULT_ACCOUNT_ID } from "./accounts.js";
 import { resolveBearer } from "./credentials.js";
 import { nextBackoffMs, sleepAbortable } from "./util.js";
 import { FilamentMcpClient } from "./mcp-client.js";
 import { classifyGetSelf } from "./onboarding-core.js";
 import { saveIdentity } from "./state/identities.js";
+import { PLUGIN_VERSION } from "./version.js";
 const GETSELF_MAX_ATTEMPTS = 40;
 const GETSELF_INTERVAL_MS = 3e3;
 const HEARTBEAT_INTERVAL_MS = 2e4;
@@ -40,6 +42,18 @@ async function retryConnect(connect, opts = {}) {
       await sleep(wait, abortSignal);
       if (abortSignal?.aborted) throw new ConnectAbortedError();
     }
+  }
+}
+async function reportRuntime(client, log, abortSignal, machine = hostname()) {
+  const args = { harness: "openclaw", version: PLUGIN_VERSION, ...machine ? { machine } : {} };
+  try {
+    const res = await client.reportRuntime(args, { signal: abortSignal });
+    if (!res.ok)
+      log(
+        `filament-connect: report_runtime failed: ${res.error?.message ?? res.kind ?? res.httpStatus}`
+      );
+  } catch (error) {
+    if (!abortSignal?.aborted) log(`filament-connect: report_runtime threw: ${String(error)}`);
   }
 }
 async function runConnect(opts) {
@@ -99,6 +113,7 @@ async function runConnect(opts) {
   log(
     `filament-connect: identity account=${accountId} principal=${identity.principal} ccRoom=${identity.ccRoomId ?? "(none)"}`
   );
+  await reportRuntime(client, log, abortSignal);
   const beat = async () => {
     try {
       await client.heartbeat({ signal: abortSignal });
@@ -115,6 +130,7 @@ async function runConnect(opts) {
 export {
   BearerRejectedError,
   ConnectAbortedError,
+  reportRuntime,
   retryConnect,
   runConnect
 };

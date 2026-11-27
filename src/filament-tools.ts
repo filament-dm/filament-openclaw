@@ -47,6 +47,7 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
   ["register_push_token", "transport plumbing; this plugin receives work through poll_work"],
   ["list_push_tokens", "transport plumbing; this plugin receives work through poll_work"],
   ["get_wake_url", "transport plumbing; the gateway waits for work outside the model"],
+  ["report_runtime", "the plugin reports its own version on connect"],
 ]);
 
 // Tools that change the agent itself: callable only from a backchannel (principal) turn.
