@@ -85,13 +85,40 @@ async function discover(mcpUrl, fetchImpl = fetch) {
     if (!value) throw new LoginError(`Filament's sign-in settings lack ${key}.`);
     return value;
   };
-  return {
-    resource: stringField(prm, "resource") ?? mcpUrl,
+  const endpoints = {
     authorizationEndpoint: required("authorization_endpoint"),
     tokenEndpoint: required("token_endpoint"),
-    registrationEndpoint: required("registration_endpoint"),
-    deviceAuthorizationEndpoint: stringField(meta, "device_authorization_endpoint")
+    registrationEndpoint: required("registration_endpoint")
   };
+  const device = stringField(meta, "device_authorization_endpoint");
+  const secure = new URL(mcpUrl).protocol === "https:";
+  return {
+    resource: stringField(prm, "resource") ?? mcpUrl,
+    authorizationEndpoint: endpointUrl(
+      endpoints.authorizationEndpoint,
+      "authorization_endpoint",
+      secure
+    ),
+    tokenEndpoint: endpointUrl(endpoints.tokenEndpoint, "token_endpoint", secure),
+    registrationEndpoint: endpointUrl(
+      endpoints.registrationEndpoint,
+      "registration_endpoint",
+      secure
+    ),
+    deviceAuthorizationEndpoint: device && endpointUrl(device, "device_authorization_endpoint", secure)
+  };
+}
+function endpointUrl(value, key, secure) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new LoginError(`Filament's sign-in settings have an invalid ${key}.`);
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && !secure)) {
+    throw new LoginError(`Filament's sign-in settings have a ${key} that is not https.`);
+  }
+  return url.toString();
 }
 async function registerClient(meta, redirectUri, fetchImpl = fetch) {
   const body = {
@@ -103,7 +130,9 @@ async function registerClient(meta, redirectUri, fetchImpl = fetch) {
       response_types: ["code"]
     }
   };
-  const { status, doc } = await request(fetchImpl, meta.registrationEndpoint, { body });
+  const { status, doc } = await request(fetchImpl, meta.registrationEndpoint, {
+    body
+  });
   const clientId = isRecord(doc) ? doc.client_id : void 0;
   if (status !== 200 && status !== 201 || typeof clientId !== "string" && typeof clientId !== "number") {
     throw new LoginError(`Filament refused to register this agent (${status}).`);
@@ -117,7 +146,10 @@ function withQuery(url, params) {
 }
 function pkcePair() {
   const verifier = randomBytes(48).toString("base64url");
-  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+  return {
+    verifier,
+    challenge: createHash("sha256").update(verifier).digest("base64url")
+  };
 }
 function parseRedirect(text) {
   const trimmed = text.trim();
@@ -198,7 +230,9 @@ async function startDeviceLogin(meta, opts = {}) {
   };
 }
 function abortError() {
-  return Object.assign(new Error("The sign-in wait was aborted."), { name: "AbortError" });
+  return Object.assign(new Error("The sign-in wait was aborted."), {
+    name: "AbortError"
+  });
 }
 async function pollDeviceToken(auth, opts = {}) {
   const fetchImpl = opts.fetch ?? fetch;
@@ -213,7 +247,11 @@ async function pollDeviceToken(auth, opts = {}) {
       answer = await exchange(
         fetchImpl,
         auth,
-        { grant_type: DEVICE_GRANT, device_code: auth.deviceCode, client_id: auth.clientId },
+        {
+          grant_type: DEVICE_GRANT,
+          device_code: auth.deviceCode,
+          client_id: auth.clientId
+        },
         opts.signal
       );
       const error = isRecord(answer.doc) ? answer.doc.error : void 0;
@@ -283,10 +321,28 @@ function startCallbackServer() {
     });
   });
 }
-function openInBrowser(url) {
-  const [command, ...args] = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
+function browserCommand(url, platform = process.platform) {
+  let parsed;
   try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  const href = parsed.toString();
+  if (platform === "darwin") return ["open", [href]];
+  if (platform === "win32") return ["rundll32", ["url.dll,FileProtocolHandler", href]];
+  return ["xdg-open", [href]];
+}
+function openInBrowser(url) {
+  const command = browserCommand(url);
+  if (!command) return;
+  try {
+    const child = spawn(command[0], command[1], {
+      stdio: "ignore",
+      detached: true,
+      shell: false
+    });
     child.on("error", () => {
     });
     child.unref();
@@ -384,9 +440,11 @@ export {
   LoginError,
   SCOPE,
   authorizationCodeLogin,
+  browserCommand,
   consoleOut,
   deviceLogin,
   discover,
+  endpointUrl,
   login,
   parseRedirect,
   pkcePair,

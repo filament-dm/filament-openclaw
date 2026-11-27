@@ -5,10 +5,12 @@ import { test } from "node:test";
 
 import {
   authorizationCodeLogin,
+  browserCommand,
   CLIENT_NAME,
   DEVICE_GRANT,
   deviceLogin,
   discover,
+  endpointUrl,
   login,
   LoginError,
   parseRedirect,
@@ -70,6 +72,46 @@ test("discover: a server without OAuth, or with incomplete settings, is refused"
   const asUrl = "https://api.example/.well-known/oauth-authorization-server/mcp/agents/oauth";
   routes[asUrl] = [200, { authorization_endpoint: "x", registration_endpoint: "y" }];
   await assert.rejects(discover(MCP, fakeHttp(routes).fetch), /lack token_endpoint/);
+});
+
+test("discover: an endpoint that is not a web address, or not https, is refused", async () => {
+  const asUrl = "https://api.example/.well-known/oauth-authorization-server/mcp/agents/oauth";
+  for (const [authorize, why] of [
+    ["file:///C:/Windows/System32/calc.exe", /authorization_endpoint that is not https/],
+    ["http://as.example/authorize", /authorization_endpoint that is not https/],
+    ["not a url", /invalid authorization_endpoint/],
+  ] as const) {
+    const routes = server();
+    const meta = (routes[asUrl] as [number, Record<string, unknown>])[1];
+    routes[asUrl] = [200, { ...meta, authorization_endpoint: authorize }];
+    await assert.rejects(discover(MCP, fakeHttp(routes).fetch), why);
+  }
+});
+
+test("endpointUrl: http only when the MCP URL is http (a local cluster)", () => {
+  assert.equal(
+    endpointUrl("https://as.example/authorize", "k", true),
+    "https://as.example/authorize",
+  );
+  assert.equal(
+    endpointUrl("http://filament-dev.local:8448/authorize", "k", false),
+    "http://filament-dev.local:8448/authorize",
+  );
+  assert.throws(() => endpointUrl("http://as.example/authorize", "k", true), /not https/);
+  assert.throws(() => endpointUrl("javascript:alert(1)", "k", false), /not https/);
+});
+
+test("browserCommand: the URL is one argument with no shell, on every platform", () => {
+  const url = withQuery("https://as.example/&calc.exe&|whoami^/authorize", { a: "1", b: "2" });
+  const [winCmd, winArgs] = browserCommand(url, "win32")!;
+  assert.equal(winCmd, "rundll32");
+  assert.deepEqual(winArgs, ["url.dll,FileProtocolHandler", url]);
+  assert.ok(!["cmd", "cmd.exe", "powershell"].includes(winCmd));
+  assert.deepEqual(browserCommand(url, "darwin"), ["open", [url]]);
+  assert.deepEqual(browserCommand(url, "linux"), ["xdg-open", [url]]);
+  for (const bad of ["file:///etc/passwd", "javascript:alert(1)", "ms-settings:", "not a url"]) {
+    assert.equal(browserCommand(bad, "win32"), null, bad);
+  }
 });
 
 test("discover: a reply that is not JSON, or no reply, is a LoginError", async () => {
