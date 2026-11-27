@@ -56,7 +56,11 @@ interface HttpAnswer {
 async function request(
   fetchImpl: Fetch,
   url: string,
-  opts: { form?: Record<string, string>; body?: unknown; signal?: AbortSignal } = {},
+  opts: {
+    form?: Record<string, string>;
+    body?: unknown;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<HttpAnswer> {
   const headers: Record<string, string> = { Accept: "application/json" };
   let body: string | undefined;
@@ -141,13 +145,47 @@ export async function discover(mcpUrl: string, fetchImpl: Fetch = fetch): Promis
     if (!value) throw new LoginError(`Filament's sign-in settings lack ${key}.`);
     return value;
   };
-  return {
-    resource: stringField(prm, "resource") ?? mcpUrl,
+  const endpoints = {
     authorizationEndpoint: required("authorization_endpoint"),
     tokenEndpoint: required("token_endpoint"),
     registrationEndpoint: required("registration_endpoint"),
-    deviceAuthorizationEndpoint: stringField(meta, "device_authorization_endpoint"),
   };
+  const device = stringField(meta, "device_authorization_endpoint");
+  // The authorization endpoint ends up in the browser: never take one that is not a web address.
+  const secure = new URL(mcpUrl).protocol === "https:";
+  return {
+    resource: stringField(prm, "resource") ?? mcpUrl,
+    authorizationEndpoint: endpointUrl(
+      endpoints.authorizationEndpoint,
+      "authorization_endpoint",
+      secure,
+    ),
+    tokenEndpoint: endpointUrl(endpoints.tokenEndpoint, "token_endpoint", secure),
+    registrationEndpoint: endpointUrl(
+      endpoints.registrationEndpoint,
+      "registration_endpoint",
+      secure,
+    ),
+    deviceAuthorizationEndpoint:
+      device && endpointUrl(device, "device_authorization_endpoint", secure),
+  };
+}
+
+/**
+ * An endpoint from the sign-in settings, as an absolute web address. It must be `https:`; `http:`
+ * only when the MCP URL is itself `http:` (a local cluster), so an HTTPS server cannot downgrade.
+ */
+export function endpointUrl(value: string, key: string, secure: boolean): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new LoginError(`Filament's sign-in settings have an invalid ${key}.`);
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && !secure)) {
+    throw new LoginError(`Filament's sign-in settings have a ${key} that is not https.`);
+  }
+  return url.toString();
 }
 
 /** A public client: the device grant with no redirect, or a code grant to `redirectUri`. */
@@ -167,7 +205,9 @@ export async function registerClient(
           response_types: ["code"],
         }),
   };
-  const { status, doc } = await request(fetchImpl, meta.registrationEndpoint, { body });
+  const { status, doc } = await request(fetchImpl, meta.registrationEndpoint, {
+    body,
+  });
   const clientId = isRecord(doc) ? doc.client_id : undefined;
   if (
     (status !== 200 && status !== 201) ||
@@ -187,7 +227,10 @@ export function withQuery(url: string, params: Record<string, string>): string {
 
 export function pkcePair(): { verifier: string; challenge: string } {
   const verifier = randomBytes(48).toString("base64url");
-  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+  return {
+    verifier,
+    challenge: createHash("sha256").update(verifier).digest("base64url"),
+  };
 }
 
 /** The query of a pasted redirect address (or a bare `code=...` query). */
@@ -313,7 +356,9 @@ export interface PollOptions extends Pick<DeviceLoginOptions, "fetch" | "sleep" 
 }
 
 function abortError(): Error {
-  return Object.assign(new Error("The sign-in wait was aborted."), { name: "AbortError" });
+  return Object.assign(new Error("The sign-in wait was aborted."), {
+    name: "AbortError",
+  });
 }
 
 /**
@@ -336,7 +381,11 @@ export async function pollDeviceToken(
       answer = await exchange(
         fetchImpl,
         auth,
-        { grant_type: DEVICE_GRANT, device_code: auth.deviceCode, client_id: auth.clientId },
+        {
+          grant_type: DEVICE_GRANT,
+          device_code: auth.deviceCode,
+          client_id: auth.clientId,
+        },
         opts.signal,
       );
       const error = isRecord(answer.doc) ? answer.doc.error : undefined;
@@ -422,15 +471,38 @@ function startCallbackServer(): Promise<{
   });
 }
 
-function openInBrowser(url: string): void {
-  const [command, ...args] =
-    process.platform === "darwin"
-      ? ["open", url]
-      : process.platform === "win32"
-        ? ["cmd", "/c", "start", "", url]
-        : ["xdg-open", url];
+/**
+ * How to open `url` in the default browser, with no shell in between: the URL is one argument,
+ * never parsed as a command line. On Windows `cmd /c start` would read `&`, `|` and `^` in the
+ * URL (every OAuth query has `&`) as command syntax, so the URL goes to the URL protocol handler.
+ * Null for anything that is not an http(s) address.
+ */
+export function browserCommand(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+): [string, string[]] | null {
+  let parsed: URL;
   try {
-    const child = spawn(command!, args, { stdio: "ignore", detached: true });
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+  const href = parsed.toString();
+  if (platform === "darwin") return ["open", [href]];
+  if (platform === "win32") return ["rundll32", ["url.dll,FileProtocolHandler", href]];
+  return ["xdg-open", [href]];
+}
+
+function openInBrowser(url: string): void {
+  const command = browserCommand(url);
+  if (!command) return;
+  try {
+    const child = spawn(command[0], command[1], {
+      stdio: "ignore",
+      detached: true,
+      shell: false,
+    });
     child.on("error", () => {});
     child.unref();
   } catch {
